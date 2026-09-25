@@ -70,6 +70,20 @@ kbd { display: inline-grid; min-width: 19px; height: 19px; place-items: center; 
 .search-hint { display: flex; flex: 0 0 auto; gap: 4px; }
 .search-feedback { display: flex; align-items: center; gap: 10px; padding: 12px 4px; color: #8793a0; font-size: 11px; }
 .mode-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid #38433e; border-radius: 6px; color: var(--accent); background: #1b2721; }
+.refresh-button { margin-left: auto; padding: 4px 8px; border: 1px solid #344139; border-radius: 6px; color: #a8d8bd; background: #1a2520; font-size: 10px; cursor: pointer; }
+.refresh-button:hover { background: #26382e; }
+.result-list { display: grid; max-height: 340px; gap: 3px; overflow-y: auto; padding: 3px; border: 1px solid #28333e; border-radius: 11px; background: #141b23; }
+.result-row { display: flex; min-width: 0; align-items: center; gap: 11px; padding: 9px 10px; border: 1px solid transparent; border-radius: 8px; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.result-row:hover, .result-row.is-selected { border-color: #34453b; background: #1e2a24; }
+.result-app-icon { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border: 1px solid #35433a; border-radius: 9px; color: var(--accent); background: #202c25; }
+.result-copy { display: grid; min-width: 0; flex: 1; gap: 4px; }
+.result-copy strong { overflow: hidden; color: #e1e7e8; font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.result-copy small { overflow: hidden; color: #75828e; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.result-match { padding: 4px 6px; border: 1px solid #343e48; border-radius: 5px; color: #8794a0; font-size: 9px; }
+.result-enter { display: inline-flex; align-items: center; gap: 5px; color: #9fdfc3; font-size: 9px; }
+.empty-results { display: flex; min-height: 155px; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #8793a0; font-size: 10px; }
+.empty-results strong { color: #c9d1d6; font-size: 11px; font-weight: 500; }
+.empty-orb { display: grid; width: 34px; height: 34px; place-items: center; margin-bottom: 3px; border-radius: 50%; color: #83929e; background: #202832; }
 .quick-start { margin-top: 45px; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; margin-bottom: 15px; }
 .section-heading h2 { margin: 0; color: #dce2e5; font-size: 13px; font-weight: 600; }

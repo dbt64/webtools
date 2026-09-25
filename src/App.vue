@@ -1,16 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import {
-  Bookmark, CircleHelp, Command, Compass, Languages, Search, Settings2, SlidersHorizontal,
-  Sparkles, SquareArrowOutUpRight, Wrench,
+  Bookmark, CircleHelp, Compass, Languages, Search, Settings2, SlidersHorizontal,
 } from '@lucide/vue'
+import SearchView from './features/search/SearchView.vue'
 
 type Section = 'search' | 'bookmarks' | 'entries' | 'translate' | 'settings'
 
 const activeSection = ref<Section>('search')
-const appVersion = ref('')
-const searchText = ref('')
-const searchInput = ref<HTMLInputElement>()
 
 const navItems: { id: Section; label: string; icon: typeof Search }[] = [
   { id: 'search', label: '快速搜索', icon: Search },
@@ -23,7 +20,7 @@ const sectionLabel = computed(() => navItems.find((item) => item.id === activeSe
 
 function focusSearch(): void {
   activeSection.value = 'search'
-  requestAnimationFrame(() => searchInput.value?.focus())
+  requestAnimationFrame(() => document.getElementById('quick-search')?.focus())
 }
 
 function handleGlobalKeydown(event: KeyboardEvent): void {
@@ -33,12 +30,7 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
   }
 }
 
-onMounted(async () => {
-  try {
-    appVersion.value = await window.desktop.getVersion()
-  } catch {
-    appVersion.value = '开发预览'
-  }
+onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
 })
 </script>
@@ -91,68 +83,7 @@ onMounted(async () => {
         <button class="help-button" aria-label="帮助"><CircleHelp :size="17" /></button>
       </header>
 
-      <section v-if="activeSection === 'search'" class="search-page">
-        <div class="welcome-block">
-          <div class="welcome-icon"><Sparkles :size="17" /></div>
-          <p class="eyebrow">一处开始，随手可达</p>
-          <h1>接下来要做什么？</h1>
-          <p class="welcome-copy">搜索应用、打开常用网址，或者用 <kbd>?</kbd> 开始网页搜索。</p>
-        </div>
-
-        <label class="search-box" for="quick-search">
-          <Search :size="20" class="search-icon" />
-          <input
-            id="quick-search"
-            ref="searchInput"
-            v-model="searchText"
-            autocomplete="off"
-            placeholder="搜索应用、网址或工具…"
-            spellcheck="false"
-          />
-          <span class="search-hint"><kbd>Ctrl</kbd><kbd>K</kbd></span>
-        </label>
-
-        <div v-if="searchText" class="search-feedback">
-          <template v-if="searchText.startsWith('?')">
-            <span class="mode-chip"><Search :size="13" /> 网页搜索</span>
-            <span>输入关键词后按 Enter 搜索</span>
-          </template>
-          <template v-else>
-            <span class="mode-chip"><Command :size="13" /> 本地搜索</span>
-            <span>应用目录扫描即将就绪</span>
-          </template>
-        </div>
-
-        <div v-else class="quick-start">
-          <div class="section-heading">
-            <div><h2>快速开始</h2><p>常用动作，一键触达</p></div>
-            <button class="text-button" @click="activeSection = 'entries'">管理入口 <SquareArrowOutUpRight :size="13" /></button>
-          </div>
-          <div class="quick-grid">
-            <button class="quick-card" @click="activeSection = 'bookmarks'">
-              <span class="quick-card-icon bookmark-icon"><Bookmark :size="17" /></span>
-              <span class="quick-card-text"><strong>收藏网址</strong><small>整理稍后再看的页面</small></span>
-              <span class="card-plus">+</span>
-            </button>
-            <button class="quick-card" @click="activeSection = 'translate'">
-              <span class="quick-card-icon translate-icon"><Languages :size="17" /></span>
-              <span class="quick-card-text"><strong>快速翻译</strong><small>AI 或 Google Translate</small></span>
-              <span class="card-plus">+</span>
-            </button>
-            <button class="quick-card" @click="activeSection = 'entries'">
-              <span class="quick-card-icon tools-icon"><Wrench :size="17" /></span>
-              <span class="quick-card-text"><strong>常用工具</strong><small>管理网址和桌面工具</small></span>
-              <span class="card-plus">+</span>
-            </button>
-          </div>
-        </div>
-
-        <footer class="search-footer">
-          <span><i class="status-dot"></i> 本地优先</span>
-          <span>搜索按键 <kbd>?</kbd> 可切换网页模式</span>
-          <span>Nook {{ appVersion }}</span>
-        </footer>
-      </section>
+      <SearchView v-if="activeSection === 'search'" @navigate="activeSection = $event" />
 
       <section v-else class="section-placeholder">
         <div class="section-symbol">
