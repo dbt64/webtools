@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray } from 'electron'
 import { isAbsolute, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { DataStore } from './services/data-store'
@@ -12,10 +12,15 @@ import { openExternalUrl, validateExternalUrl } from './services/external-opener
 import { BookmarkService } from './services/bookmark-service'
 import { AiTranslationService } from './services/ai-translation'
 import { buildGoogleTranslateUrl } from './services/google-translate'
+import { GlobalHotkeyService } from './services/global-hotkey'
 
 const isDevelopment = !app.isPackaged
 let dataStore: DataStore
 let secretStore: SecretStore
+let managerWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+let quitting = false
+let hotkeyService: GlobalHotkeyService | null = null
 
 function fail<T>(code: string, message: string): IpcResult<T> {
   return { ok: false, error: { code, message } }
@@ -38,13 +43,14 @@ function normalizeDescription(value: unknown): string | undefined | null {
 }
 
 function createWindow(): void {
+  if (managerWindow && !managerWindow.isDestroyed()) { managerWindow.show(); managerWindow.focus(); return }
   const window = new BrowserWindow({
     width: 1040,
     height: 720,
     minWidth: 840,
     minHeight: 600,
     backgroundColor: '#10151c',
-    title: 'Nook',
+    title: 'WebTools',
     show: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -52,6 +58,15 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: true,
     },
+  })
+  managerWindow = window
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith('file:') && !url.startsWith('http://localhost:')) event.preventDefault()
+  })
+  window.on('closed', () => { if (managerWindow === window) managerWindow = null })
+  window.on('close', (event) => {
+    if (!quitting) { event.preventDefault(); window.hide() }
   })
 
   window.once('ready-to-show', () => window.show())
@@ -63,9 +78,31 @@ function createWindow(): void {
   }
 }
 
+function showManager(): void {
+  if (!managerWindow || managerWindow.isDestroyed()) createWindow()
+  else { managerWindow.show(); managerWindow.focus() }
+}
+
+function createTray(): void {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect x="1" y="1" width="30" height="30" rx="8" fill="#9fdfc3"/><path d="M11 10h10M11 16h10M11 22h10" stroke="#15261f" stroke-width="2" stroke-linecap="round"/></svg>'
+  const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
+  tray = new Tray(image)
+  tray.setToolTip('WebTools')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '打开 WebTools', click: showManager },
+    { label: '退出', click: () => { quitting = true; hotkeyService?.dispose(); app.quit() } },
+  ]))
+  tray.on('double-click', showManager)
+}
+
 ipcMain.handle('app:get-version', () => app.getVersion())
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) app.quit()
+else app.on('second-instance', () => showManager())
+
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return
   app.setAppUserModelId('dev.nook.launcher')
   dataStore = new DataStore(join(app.getPath('userData'), 'nook-data.json'))
   secretStore = new SecretStore(join(app.getPath('userData'), 'secrets.json'))
@@ -75,6 +112,13 @@ app.whenReady().then(async () => {
   const appLauncher = new AppLauncher(appCatalog)
   const bookmarkService = new BookmarkService(dataStore)
   await appCatalog.refresh()
+  hotkeyService = new GlobalHotkeyService()
+  const shortcutResult = hotkeyService.register(dataStore.snapshot().settings.quickSearchShortcut, showManager)
+  if (!shortcutResult.ok) console.warn(shortcutResult.error.message)
+  app.setLoginItemSettings({ openAtLogin: dataStore.snapshot().settings.launchOnStartup })
+  createTray()
+  ipcMain.handle('window:show-launcher', () => showManager())
+  ipcMain.handle('window:show-manager', () => showManager())
   ipcMain.handle('apps:list', () => appCatalog.list())
   ipcMain.handle('apps:refresh', () => appCatalog.refresh())
   ipcMain.handle('apps:launch', async (_event, id: unknown): Promise<IpcResult<void>> => {
@@ -181,6 +225,14 @@ app.whenReady().then(async () => {
     if (settings.defaultSearchProvider !== undefined && !['google', 'baidu', 'bilibili'].includes(String(settings.defaultSearchProvider))) return fail('INVALID_PROVIDER', '不支持的搜索平台。')
     if (settings.aiBaseUrl !== undefined && (typeof settings.aiBaseUrl !== 'string' || settings.aiBaseUrl.length > 500)) return fail('INVALID_SETTINGS', 'AI 服务地址无效。')
     if (settings.aiModel !== undefined && (typeof settings.aiModel !== 'string' || settings.aiModel.length > 120)) return fail('INVALID_SETTINGS', 'AI 模型名称无效。')
+    if (settings.quickSearchShortcut !== undefined && (typeof settings.quickSearchShortcut !== 'string' || settings.quickSearchShortcut.length > 80)) return fail('INVALID_SETTINGS', '快捷键格式无效。')
+    if (settings.launchOnStartup !== undefined && typeof settings.launchOnStartup !== 'boolean') return fail('INVALID_SETTINGS', '开机启动设置无效。')
+    const currentShortcut = dataStore.snapshot().settings.quickSearchShortcut
+    const nextShortcut = typeof settings.quickSearchShortcut === 'string' ? settings.quickSearchShortcut : currentShortcut
+    if (nextShortcut !== currentShortcut) {
+      const registration = hotkeyService?.replace(nextShortcut)
+      if (!registration?.ok) return registration ?? fail('SHORTCUT_NOT_INITIALIZED', '快捷键服务尚未初始化。')
+    }
     let next
     try {
       next = await dataStore.update((data) => ({
@@ -189,13 +241,17 @@ app.whenReady().then(async () => {
           ...data.settings,
           defaultSearchProvider: typeof settings.defaultSearchProvider === 'string' ? settings.defaultSearchProvider as AppSettings['defaultSearchProvider'] : data.settings.defaultSearchProvider,
           defaultSearchEngineId: typeof settings.defaultSearchProvider === 'string' ? settings.defaultSearchProvider : data.settings.defaultSearchEngineId,
+          quickSearchShortcut: nextShortcut,
+          launchOnStartup: typeof settings.launchOnStartup === 'boolean' ? settings.launchOnStartup : data.settings.launchOnStartup,
           aiBaseUrl: typeof settings.aiBaseUrl === 'string' ? settings.aiBaseUrl : data.settings.aiBaseUrl,
           aiModel: typeof settings.aiModel === 'string' ? settings.aiModel : data.settings.aiModel,
         },
       }))
     } catch (error) {
+      if (nextShortcut !== currentShortcut) hotkeyService?.replace(currentShortcut)
       return fail('SAVE_SETTINGS_FAILED', error instanceof Error ? error.message : '无法保存设置。')
     }
+    app.setLoginItemSettings({ openAtLogin: next.settings.launchOnStartup })
     return { ok: true, data: next.settings }
   })
   ipcMain.handle('search:open-web', async (_event, query: unknown): Promise<IpcResult<void>> => {
@@ -287,5 +343,12 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // The app remains resident in the Windows tray.
+})
+
+app.on('before-quit', () => {
+  quitting = true
+  hotkeyService?.dispose()
+  tray?.destroy()
+  tray = null
 })
