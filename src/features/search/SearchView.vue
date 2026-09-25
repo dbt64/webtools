@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   Bookmark, Command, Compass, Languages, Search, Sparkles, SquareArrowOutUpRight, Wrench,
 } from '@lucide/vue'
-import { createDefaultAppData, type AppEntry, type AppSettings, type ToolEntry, type WebEntry } from '@/shared/domain'
+import { createDefaultAppData, type AppSearchEntry, type AppSettings, type ToolEntry, type WebEntry } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry, type SearchResult as SearchResultItem } from '@/shared/search'
 import { parseSearchCommand } from '@/shared/search-command'
@@ -13,7 +13,7 @@ import type { BookmarkFolder } from '@/shared/domain'
 
 const emit = defineEmits<{ navigate: [section: 'bookmarks' | 'entries' | 'translate'] }>()
 
-const apps = ref<AppEntry[]>([])
+const apps = ref<AppSearchEntry[]>([])
 const webEntries = ref<WebEntry[]>([])
 const tools = ref<ToolEntry[]>([])
 const settings = ref<AppSettings>(createDefaultAppData().settings)
@@ -29,7 +29,7 @@ const parsed = computed(() => parseSearchCommand(query.value))
 const isWebSearch = computed(() => parsed.value.mode === 'web')
 const providerNames = { google: 'Google', baidu: '百度', bilibili: 'Bilibili' }
 const searchableEntries = computed<SearchableEntry[]>(() => [
-  ...apps.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'app' as const, subtitle: entry.targetPath })),
+  ...apps.value.map((entry) => ({ id: entry.id, name: entry.name, aliases: entry.aliases, kind: 'app' as const, subtitle: '本地应用' })),
   ...webEntries.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'website' as const, subtitle: entry.url, searchText: `${entry.url} ${entry.description ?? ''}` })),
   ...tools.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'tool' as const, subtitle: entry.command, searchText: `${entry.command} ${entry.description ?? ''}` })),
 ])

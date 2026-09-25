@@ -1,80 +1,54 @@
 import { createHash } from 'node:crypto'
-import { readdir } from 'node:fs/promises'
-import { join, parse, resolve } from 'node:path'
 import { shell } from 'electron'
-import type { AppEntry } from '../../src/shared/domain'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { WindowsAppSource, type CatalogRecord } from './windows-app-source'
+import type { AppSearchEntry } from '../../src/shared/domain'
 
-interface CatalogRecord {
-  entry: AppEntry
-  sourcePath: string
-}
+const execFileAsync = promisify(execFile)
+type IndexedCatalogRecord = CatalogRecord & { id: string }
 
 export class AppCatalogService {
-  private readonly records = new Map<string, CatalogRecord>()
+  private readonly source = new WindowsAppSource()
+  private readonly records = new Map<string, IndexedCatalogRecord>()
 
-  async refresh(): Promise<AppEntry[]> {
+  async refresh(): Promise<AppSearchEntry[]> {
     if (process.platform !== 'win32') throw new Error('应用扫描目前仅支持 Windows。')
-
-    const roots = [
-      process.env.APPDATA && join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
-      process.env.ProgramData && join(process.env.ProgramData, 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
-    ].filter((path): path is string => Boolean(path))
-
-    const next = new Map<string, CatalogRecord>()
-    for (const root of roots) {
-      for (const shortcut of await this.findShortcuts(root)) {
-        try {
-          const details = shell.readShortcutLink(shortcut)
-          if (!details.target) continue
-          const targetPath = resolve(details.target)
-          const id = createHash('sha256').update(targetPath.toLocaleLowerCase()).digest('hex').slice(0, 16)
-          const existing = next.get(id)
-          if (existing) continue
-          next.set(id, {
-            entry: {
-              id,
-              name: details.description?.trim() || parse(shortcut).name,
-              targetPath,
-              sourcePath: shortcut,
-            },
-            sourcePath: shortcut,
-          })
-        } catch {
-          // One malformed shortcut should not prevent the rest of the directory from loading.
-        }
+    const next = new Map<string, IndexedCatalogRecord>()
+    for (const record of await this.source.list()) {
+      const key = record.launchTarget.kind === 'aumid'
+        ? `aumid:${record.launchTarget.appId.toLocaleLowerCase()}`
+        : `path:${record.launchTarget.kind === 'shortcut' ? record.launchTarget.targetPath : record.launchTarget.path}`.toLocaleLowerCase()
+      const id = createHash('sha256').update(key).digest('hex').slice(0, 16)
+      const existing = next.get(id)
+      if (existing) {
+        existing.aliases = [...new Set([...existing.aliases, ...record.aliases])]
+        if (existing.launchTarget.kind === 'aumid' && record.launchTarget.kind !== 'aumid') next.set(id, { ...record, id })
+        continue
       }
+      next.set(id, { ...record, id })
     }
-
     this.records.clear()
     for (const [id, record] of next) this.records.set(id, record)
     return this.list()
   }
 
-  list(): AppEntry[] {
-    return [...this.records.values()].map(({ entry }) => entry).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+  list(): AppSearchEntry[] {
+    return [...this.records.values()].map(({ id, name, aliases, source, icon }) => ({ id, name, aliases, source, icon }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
   }
 
   async launch(id: string): Promise<void> {
     const record = this.records.get(id)
-    if (!record) throw new Error('找不到这个应用，请刷新应用列表后重试。')
-    const error = await shell.openPath(record.sourcePath)
-    if (error) throw new Error(`无法启动“${record.entry.name}”：${error}`)
-  }
-
-  private async findShortcuts(root: string): Promise<string[]> {
-    let entries
-    try {
-      entries = await readdir(root, { withFileTypes: true })
-    } catch {
-      return []
+    if (!record) throw new Error('找不到这个应用，请刷新后重试。')
+    let error = ''
+    if (record.launchTarget.kind === 'shortcut') error = await shell.openPath(record.launchTarget.shortcutPath)
+    else if (record.launchTarget.kind === 'executable') error = await shell.openPath(record.launchTarget.path)
+    else {
+      try {
+        await execFileAsync('explorer.exe', [`shell:AppsFolder\\${record.launchTarget.appId}`], { windowsHide: true, timeout: 5000 })
+      } catch (cause) { throw new Error(`无法启动“${record.name}”：${cause instanceof Error ? cause.message : '应用启动失败。'}`) }
     }
-
-    const shortcuts: string[] = []
-    for (const entry of entries) {
-      const path = join(root, entry.name)
-      if (entry.isDirectory()) shortcuts.push(...await this.findShortcuts(path))
-      else if (entry.isFile() && entry.name.toLocaleLowerCase().endsWith('.lnk')) shortcuts.push(path)
-    }
-    return shortcuts
+    if (error) throw new Error(`无法启动“${record.name}”：${error}`)
   }
 }

@@ -19,7 +19,7 @@ defineEmits<{ select: []; bookmark: [] }>()
         <Wrench v-else :size="17" />
       </span>
       <span class="result-copy"><strong>{{ result.entry.name }}</strong><small>{{ result.entry.subtitle }}</small></span>
-      <span class="result-match" v-if="result.match !== 'name'">{{ result.match === 'pinyin' ? '拼音' : '首字母' }}</span>
+      <span class="result-match" v-if="result.match !== 'name'">{{ result.match === 'pinyin' ? '拼音' : result.match === 'alias' ? '别名' : '首字母' }}</span>
       <span v-if="selected" class="result-enter"><CornerDownLeft :size="13" /> 打开</span>
     </button>
     <button v-if="result.entry.kind === 'website'" class="result-bookmark" :aria-label="`收藏${result.entry.name}`" title="收藏网址" @click="$emit('bookmark')"><BookmarkPlus :size="16" /></button>

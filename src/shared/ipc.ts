@@ -1,4 +1,4 @@
-import type { AppEntry, AppSettings, Bookmark, BookmarkFolder, SearchProvider, ToolEntry, WebEntry, WebsiteEntry } from './domain'
+import type { AppSearchEntry, AppSettings, Bookmark, BookmarkFolder, SearchProvider, ToolEntry, WebEntry, WebsiteEntry } from './domain'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -8,8 +8,8 @@ export interface DesktopApi {
   showLauncher(): Promise<void>
   showManager(): Promise<void>
   getVersion(): Promise<string>
-  getApps(): Promise<AppEntry[]>
-  refreshApps(): Promise<AppEntry[]>
+  getApps(): Promise<AppSearchEntry[]>
+  refreshApps(): Promise<AppSearchEntry[]>
   launchApp(id: string): Promise<IpcResult<void>>
   getEntries(): Promise<{ webEntries: WebEntry[]; tools: ToolEntry[] }>
   saveWebEntry(input: Omit<WebEntry, 'id'> & { id?: string }): Promise<IpcResult<WebEntry>>
