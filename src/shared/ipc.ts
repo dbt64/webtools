@@ -25,6 +25,7 @@ export interface DesktopApi {
   listBookmarks(folderId: string): Promise<Bookmark[]>
   addBookmark(input: { folderId: string; title?: string; url: string }): Promise<IpcResult<Bookmark>>
   deleteBookmark(bookmarkId: string): Promise<IpcResult<void>>
+  moveBookmark(bookmarkId: string, folderId: string): Promise<IpcResult<void>>
   openBookmark(bookmarkId: string): Promise<IpcResult<void>>
   hasAiApiKey(): Promise<boolean>
   saveAiApiKey(apiKey: string): Promise<IpcResult<void>>
@@ -55,6 +56,7 @@ export const IPC_CHANNELS = {
   listBookmarks: 'bookmarks:list',
   addBookmark: 'bookmarks:add',
   deleteBookmark: 'bookmarks:delete',
+  moveBookmark: 'bookmarks:move',
   openBookmark: 'bookmarks:open',
   hasAiApiKey: 'ai:has-key',
   saveAiApiKey: 'ai:save-key',

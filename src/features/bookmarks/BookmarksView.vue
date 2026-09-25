@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ArrowUpRight, Bookmark, Plus, Trash2 } from '@lucide/vue'
+import { ArrowRightLeft, ArrowUpRight, Bookmark, Plus, Trash2 } from '@lucide/vue'
 import type { Bookmark as BookmarkEntry, BookmarkFolder } from '@/shared/domain'
 import BookmarkFolderList from './BookmarkFolderList.vue'
 import BookmarkDialog from './BookmarkDialog.vue'
 import Favicon from './Favicon.vue'
+import MoveBookmarkDialog from './MoveBookmarkDialog.vue'
 
 const folders = ref<BookmarkFolder[]>([])
 const selectedId = ref('')
 const bookmarks = ref<BookmarkEntry[]>([])
 const dialogOpen = ref(false)
+const savingBookmark = ref(false)
+const movingBookmark = ref<BookmarkEntry>()
 const errorMessage = ref('')
 const selectedFolder = computed(() => folders.value.find((folder) => folder.id === selectedId.value))
 
@@ -48,20 +51,25 @@ async function removeFolder(folder: BookmarkFolder): Promise<void> {
 }
 
 async function saveBookmark(input: { folderId?: string; newFolderName?: string; title: string; url: string }): Promise<void> {
-  let folderId = input.folderId
-  if (input.newFolderName) {
-    const folder = await window.desktop.saveBookmarkFolder({ name: input.newFolderName })
-    if (!folder.ok) { errorMessage.value = folder.error.message; return }
-    folderId = folder.data.id
+  savingBookmark.value = true
+  try {
+    let folderId = input.folderId
+    if (input.newFolderName) {
+      const folder = await window.desktop.saveBookmarkFolder({ name: input.newFolderName })
+      if (!folder.ok) { errorMessage.value = folder.error.message; return }
+      folderId = folder.data.id
+    }
+    if (!folderId) { errorMessage.value = '请选择或新建一个收藏夹。'; return }
+    const result = await window.desktop.addBookmark({ folderId, title: input.title, url: input.url })
+    if (!result.ok) { errorMessage.value = result.error.message; return }
+    dialogOpen.value = false
+    selectedId.value = folderId
+    errorMessage.value = ''
+    await loadFolders()
+    await loadBookmarks()
+  } finally {
+    savingBookmark.value = false
   }
-  if (!folderId) { errorMessage.value = '请选择或新建一个收藏夹。'; return }
-  const result = await window.desktop.addBookmark({ folderId, title: input.title, url: input.url })
-  if (!result.ok) { errorMessage.value = result.error.message; return }
-  dialogOpen.value = false
-  selectedId.value = folderId
-  errorMessage.value = ''
-  await loadFolders()
-  await loadBookmarks()
 }
 
 async function removeBookmark(bookmark: BookmarkEntry): Promise<void> {
@@ -74,6 +82,16 @@ async function removeBookmark(bookmark: BookmarkEntry): Promise<void> {
 async function openBookmark(bookmark: BookmarkEntry): Promise<void> {
   const result = await window.desktop.openBookmark(bookmark.id)
   if (!result.ok) errorMessage.value = result.error.message
+}
+
+async function moveBookmark(folderId: string): Promise<void> {
+  if (!movingBookmark.value) return
+  const result = await window.desktop.moveBookmark(movingBookmark.value.id, folderId)
+  if (!result.ok) errorMessage.value = result.error.message
+  else {
+    movingBookmark.value = undefined
+    await loadBookmarks()
+  }
 }
 
 watch(selectedId, () => { void loadBookmarks() })
@@ -100,11 +118,12 @@ onMounted(() => { void loadFolders() })
         <article v-for="bookmark in bookmarks" :key="bookmark.id" class="bookmark-card">
           <Favicon :url="bookmark.url" :favicon="bookmark.favicon" />
           <div class="bookmark-copy"><strong>{{ bookmark.title }}</strong><small>{{ bookmark.url }}</small></div>
-          <div class="bookmark-actions"><button class="icon-button" :aria-label="`打开${bookmark.title}`" @click="openBookmark(bookmark)"><ArrowUpRight :size="15" /></button><button class="icon-button danger" :aria-label="`删除${bookmark.title}`" @click="removeBookmark(bookmark)"><Trash2 :size="15" /></button></div>
+          <div class="bookmark-actions"><button v-if="folders.length > 1" class="icon-button" :aria-label="`移动${bookmark.title}`" @click="movingBookmark = bookmark"><ArrowRightLeft :size="15" /></button><button class="icon-button" :aria-label="`打开${bookmark.title}`" @click="openBookmark(bookmark)"><ArrowUpRight :size="15" /></button><button class="icon-button danger" :aria-label="`删除${bookmark.title}`" @click="removeBookmark(bookmark)"><Trash2 :size="15" /></button></div>
         </article>
       </div>
       <div v-else class="empty-panel bookmark-empty"><span class="empty-orb"><Bookmark :size="18" /></span><strong>{{ selectedFolder ? '这里还没有收藏' : '创建一个收藏夹' }}</strong><span>{{ selectedFolder ? '把感兴趣的网址存进来，图标会自动获取。' : '收藏夹可以把感兴趣的网站分门别类。' }}</span><button v-if="selectedFolder" class="text-button" @click="dialogOpen = true"><Plus :size="14" /> 添加第一个网址</button><button v-else class="text-button" @click="createFolder()"><Plus :size="14" /> 新建收藏夹</button></div>
     </div>
-    <BookmarkDialog v-if="dialogOpen" :folders="folders" :preferred-folder-id="selectedId" @save="saveBookmark" @cancel="dialogOpen = false" />
+    <BookmarkDialog v-if="dialogOpen" :folders="folders" :preferred-folder-id="selectedId" :saving="savingBookmark" @save="saveBookmark" @cancel="dialogOpen = false" />
+    <MoveBookmarkDialog v-if="movingBookmark" :folders="folders" :current-folder-id="selectedId" @move="moveBookmark" @cancel="movingBookmark = undefined" />
   </section>
 </template>

@@ -23,6 +23,8 @@ const searchInput = ref<HTMLInputElement>()
 const bookmarkFolders = ref<BookmarkFolder[]>([])
 const bookmarkTarget = ref<SearchableEntry>()
 const showBookmarkDialog = ref(false)
+const savingBookmark = ref(false)
+const refreshing = ref(false)
 const parsed = computed(() => parseSearchCommand(query.value))
 const isWebSearch = computed(() => parsed.value.mode === 'web')
 const providerNames = { google: 'Google', baidu: '百度', bilibili: 'Bilibili' }
@@ -33,8 +35,14 @@ const searchableEntries = computed<SearchableEntry[]>(() => [
 ])
 const index = computed(() => buildSearchIndex(searchableEntries.value))
 const results = computed(() => isWebSearch.value ? [] : searchEntries(parsed.value.query, searchableEntries.value, index.value))
+const resultGroups = computed(() => [
+  { kind: 'app' as const, label: '应用', items: results.value.filter((result) => result.entry.kind === 'app') },
+  { kind: 'website' as const, label: '网址', items: results.value.filter((result) => result.entry.kind === 'website') },
+  { kind: 'tool' as const, label: '工具', items: results.value.filter((result) => result.entry.kind === 'tool') },
+].filter((group) => group.items.length))
 
 async function loadApps(refresh = false): Promise<void> {
+  refreshing.value = refresh
   try {
     const [loadedApps, entries, loadedSettings] = await Promise.all([
       refresh ? window.desktop.refreshApps() : window.desktop.getApps(),
@@ -47,6 +55,8 @@ async function loadApps(refresh = false): Promise<void> {
     settings.value = loadedSettings
   } catch {
     // Show an empty result state while keeping the search box usable.
+  } finally {
+    refreshing.value = false
   }
 }
 
@@ -93,17 +103,26 @@ async function addSearchResultBookmark(result: SearchResultItem<SearchableEntry>
   showBookmarkDialog.value = true
 }
 
+function resultIndex(result: SearchResultItem): number {
+  return results.value.findIndex((item) => item.entry.kind === result.entry.kind && item.entry.id === result.entry.id)
+}
+
 async function saveBookmark(input: { folderId?: string; newFolderName?: string; title: string; url: string }): Promise<void> {
-  let folderId = input.folderId
-  if (input.newFolderName) {
-    const folder = await window.desktop.saveBookmarkFolder({ name: input.newFolderName })
-    if (!folder.ok) { window.alert(folder.error.message); return }
-    folderId = folder.data.id
+  savingBookmark.value = true
+  try {
+    let folderId = input.folderId
+    if (input.newFolderName) {
+      const folder = await window.desktop.saveBookmarkFolder({ name: input.newFolderName })
+      if (!folder.ok) { window.alert(folder.error.message); return }
+      folderId = folder.data.id
+    }
+    if (!folderId) return
+    const result = await window.desktop.addBookmark({ folderId, title: input.title || bookmarkTarget.value?.name, url: input.url })
+    if (!result.ok) { window.alert(result.error.message); return }
+    showBookmarkDialog.value = false
+  } finally {
+    savingBookmark.value = false
   }
-  if (!folderId) return
-  const result = await window.desktop.addBookmark({ folderId, title: input.title || bookmarkTarget.value?.name, url: input.url })
-  if (!result.ok) { window.alert(result.error.message); return }
-  showBookmarkDialog.value = false
 }
 
 watch(query, () => { selectedIndex.value = 0 })
@@ -144,20 +163,23 @@ onMounted(() => {
       <template v-else>
         <span class="mode-chip"><Command :size="13" /> 本地搜索</span>
         <span>{{ results.length }} 项 · 应用支持拼音和首字母</span>
-        <button class="refresh-button" title="重新扫描应用" @click="loadApps(true)">重新扫描</button>
+        <button class="refresh-button" :disabled="refreshing" title="重新扫描应用" @click="loadApps(true)">{{ refreshing ? '扫描中…' : '重新扫描' }}</button>
       </template>
     </div>
 
     <div v-if="query && !isWebSearch" class="result-list" role="listbox" aria-label="应用搜索结果">
-      <SearchResult
-        v-for="(result, resultIndex) in results"
-        :key="`${result.entry.kind}-${result.entry.id}`"
-        :result="result"
-        :selected="resultIndex === selectedIndex"
-        @select="launchSelected"
-        @bookmark="addSearchResultBookmark(result)"
-        @mouseenter="selectedIndex = resultIndex"
-      />
+      <div v-for="group in resultGroups" :key="group.kind" class="result-group">
+        <div class="result-group-heading"><span>{{ group.label }}</span><small>{{ group.items.length }}</small></div>
+        <SearchResult
+          v-for="result in group.items"
+          :key="`${result.entry.kind}-${result.entry.id}`"
+          :result="result"
+          :selected="resultIndex(result) === selectedIndex"
+          @select="launchSelected"
+          @bookmark="addSearchResultBookmark(result)"
+          @mouseenter="selectedIndex = resultIndex(result)"
+        />
+      </div>
       <div v-if="!results.length" class="empty-results">
         <span class="empty-orb"><Search :size="18" /></span>
         <strong>没有找到应用</strong>
@@ -199,6 +221,7 @@ onMounted(() => {
       :folders="bookmarkFolders"
       :initial-title="bookmarkTarget.name"
       :initial-url="bookmarkTarget.subtitle"
+      :saving="savingBookmark"
       @save="saveBookmark"
       @cancel="showBookmarkDialog = false"
     />

@@ -8,6 +8,7 @@ const section = ref<'website' | 'tool'>('website')
 const webEntries = ref<WebEntry[]>([])
 const tools = ref<ToolEntry[]>([])
 const editing = ref(false)
+const saving = ref(false)
 const current = ref<WebEntry | ToolEntry>()
 const errorMessage = ref('')
 const items = computed(() => section.value === 'website' ? webEntries.value : tools.value)
@@ -19,17 +20,21 @@ async function refresh(): Promise<void> {
 }
 
 async function save(value: { id?: string; name: string; url?: string; command?: string; description?: string }): Promise<void> {
-  const result = section.value === 'website'
-    ? await window.desktop.saveWebEntry({ id: value.id, name: value.name, url: value.url ?? '', description: value.description })
-    : await window.desktop.saveToolEntry({ id: value.id, name: value.name, command: value.command ?? '', description: value.description })
-  if (!result.ok) {
-    errorMessage.value = result.error.message
-    return
+  saving.value = true
+  try {
+    const result = section.value === 'website'
+      ? await window.desktop.saveWebEntry({ id: value.id, name: value.name, url: value.url ?? '', description: value.description })
+      : await window.desktop.saveToolEntry({ id: value.id, name: value.name, command: value.command ?? '', description: value.description })
+    if (!result.ok) { errorMessage.value = result.error.message; return }
+    editing.value = false
+    current.value = undefined
+    errorMessage.value = ''
+    await refresh()
+  } catch {
+    errorMessage.value = '保存失败，请重试。'
+  } finally {
+    saving.value = false
   }
-  editing.value = false
-  current.value = undefined
-  errorMessage.value = ''
-  await refresh()
 }
 
 function edit(entry?: WebEntry | ToolEntry): void {
@@ -82,6 +87,6 @@ onMounted(() => { void refresh() })
     </div>
     <div v-else class="empty-panel"><span class="empty-orb"><Globe v-if="section === 'website'" :size="18" /><Wrench v-else :size="18" /></span><strong>这里还没有{{ section === 'website' ? '网址' : '工具' }}</strong><span>添加一个，你就能从搜索框直接打开它。</span><button class="text-button" @click="edit()"><Plus :size="14" /> 现在添加</button></div>
 
-    <EntryEditor v-if="editing" :kind="section" :entry="current" @save="save" @cancel="editing = false" />
+    <EntryEditor v-if="editing" :kind="section" :entry="current" :saving="saving" @save="save" @cancel="editing = false" />
   </section>
 </template>

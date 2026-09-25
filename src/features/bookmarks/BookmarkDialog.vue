@@ -7,6 +7,7 @@ const props = defineProps<{
   initialTitle?: string
   initialUrl?: string
   preferredFolderId?: string
+  saving?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -40,7 +41,8 @@ function submit(): void {
       <label class="field-label">显示名称（可选）<input v-model="title" placeholder="默认使用网站域名" /></label>
       <label class="field-label">收藏夹<select v-model="selection"><option v-for="folder in folders" :key="folder.id" :value="folder.id">{{ folder.name }}</option><option value="__new__">＋ 新建收藏夹</option></select></label>
       <label v-if="isNewFolder" class="field-label">新收藏夹名称<input v-model="newFolderName" placeholder="例如：设计灵感" /></label>
-      <div class="dialog-actions"><button type="button" class="secondary-button" @click="emit('cancel')">取消</button><button type="submit" class="primary-button" :disabled="!valid">收藏</button></div>
+      <p v-if="saving" class="save-progress">正在保存并获取网站图标…</p>
+      <div class="dialog-actions"><button type="button" class="secondary-button" :disabled="saving" @click="emit('cancel')">取消</button><button type="submit" class="primary-button" :disabled="!valid || saving">{{ saving ? '正在保存…' : '收藏' }}</button></div>
     </form>
   </div>
 </template>

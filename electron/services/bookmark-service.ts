@@ -65,4 +65,14 @@ export class BookmarkService {
     if (!current.bookmarks.some((bookmark) => bookmark.id === bookmarkId)) throw new Error('找不到这个收藏。')
     await this.store.update((data) => ({ ...data, bookmarks: data.bookmarks.filter((bookmark) => bookmark.id !== bookmarkId) }))
   }
+
+  async moveBookmark(bookmarkId: string, folderId: string): Promise<void> {
+    const current = this.store.snapshot()
+    if (!current.bookmarks.some((bookmark) => bookmark.id === bookmarkId)) throw new Error('找不到这个收藏。')
+    if (!current.bookmarkFolders.some((folder) => folder.id === folderId)) throw new Error('请选择一个有效的收藏夹。')
+    await this.store.update((data) => ({
+      ...data,
+      bookmarks: data.bookmarks.map((bookmark) => bookmark.id === bookmarkId ? { ...bookmark, folderId } : bookmark),
+    }))
+  }
 }

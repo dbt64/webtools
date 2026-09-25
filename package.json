@@ -37,12 +37,15 @@
       "package.json"
     ],
     "win": {
+      "icon": "resources/app.ico",
       "target": ["nsis"],
       "artifactName": "Nook-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
+      "installerIcon": "resources/app.ico",
+      "uninstallerIcon": "resources/app.ico",
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true

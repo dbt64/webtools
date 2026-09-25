@@ -22,6 +22,7 @@ const desktopApi: DesktopApi = {
   listBookmarks: (folderId) => ipcRenderer.invoke(IPC_CHANNELS.listBookmarks, folderId) as ReturnType<DesktopApi['listBookmarks']>,
   addBookmark: (input) => ipcRenderer.invoke(IPC_CHANNELS.addBookmark, input) as ReturnType<DesktopApi['addBookmark']>,
   deleteBookmark: (bookmarkId) => ipcRenderer.invoke(IPC_CHANNELS.deleteBookmark, bookmarkId) as ReturnType<DesktopApi['deleteBookmark']>,
+  moveBookmark: (bookmarkId, folderId) => ipcRenderer.invoke(IPC_CHANNELS.moveBookmark, bookmarkId, folderId) as ReturnType<DesktopApi['moveBookmark']>,
   openBookmark: (bookmarkId) => ipcRenderer.invoke(IPC_CHANNELS.openBookmark, bookmarkId) as ReturnType<DesktopApi['openBookmark']>,
   hasAiApiKey: () => ipcRenderer.invoke(IPC_CHANNELS.hasAiApiKey) as ReturnType<DesktopApi['hasAiApiKey']>,
   saveAiApiKey: (apiKey) => ipcRenderer.invoke(IPC_CHANNELS.saveAiApiKey, apiKey) as ReturnType<DesktopApi['saveAiApiKey']>,

@@ -66,6 +66,7 @@ function createWindow(): void {
 ipcMain.handle('app:get-version', () => app.getVersion())
 
 app.whenReady().then(async () => {
+  app.setAppUserModelId('dev.nook.launcher')
   dataStore = new DataStore(join(app.getPath('userData'), 'nook-data.json'))
   secretStore = new SecretStore(join(app.getPath('userData'), 'secrets.json'))
   await dataStore.load()
@@ -104,14 +105,20 @@ app.whenReady().then(async () => {
     const next: WebEntry = { id: input.id as string | undefined ?? randomUUID(), name, url, description }
     const existing = dataStore.snapshot().webEntries.some((entry) => entry.id === next.id)
     if (input.id && !existing) return fail('NOT_FOUND', '找不到要编辑的网址。')
-    await dataStore.update((data) => ({ ...data, webEntries: existing ? data.webEntries.map((entry) => entry.id === next.id ? next : entry) : [...data.webEntries, next] }))
+    try {
+      await dataStore.update((data) => ({ ...data, webEntries: existing ? data.webEntries.map((entry) => entry.id === next.id ? next : entry) : [...data.webEntries, next] }))
+    } catch (error) {
+      return fail('SAVE_ENTRY_FAILED', error instanceof Error ? error.message : '无法保存网址。')
+    }
     return { ok: true, data: next }
   })
   ipcMain.handle('entries:delete-website', async (_event, id: unknown): Promise<IpcResult<void>> => {
     if (typeof id !== 'string') return fail('INVALID_ID', '网址编号无效。')
     const current = dataStore.snapshot()
     if (!current.webEntries.some((entry) => entry.id === id)) return fail('NOT_FOUND', '找不到要删除的网址。')
-    await dataStore.update((data) => ({ ...data, webEntries: data.webEntries.filter((entry) => entry.id !== id) }))
+    try { await dataStore.update((data) => ({ ...data, webEntries: data.webEntries.filter((entry) => entry.id !== id) })) } catch (error) {
+      return fail('DELETE_ENTRY_FAILED', error instanceof Error ? error.message : '无法删除网址。')
+    }
     return { ok: true, data: undefined }
   })
   ipcMain.handle('entries:save-tool', async (_event, input: unknown): Promise<IpcResult<ToolEntry>> => {
@@ -123,14 +130,20 @@ app.whenReady().then(async () => {
     const next: ToolEntry = { id: input.id as string | undefined ?? randomUUID(), name, command: input.command.trim(), description }
     const existing = dataStore.snapshot().tools.some((entry) => entry.id === next.id)
     if (input.id && !existing) return fail('NOT_FOUND', '找不到要编辑的工具。')
-    await dataStore.update((data) => ({ ...data, tools: existing ? data.tools.map((entry) => entry.id === next.id ? next : entry) : [...data.tools, next] }))
+    try {
+      await dataStore.update((data) => ({ ...data, tools: existing ? data.tools.map((entry) => entry.id === next.id ? next : entry) : [...data.tools, next] }))
+    } catch (error) {
+      return fail('SAVE_TOOL_FAILED', error instanceof Error ? error.message : '无法保存工具。')
+    }
     return { ok: true, data: next }
   })
   ipcMain.handle('entries:delete-tool', async (_event, id: unknown): Promise<IpcResult<void>> => {
     if (typeof id !== 'string') return fail('INVALID_ID', '工具编号无效。')
     const current = dataStore.snapshot()
     if (!current.tools.some((entry) => entry.id === id)) return fail('NOT_FOUND', '找不到要删除的工具。')
-    await dataStore.update((data) => ({ ...data, tools: data.tools.filter((entry) => entry.id !== id) }))
+    try { await dataStore.update((data) => ({ ...data, tools: data.tools.filter((entry) => entry.id !== id) })) } catch (error) {
+      return fail('DELETE_TOOL_FAILED', error instanceof Error ? error.message : '无法删除工具。')
+    }
     return { ok: true, data: undefined }
   })
   ipcMain.handle('entries:open-website', async (_event, id: unknown): Promise<IpcResult<void>> => {
@@ -158,14 +171,19 @@ app.whenReady().then(async () => {
     if (settings.defaultSearchProvider !== undefined && !['google', 'baidu', 'bilibili'].includes(String(settings.defaultSearchProvider))) return fail('INVALID_PROVIDER', '不支持的搜索平台。')
     if (settings.aiBaseUrl !== undefined && (typeof settings.aiBaseUrl !== 'string' || settings.aiBaseUrl.length > 500)) return fail('INVALID_SETTINGS', 'AI 服务地址无效。')
     if (settings.aiModel !== undefined && (typeof settings.aiModel !== 'string' || settings.aiModel.length > 120)) return fail('INVALID_SETTINGS', 'AI 模型名称无效。')
-    const next = await dataStore.update((data) => ({
-      ...data,
-      settings: {
-        defaultSearchProvider: typeof settings.defaultSearchProvider === 'string' ? settings.defaultSearchProvider as AppSettings['defaultSearchProvider'] : data.settings.defaultSearchProvider,
-        aiBaseUrl: typeof settings.aiBaseUrl === 'string' ? settings.aiBaseUrl : data.settings.aiBaseUrl,
-        aiModel: typeof settings.aiModel === 'string' ? settings.aiModel : data.settings.aiModel,
-      },
-    }))
+    let next
+    try {
+      next = await dataStore.update((data) => ({
+        ...data,
+        settings: {
+          defaultSearchProvider: typeof settings.defaultSearchProvider === 'string' ? settings.defaultSearchProvider as AppSettings['defaultSearchProvider'] : data.settings.defaultSearchProvider,
+          aiBaseUrl: typeof settings.aiBaseUrl === 'string' ? settings.aiBaseUrl : data.settings.aiBaseUrl,
+          aiModel: typeof settings.aiModel === 'string' ? settings.aiModel : data.settings.aiModel,
+        },
+      }))
+    } catch (error) {
+      return fail('SAVE_SETTINGS_FAILED', error instanceof Error ? error.message : '无法保存设置。')
+    }
     return { ok: true, data: next.settings }
   })
   ipcMain.handle('search:open-web', async (_event, query: unknown): Promise<IpcResult<void>> => {
@@ -202,6 +220,12 @@ app.whenReady().then(async () => {
     if (typeof bookmarkId !== 'string') return fail('INVALID_BOOKMARK', '收藏编号无效。')
     try { await bookmarkService.deleteBookmark(bookmarkId); return { ok: true, data: undefined } } catch (error) {
       return fail('DELETE_BOOKMARK_FAILED', error instanceof Error ? error.message : '无法删除收藏。')
+    }
+  })
+  ipcMain.handle('bookmarks:move', async (_event, bookmarkId: unknown, folderId: unknown): Promise<IpcResult<void>> => {
+    if (typeof bookmarkId !== 'string' || typeof folderId !== 'string') return fail('INVALID_BOOKMARK', '收藏或收藏夹编号无效。')
+    try { await bookmarkService.moveBookmark(bookmarkId, folderId); return { ok: true, data: undefined } } catch (error) {
+      return fail('MOVE_BOOKMARK_FAILED', error instanceof Error ? error.message : '无法移动这个收藏。')
     }
   })
   ipcMain.handle('bookmarks:open', async (_event, bookmarkId: unknown): Promise<IpcResult<void>> => {

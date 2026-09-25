@@ -57,11 +57,18 @@ export class DataStore {
   }
 
   async update(mutator: (current: AppData) => AppData): Promise<AppData> {
-    const next = mutator(this.snapshot())
-    this.data = next
-    this.pendingWrite = this.pendingWrite.then(() => this.persist(next))
-    await this.pendingWrite
-    return this.snapshot()
+    const operation = this.pendingWrite.then(async () => {
+      const next = mutator(this.snapshot())
+      await this.persist(next)
+      this.data = next
+      return structuredClone(next)
+    })
+    this.pendingWrite = operation.then(() => undefined, () => undefined)
+    try {
+      return await operation
+    } catch {
+      throw new Error('无法保存本机数据，请检查磁盘空间和文件权限。')
+    }
   }
 
   private async persist(data: AppData): Promise<void> {

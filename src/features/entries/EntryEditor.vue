@@ -5,6 +5,7 @@ import type { ToolEntry, WebEntry } from '@/shared/domain'
 const props = defineProps<{
   kind: 'website' | 'tool'
   entry?: WebEntry | ToolEntry
+  saving?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -44,8 +45,8 @@ function submit(): void {
       <label v-else class="field-label">程序路径<input v-model="form.command" placeholder="C:\\Program Files\\App\\App.exe" /></label>
       <label class="field-label">备注（可选）<input v-model="form.description" placeholder="帮助你记起它的用途" /></label>
       <div class="dialog-actions">
-        <button type="button" class="secondary-button" @click="emit('cancel')">取消</button>
-        <button type="submit" class="primary-button" :disabled="!valid">保存</button>
+        <button type="button" class="secondary-button" :disabled="saving" @click="emit('cancel')">取消</button>
+        <button type="submit" class="primary-button" :disabled="!valid || saving">{{ saving ? '正在保存…' : '保存' }}</button>
       </div>
     </form>
   </div>

@@ -46,10 +46,15 @@ async function saveAiSettings(): Promise<boolean> {
 async function testConnection(): Promise<void> {
   testing.value = true
   testMessage.value = ''
-  if (!await saveAiSettings()) { testing.value = false; return }
-  const result = await window.desktop.testAiConnection()
-  testing.value = false
-  testMessage.value = result.ok ? `已连接 · ${result.data.model}` : result.error.message
+  try {
+    if (!await saveAiSettings()) return
+    const result = await window.desktop.testAiConnection()
+    testMessage.value = result.ok ? `已连接 · ${result.data.model}` : result.error.message
+  } catch {
+    testMessage.value = '无法连接 AI 服务，请检查网络和设置。'
+  } finally {
+    testing.value = false
+  }
 }
 
 async function clearKey(): Promise<void> {
@@ -60,8 +65,12 @@ async function clearKey(): Promise<void> {
 }
 
 onMounted(async () => {
-  settings.value = await window.desktop.getSettings()
-  hasSavedKey.value = await window.desktop.hasAiApiKey()
+  try {
+    settings.value = await window.desktop.getSettings()
+    hasSavedKey.value = await window.desktop.hasAiApiKey()
+  } catch {
+    errorMessage.value = '无法读取本机设置。'
+  }
 })
 </script>
 
