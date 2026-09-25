@@ -1,18 +1,19 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, screen } from 'electron'
-import { isAbsolute, join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { DataStore } from './services/data-store'
 import { SecretStore } from './services/secret-store'
 import { AppCatalogService } from './services/app-catalog'
 import { AppLauncher } from './services/app-launcher'
 import type { IpcResult } from '../src/shared/ipc'
-import type { AppSettings, ToolEntry, WebEntry } from '../src/shared/domain'
+import type { AppSettings } from '../src/shared/domain'
 import { buildSearchUrl } from '../src/shared/search-providers'
-import { openExternalUrl, validateExternalUrl } from './services/external-opener'
+import { openExternalUrl } from './services/external-opener'
 import { BookmarkService } from './services/bookmark-service'
 import { AiTranslationService } from './services/ai-translation'
 import { buildGoogleTranslateUrl } from './services/google-translate'
 import { GlobalHotkeyService } from './services/global-hotkey'
+import { WebsiteService } from './services/website-service'
+import { WebsiteMetadataService } from './services/website-metadata'
 
 const isDevelopment = !app.isPackaged
 let dataStore: DataStore
@@ -29,18 +30,6 @@ function fail<T>(code: string, message: string): IpcResult<T> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function normalizeName(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const name = value.trim()
-  return name.length > 0 && name.length <= 120 ? name : null
-}
-
-function normalizeDescription(value: unknown): string | undefined | null {
-  if (value === undefined || value === '') return undefined
-  if (typeof value !== 'string' || value.length > 1000) return null
-  return value.trim() || undefined
 }
 
 function createWindow(): void {
@@ -155,6 +144,8 @@ app.whenReady().then(async () => {
   const appCatalog = new AppCatalogService()
   const appLauncher = new AppLauncher(appCatalog)
   const bookmarkService = new BookmarkService(dataStore)
+  const websiteService = new WebsiteService(dataStore)
+  const websiteMetadata = new WebsiteMetadataService()
   await appCatalog.refresh()
   hotkeyService = new GlobalHotkeyService()
   const shortcutResult = hotkeyService.register(dataStore.snapshot().settings.quickSearchShortcut, showLauncher)
@@ -164,6 +155,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('window:show-launcher', () => showLauncher())
   ipcMain.handle('window:hide-launcher', () => launcherWindow?.hide())
   ipcMain.handle('window:set-launcher-expanded', (_event, expanded: unknown) => resizeLauncher(expanded === true))
+  ipcMain.handle('websites:list', (_event, folderId: unknown) => websiteService.list(typeof folderId === 'string' ? folderId : undefined))
+  ipcMain.handle('websites:save', async (_event, input: unknown) => {
+    if (!isRecord(input) || typeof input.name !== 'string' || typeof input.url !== 'string' || (input.id !== undefined && typeof input.id !== 'string') || (input.description !== undefined && typeof input.description !== 'string')) return fail('INVALID_ENTRY', '网址信息无效。')
+    return websiteService.save({ id: input.id as string | undefined, name: input.name, url: input.url, description: input.description as string | undefined })
+  })
+  ipcMain.handle('websites:delete', async (_event, id: unknown) => typeof id === 'string' ? websiteService.delete(id) : fail('INVALID_ID', '网址编号无效。'))
+  ipcMain.handle('websites:add-to-folders', async (_event, id: unknown, folderIds: unknown) => typeof id === 'string' && Array.isArray(folderIds) && folderIds.every((value) => typeof value === 'string') ? websiteService.addWebsiteToFolders(id, folderIds) : fail('INVALID_FOLDER', '收藏夹编号无效。'))
+  ipcMain.handle('websites:cache-metadata', async (_event, id: unknown, metadata: unknown) => typeof id === 'string' && isRecord(metadata) && (metadata.title === undefined || typeof metadata.title === 'string') && (metadata.favicon === undefined || typeof metadata.favicon === 'string') ? websiteService.cacheMetadata(id, { title: metadata.title as string | undefined, favicon: metadata.favicon as string | undefined }) : fail('INVALID_METADATA', '网站信息无效。'))
+  ipcMain.handle('websites:fetch-metadata', async (_event, url: unknown) => {
+    if (typeof url !== 'string') return fail('INVALID_URL', '网址格式不正确。')
+    try { return { ok: true, data: await websiteMetadata.fetch(url) } } catch (error) { return fail('FETCH_METADATA_FAILED', error instanceof Error ? error.message : '无法获取网站信息。') }
+  })
   ipcMain.handle('window:show-manager', () => showManager())
   ipcMain.handle('apps:list', () => appCatalog.list())
   ipcMain.handle('apps:refresh', () => appCatalog.refresh())
@@ -178,93 +181,7 @@ app.whenReady().then(async () => {
       return { ok: false, error: { code: 'APP_LAUNCH_FAILED', message: error instanceof Error ? error.message : '应用启动失败。' } }
     }
   })
-  ipcMain.handle('entries:list', () => {
-    const data = dataStore.snapshot()
-    return { webEntries: data.webEntries.map(({ id, name, url, description }) => ({ id, name, url, description })), tools: [] }
-  })
-  ipcMain.handle('entries:save-website', async (_event, input: unknown): Promise<IpcResult<WebEntry>> => {
-    if (!isRecord(input)) return fail('INVALID_ENTRY', '网址信息无效。')
-    const name = normalizeName(input.name)
-    const description = normalizeDescription(input.description)
-    if (!name || description === null || typeof input.url !== 'string') return fail('INVALID_ENTRY', '请填写有效的网址名称和网址。')
-    let url: string
-    try { url = validateExternalUrl(input.url.trim()).toString() } catch (error) {
-      return fail('INVALID_URL', error instanceof Error ? error.message : '网址格式不正确。')
-    }
-    if (input.id !== undefined && (typeof input.id !== 'string' || !/^[\da-f-]{36}$/i.test(input.id))) return fail('INVALID_ID', '网址编号无效。')
-    const next: WebEntry = { id: input.id as string | undefined ?? randomUUID(), name, url, description }
-    const existing = dataStore.snapshot().webEntries.some((entry) => entry.id === next.id)
-    if (input.id && !existing) return fail('NOT_FOUND', '找不到要编辑的网址。')
-    try {
-      await dataStore.update((data) => ({ ...data, webEntries: existing ? data.webEntries.map((entry) => entry.id === next.id ? { ...entry, ...next } : entry) : [...data.webEntries, { ...next, folderIds: [], createdAt: Date.now() }] }))
-    } catch (error) {
-      return fail('SAVE_ENTRY_FAILED', error instanceof Error ? error.message : '无法保存网址。')
-    }
-    const saved = dataStore.snapshot().webEntries.find((entry) => entry.id === next.id)!
-    return { ok: true, data: { id: saved.id, name: saved.name, url: saved.url, description: saved.description } }
-  })
-  ipcMain.handle('entries:delete-website', async (_event, id: unknown): Promise<IpcResult<void>> => {
-    if (typeof id !== 'string') return fail('INVALID_ID', '网址编号无效。')
-    const current = dataStore.snapshot()
-    if (!current.webEntries.some((entry) => entry.id === id)) return fail('NOT_FOUND', '找不到要删除的网址。')
-    try { await dataStore.update((data) => ({ ...data, webEntries: data.webEntries.filter((entry) => entry.id !== id) })) } catch (error) {
-      return fail('DELETE_ENTRY_FAILED', error instanceof Error ? error.message : '无法删除网址。')
-    }
-    return { ok: true, data: undefined }
-  })
-  ipcMain.handle('entries:save-tool', async (_event, input: unknown): Promise<IpcResult<ToolEntry>> => {
-    return fail('TOOLS_REMOVED', '工具入口已由快速搜索中的应用目录取代。')
-    /* legacy handler retained temporarily for type compatibility
-    if (!isRecord(input)) return fail('INVALID_ENTRY', '工具信息无效。')
-    const name = normalizeName(input.name)
-    const description = normalizeDescription(input.description)
-    if (!name || description === null || typeof input.command !== 'string' || !isAbsolute(input.command.trim())) return fail('INVALID_TOOL_PATH', '请填写名称和有效的程序绝对路径。')
-    if (input.id !== undefined && (typeof input.id !== 'string' || !/^[\da-f-]{36}$/i.test(input.id))) return fail('INVALID_ID', '工具编号无效。')
-    const next: ToolEntry = { id: input.id as string | undefined ?? randomUUID(), name, command: input.command.trim(), description }
-    const existing = dataStore.snapshot().tools.some((entry) => entry.id === next.id)
-    if (input.id && !existing) return fail('NOT_FOUND', '找不到要编辑的工具。')
-    try {
-      await dataStore.update((data) => ({ ...data, tools: existing ? data.tools.map((entry) => entry.id === next.id ? next : entry) : [...data.tools, next] }))
-    } catch (error) {
-      return fail('SAVE_TOOL_FAILED', error instanceof Error ? error.message : '无法保存工具。')
-    }
-    return { ok: true, data: next }
-    */
-  })
-  ipcMain.handle('entries:delete-tool', async (_event, id: unknown): Promise<IpcResult<void>> => {
-    return fail('TOOLS_REMOVED', '工具入口已由快速搜索中的应用目录取代。')
-    /* legacy handler retained temporarily for type compatibility
-    if (typeof id !== 'string') return fail('INVALID_ID', '工具编号无效。')
-    const current = dataStore.snapshot()
-    if (!current.tools.some((entry) => entry.id === id)) return fail('NOT_FOUND', '找不到要删除的工具。')
-    try { await dataStore.update((data) => ({ ...data, tools: data.tools.filter((entry) => entry.id !== id) })) } catch (error) {
-      return fail('DELETE_TOOL_FAILED', error instanceof Error ? error.message : '无法删除工具。')
-    }
-    return { ok: true, data: undefined }
-    */
-  })
-  ipcMain.handle('entries:open-website', async (_event, id: unknown): Promise<IpcResult<void>> => {
-    if (typeof id !== 'string') return fail('INVALID_ID', '网址编号无效。')
-    const entry = dataStore.snapshot().webEntries.find((item) => item.id === id)
-    if (!entry) return fail('NOT_FOUND', '找不到这个网址。')
-    try { await openExternalUrl(entry.url); return { ok: true, data: undefined } } catch (error) {
-      return fail('OPEN_URL_FAILED', error instanceof Error ? error.message : '无法打开这个网址。')
-    }
-  })
-  ipcMain.handle('entries:open-tool', async (_event, id: unknown): Promise<IpcResult<void>> => {
-    return fail('TOOLS_REMOVED', '工具入口已由快速搜索中的应用目录取代。')
-    /* legacy handler retained temporarily for type compatibility
-    if (typeof id !== 'string') return fail('INVALID_ID', '工具编号无效。')
-    const entry = dataStore.snapshot().tools.find((item) => item.id === id)
-    if (!entry) return fail('NOT_FOUND', '找不到这个工具。')
-    try {
-      const error = await import('electron').then(({ shell }) => shell.openPath(entry.command))
-      return error ? fail('OPEN_TOOL_FAILED', error) : { ok: true, data: undefined }
-    } catch (error) {
-      return fail('OPEN_TOOL_FAILED', error instanceof Error ? error.message : '无法打开这个工具。')
-    }
-    */
-  })
+  ipcMain.handle('websites:open', async (_event, id: unknown) => typeof id === 'string' ? websiteService.open(id) : fail('INVALID_ID', '网址编号无效。'))
   ipcMain.handle('settings:get', () => dataStore.snapshot().settings)
   ipcMain.handle('settings:update', async (_event, settings: unknown): Promise<IpcResult<AppSettings>> => {
     if (!isRecord(settings)) return fail('INVALID_SETTINGS', '设置内容无效。')
@@ -273,6 +190,7 @@ app.whenReady().then(async () => {
     if (settings.aiModel !== undefined && (typeof settings.aiModel !== 'string' || settings.aiModel.length > 120)) return fail('INVALID_SETTINGS', 'AI 模型名称无效。')
     if (settings.quickSearchShortcut !== undefined && (typeof settings.quickSearchShortcut !== 'string' || settings.quickSearchShortcut.length > 80)) return fail('INVALID_SETTINGS', '快捷键格式无效。')
     if (settings.launchOnStartup !== undefined && typeof settings.launchOnStartup !== 'boolean') return fail('INVALID_SETTINGS', '开机启动设置无效。')
+    if (settings.websiteLayout !== undefined && !['grid', 'list'].includes(String(settings.websiteLayout))) return fail('INVALID_SETTINGS', '网址排布模式无效。')
     const currentShortcut = dataStore.snapshot().settings.quickSearchShortcut
     const nextShortcut = typeof settings.quickSearchShortcut === 'string' ? settings.quickSearchShortcut : currentShortcut
     if (nextShortcut !== currentShortcut) {
@@ -289,6 +207,7 @@ app.whenReady().then(async () => {
           defaultSearchEngineId: typeof settings.defaultSearchProvider === 'string' ? settings.defaultSearchProvider : data.settings.defaultSearchEngineId,
           quickSearchShortcut: nextShortcut,
           launchOnStartup: typeof settings.launchOnStartup === 'boolean' ? settings.launchOnStartup : data.settings.launchOnStartup,
+          websiteLayout: settings.websiteLayout === 'list' ? 'list' : settings.websiteLayout === 'grid' ? 'grid' : data.settings.websiteLayout,
           aiBaseUrl: typeof settings.aiBaseUrl === 'string' ? settings.aiBaseUrl : data.settings.aiBaseUrl,
           aiModel: typeof settings.aiModel === 'string' ? settings.aiModel : data.settings.aiModel,
         },
@@ -321,33 +240,6 @@ app.whenReady().then(async () => {
     if (typeof folderId !== 'string') return fail('INVALID_FOLDER', '收藏夹编号无效。')
     try { await bookmarkService.deleteFolder(folderId); return { ok: true, data: undefined } } catch (error) {
       return fail('DELETE_FOLDER_FAILED', error instanceof Error ? error.message : '无法删除收藏夹。')
-    }
-  })
-  ipcMain.handle('bookmarks:list', (_event, folderId: unknown) => typeof folderId === 'string' ? bookmarkService.listBookmarks(folderId) : [])
-  ipcMain.handle('bookmarks:add', async (_event, input: unknown): Promise<IpcResult<Awaited<ReturnType<BookmarkService['addBookmark']>>>> => {
-    if (!isRecord(input) || typeof input.folderId !== 'string' || typeof input.url !== 'string' || (input.title !== undefined && typeof input.title !== 'string')) return fail('INVALID_BOOKMARK', '收藏信息无效。')
-    try { return { ok: true, data: await bookmarkService.addBookmark({ folderId: input.folderId, title: input.title as string | undefined, url: input.url }) } } catch (error) {
-      return fail('ADD_BOOKMARK_FAILED', error instanceof Error ? error.message : '无法添加收藏。')
-    }
-  })
-  ipcMain.handle('bookmarks:delete', async (_event, bookmarkId: unknown): Promise<IpcResult<void>> => {
-    if (typeof bookmarkId !== 'string') return fail('INVALID_BOOKMARK', '收藏编号无效。')
-    try { await bookmarkService.deleteBookmark(bookmarkId); return { ok: true, data: undefined } } catch (error) {
-      return fail('DELETE_BOOKMARK_FAILED', error instanceof Error ? error.message : '无法删除收藏。')
-    }
-  })
-  ipcMain.handle('bookmarks:move', async (_event, bookmarkId: unknown, folderId: unknown): Promise<IpcResult<void>> => {
-    if (typeof bookmarkId !== 'string' || typeof folderId !== 'string') return fail('INVALID_BOOKMARK', '收藏或收藏夹编号无效。')
-    try { await bookmarkService.moveBookmark(bookmarkId, folderId); return { ok: true, data: undefined } } catch (error) {
-      return fail('MOVE_BOOKMARK_FAILED', error instanceof Error ? error.message : '无法移动这个收藏。')
-    }
-  })
-  ipcMain.handle('bookmarks:open', async (_event, bookmarkId: unknown): Promise<IpcResult<void>> => {
-    if (typeof bookmarkId !== 'string') return fail('INVALID_BOOKMARK', '收藏编号无效。')
-    const bookmark = dataStore.snapshot().webEntries.find((item) => item.id === bookmarkId)
-    if (!bookmark) return fail('NOT_FOUND', '找不到这个收藏。')
-    try { await openExternalUrl(bookmark.url); return { ok: true, data: undefined } } catch (error) {
-      return fail('OPEN_BOOKMARK_FAILED', error instanceof Error ? error.message : '无法打开这个收藏。')
     }
   })
   ipcMain.handle('ai:has-key', async () => {

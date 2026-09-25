@@ -1,18 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import type { Bookmark, BookmarkFolder, WebsiteEntry } from '../../src/shared/domain'
+import type { BookmarkFolder } from '../../src/shared/domain'
 import { DataStore } from './data-store'
-import { fetchFavicon } from './favicon-fetcher'
-import { validateExternalUrl } from './external-opener'
 
 export class BookmarkService {
   constructor(private readonly store: DataStore) {}
 
   listFolders(): BookmarkFolder[] {
     return this.store.snapshot().bookmarkFolders
-  }
-
-  listBookmarks(folderId: string): Bookmark[] {
-    return this.store.snapshot().webEntries.filter((entry) => entry.folderIds.includes(folderId)).map((entry) => ({ id: entry.id, folderId, title: entry.name, url: entry.url, favicon: entry.favicon, createdAt: entry.createdAt }))
   }
 
   async saveFolder(input: { id?: string; name: string }): Promise<BookmarkFolder> {
@@ -42,42 +36,4 @@ export class BookmarkService {
     }))
   }
 
-  async addBookmark(input: { folderId: string; title?: string; url: string }): Promise<Bookmark> {
-    const current = this.store.snapshot()
-    if (!current.bookmarkFolders.some((folder) => folder.id === input.folderId)) throw new Error('请选择一个收藏夹。')
-    const url = validateExternalUrl(input.url).toString()
-    const parsedUrl = new URL(url)
-    const title = input.title?.trim().slice(0, 160) || parsedUrl.hostname
-    let favicon: string | undefined
-    try {
-      const result = await fetchFavicon(parsedUrl)
-      favicon = result.dataUrl
-    } catch {
-      // Preserve the bookmark even if a malformed or unreachable site has no icon.
-    }
-    const existing = current.webEntries.find((entry) => entry.url === url)
-    const website: WebsiteEntry = existing
-      ? { ...existing, folderIds: [...new Set([...existing.folderIds, input.folderId])], favicon: existing.favicon || favicon }
-      : { id: randomUUID(), name: title, url, favicon, folderIds: [input.folderId], createdAt: Date.now() }
-    await this.store.update((data) => ({ ...data, webEntries: existing ? data.webEntries.map((entry) => entry.id === website.id ? website : entry) : [...data.webEntries, website] }))
-    return { id: website.id, folderId: input.folderId, title: website.name, url: website.url, favicon: website.favicon, createdAt: website.createdAt }
-  }
-
-  async deleteBookmark(bookmarkId: string): Promise<void> {
-    const current = this.store.snapshot()
-    const entry = current.webEntries.find((item) => item.id === bookmarkId)
-    if (!entry) throw new Error('找不到这个收藏。')
-    await this.store.update((data) => ({ ...data, webEntries: data.webEntries.map((item) => item.id === bookmarkId ? { ...item, folderIds: [] } : item) }))
-  }
-
-  async moveBookmark(bookmarkId: string, folderId: string): Promise<void> {
-    const current = this.store.snapshot()
-    const entry = current.webEntries.find((item) => item.id === bookmarkId)
-    if (!entry) throw new Error('找不到这个收藏。')
-    if (!current.bookmarkFolders.some((folder) => folder.id === folderId)) throw new Error('请选择一个有效的收藏夹。')
-    await this.store.update((data) => ({
-      ...data,
-      webEntries: data.webEntries.map((item) => item.id === bookmarkId ? { ...item, folderIds: [...new Set([...item.folderIds, folderId])] } : item),
-    }))
-  }
 }

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import {
-  Bookmark, Command, Compass, Languages, Search, Sparkles, SquareArrowOutUpRight, Wrench,
+  Bookmark, Command, Languages, Search, Sparkles, SquareArrowOutUpRight,
 } from '@lucide/vue'
-import { createDefaultAppData, type AppSearchEntry, type AppSettings, type ToolEntry, type WebEntry } from '@/shared/domain'
+import { createDefaultAppData, type AppSearchEntry, type AppSettings, type WebsiteEntry } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry, type SearchResult as SearchResultItem } from '@/shared/search'
 import { parseSearchCommand } from '@/shared/search-command'
@@ -11,11 +11,10 @@ import SearchResult from './SearchResult.vue'
 import BookmarkDialog from '../bookmarks/BookmarkDialog.vue'
 import type { BookmarkFolder } from '@/shared/domain'
 
-const emit = defineEmits<{ navigate: [section: 'bookmarks' | 'entries' | 'translate'] }>()
+const emit = defineEmits<{ navigate: [section: 'entries' | 'translate'] }>()
 
 const apps = ref<AppSearchEntry[]>([])
-const webEntries = ref<WebEntry[]>([])
-const tools = ref<ToolEntry[]>([])
+const webEntries = ref<WebsiteEntry[]>([])
 const settings = ref<AppSettings>(createDefaultAppData().settings)
 const query = ref('')
 const selectedIndex = ref(0)
@@ -30,15 +29,13 @@ const isWebSearch = computed(() => parsed.value.mode === 'web')
 const providerNames = { google: 'Google', baidu: '百度', bilibili: 'Bilibili' }
 const searchableEntries = computed<SearchableEntry[]>(() => [
   ...apps.value.map((entry) => ({ id: entry.id, name: entry.name, aliases: entry.aliases, kind: 'app' as const, subtitle: '本地应用' })),
-  ...webEntries.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'website' as const, subtitle: entry.url, searchText: `${entry.url} ${entry.description ?? ''}` })),
-  ...tools.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'tool' as const, subtitle: entry.command, searchText: `${entry.command} ${entry.description ?? ''}` })),
+  ...webEntries.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'website' as const, subtitle: entry.url, url: entry.url, folderIds: entry.folderIds, searchText: `${entry.url} ${entry.description ?? ''}` })),
 ])
 const index = computed(() => buildSearchIndex(searchableEntries.value))
 const results = computed(() => isWebSearch.value ? [] : searchEntries(parsed.value.query, searchableEntries.value, index.value))
 const resultGroups = computed(() => [
   { kind: 'app' as const, label: '应用', items: results.value.filter((result) => result.entry.kind === 'app') },
   { kind: 'website' as const, label: '网址', items: results.value.filter((result) => result.entry.kind === 'website') },
-  { kind: 'tool' as const, label: '工具', items: results.value.filter((result) => result.entry.kind === 'tool') },
 ].filter((group) => group.items.length))
 
 async function loadApps(refresh = false): Promise<void> {
@@ -46,12 +43,11 @@ async function loadApps(refresh = false): Promise<void> {
   try {
     const [loadedApps, entries, loadedSettings] = await Promise.all([
       refresh ? window.desktop.refreshApps() : window.desktop.getApps(),
-      window.desktop.getEntries(),
+      window.desktop.listWebsites(),
       window.desktop.getSettings(),
     ])
     apps.value = loadedApps
-    webEntries.value = entries.webEntries
-    tools.value = entries.tools
+    webEntries.value = entries
     settings.value = loadedSettings
   } catch {
     // Show an empty result state while keeping the search box usable.
@@ -71,9 +67,7 @@ async function launchSelected(): Promise<void> {
   if (!selected) return
   const result = selected.entry.kind === 'app'
     ? await window.desktop.launchApp(selected.entry.id)
-    : selected.entry.kind === 'website'
-      ? await window.desktop.openWebEntry(selected.entry.id)
-      : await window.desktop.openToolEntry(selected.entry.id)
+    : await window.desktop.openWebsite(selected.entry.id)
   if (!result.ok) window.alert(result.error.message)
 }
 
@@ -107,7 +101,7 @@ function resultIndex(result: SearchResultItem): number {
   return results.value.findIndex((item) => item.entry.kind === result.entry.kind && item.entry.id === result.entry.id)
 }
 
-async function saveBookmark(input: { folderId?: string; newFolderName?: string; title: string; url: string }): Promise<void> {
+async function saveBookmark(input: { folderId?: string; newFolderName?: string }): Promise<void> {
   savingBookmark.value = true
   try {
     let folderId = input.folderId
@@ -117,7 +111,7 @@ async function saveBookmark(input: { folderId?: string; newFolderName?: string; 
       folderId = folder.data.id
     }
     if (!folderId) return
-    const result = await window.desktop.addBookmark({ folderId, title: input.title || bookmarkTarget.value?.name, url: input.url })
+    const result = await window.desktop.addWebsiteToFolders(bookmarkTarget.value!.id, [...new Set([...(bookmarkTarget.value?.folderIds ?? []), folderId])])
     if (!result.ok) { window.alert(result.error.message); return }
     showBookmarkDialog.value = false
   } finally {
@@ -193,19 +187,14 @@ onMounted(() => {
         <button class="text-button" @click="emit('navigate', 'entries')">管理入口 <SquareArrowOutUpRight :size="13" /></button>
       </div>
       <div class="quick-grid">
-        <button class="quick-card" @click="emit('navigate', 'bookmarks')">
+        <button class="quick-card" @click="emit('navigate', 'entries')">
           <span class="quick-card-icon bookmark-icon"><Bookmark :size="17" /></span>
-          <span class="quick-card-text"><strong>收藏网址</strong><small>整理稍后再看的页面</small></span>
+          <span class="quick-card-text"><strong>管理网址</strong><small>整理常用网站和收藏夹</small></span>
           <span class="card-plus">+</span>
         </button>
         <button class="quick-card" @click="emit('navigate', 'translate')">
           <span class="quick-card-icon translate-icon"><Languages :size="17" /></span>
           <span class="quick-card-text"><strong>快速翻译</strong><small>AI 或 Google Translate</small></span>
-          <span class="card-plus">+</span>
-        </button>
-        <button class="quick-card" @click="emit('navigate', 'entries')">
-          <span class="quick-card-icon tools-icon"><Wrench :size="17" /></span>
-          <span class="quick-card-text"><strong>常用工具</strong><small>管理网址和桌面工具</small></span>
           <span class="card-plus">+</span>
         </button>
       </div>
@@ -219,8 +208,7 @@ onMounted(() => {
     <BookmarkDialog
       v-if="showBookmarkDialog && bookmarkTarget?.kind === 'website'"
       :folders="bookmarkFolders"
-      :initial-title="bookmarkTarget.name"
-      :initial-url="bookmarkTarget.subtitle"
+      :website-name="bookmarkTarget.name"
       :saving="savingBookmark"
       @save="saveBookmark"
       @cancel="showBookmarkDialog = false"

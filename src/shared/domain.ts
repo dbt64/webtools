@@ -1,11 +1,6 @@
 export type SearchProvider = 'google' | 'baidu' | 'bilibili'
 
-// Legacy renderer types are retained while the manager UI migrates in Task 5.
-export interface AppEntry { id: string; name: string; targetPath: string; sourcePath: string }
-export interface WebEntry { id: string; name: string; url: string; description?: string }
-export interface ToolEntry { id: string; name: string; command: string; description?: string }
 export interface BookmarkFolder { id: string; name: string; createdAt: number }
-export interface Bookmark { id: string; folderId: string; title: string; url: string; favicon?: string; createdAt: number }
 
 export interface WebsiteEntry {
   id: string

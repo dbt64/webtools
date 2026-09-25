@@ -1,19 +1,30 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { ArrowUpRight, Command, CornerDownLeft, Globe, Search } from '@lucide/vue'
-import type { AppSearchEntry } from '@/shared/domain'
+import { ArrowUpRight, BookmarkPlus, Command, CornerDownLeft, Globe, Search } from '@lucide/vue'
+import type { AppSearchEntry, BookmarkFolder, WebsiteEntry } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry } from '@/shared/search'
 import { parseSearchCommand } from '@/shared/search-command'
+import BookmarkDialog from '../bookmarks/BookmarkDialog.vue'
+import Favicon from '../bookmarks/Favicon.vue'
 
+interface LauncherEntry extends SearchableEntry { favicon?: string; url?: string }
 const query = ref('')
 const apps = ref<AppSearchEntry[]>([])
+const websites = ref<WebsiteEntry[]>([])
+const folders = ref<BookmarkFolder[]>([])
 const selectedIndex = ref(0)
 const input = ref<HTMLInputElement>()
 const error = ref('')
+const bookmarkTarget = ref<LauncherEntry>()
+const showBookmarkDialog = ref(false)
+const savingBookmark = ref(false)
 const parsed = computed(() => parseSearchCommand(query.value))
 const isWeb = computed(() => parsed.value.mode === 'web')
-const entries = computed<SearchableEntry[]>(() => apps.value.map((app) => ({ id: app.id, name: app.name, aliases: app.aliases, kind: 'app', subtitle: '本地应用' })))
+const entries = computed<LauncherEntry[]>(() => [
+  ...apps.value.map((app) => ({ id: app.id, name: app.name, aliases: app.aliases, kind: 'app' as const, subtitle: '本地应用' })),
+  ...websites.value.map((site) => ({ id: site.id, name: site.name, kind: 'website' as const, subtitle: site.url, url: site.url, favicon: site.favicon, folderIds: site.folderIds, searchText: site.description ?? '' })),
+])
 const index = computed(() => buildSearchIndex(entries.value))
 const results = computed(() => isWeb.value ? [] : searchEntries(parsed.value.query, entries.value, index.value).slice(0, 8))
 
@@ -24,7 +35,7 @@ async function focus(): Promise<void> {
 }
 
 async function load(): Promise<void> {
-  try { apps.value = await window.desktop.getApps() } catch { apps.value = [] }
+  try { [apps.value, websites.value] = await Promise.all([window.desktop.getApps(), window.desktop.listWebsites()]) } catch { apps.value = []; websites.value = [] }
 }
 
 async function hide(): Promise<void> {
@@ -49,9 +60,32 @@ async function submit(): Promise<void> {
   }
   const item = results.value[selectedIndex.value]
   if (!item) return
-  const result = await window.desktop.launchApp(item.entry.id)
+  const result = item.entry.kind === 'app' ? await window.desktop.launchApp(item.entry.id) : await window.desktop.openWebsite(item.entry.id)
   if (!result.ok) { error.value = result.error.message; return }
   await hide()
+}
+
+async function promptBookmark(entry: LauncherEntry): Promise<void> {
+  bookmarkTarget.value = entry
+  folders.value = await window.desktop.listBookmarkFolders()
+  showBookmarkDialog.value = true
+}
+
+async function saveBookmark(input: { folderId?: string; newFolderName?: string }): Promise<void> {
+  savingBookmark.value = true
+  try {
+    let folderId = input.folderId
+    if (input.newFolderName) {
+      const result = await window.desktop.saveBookmarkFolder({ name: input.newFolderName })
+      if (!result.ok) { error.value = result.error.message; return }
+      folderId = result.data.id
+    }
+    if (!folderId) return
+    const result = await window.desktop.addWebsiteToFolders(bookmarkTarget.value!.id, [...new Set([...(bookmarkTarget.value?.folderIds ?? []), folderId])])
+    if (!result.ok) { error.value = result.error.message; return }
+    websites.value = await window.desktop.listWebsites()
+    showBookmarkDialog.value = false
+  } finally { savingBookmark.value = false }
 }
 
 function keydown(event: KeyboardEvent): void {
@@ -86,16 +120,20 @@ onMounted(() => {
     <section v-if="query.trim()" class="launcher-results">
       <div v-if="isWeb" class="launcher-hint"><Globe :size="16" /><span>{{ parsed.query ? `使用默认搜索引擎搜索“${parsed.query}”` : '输入关键词后按 Enter 搜索网页' }}</span><kbd>Enter ↵</kbd></div>
       <template v-else>
-        <button v-for="(result, idx) in results" :key="result.entry.id" class="launcher-result" :class="{ selected: selectedIndex === idx }" @mousedown.prevent @mouseenter="selectedIndex = idx" @click="submit">
-          <span class="launcher-result-icon"><Command :size="17" /></span>
+        <div v-for="(result, idx) in results" :key="result.entry.id" class="launcher-result-wrap">
+        <button class="launcher-result" :class="{ selected: selectedIndex === idx }" @mousedown.prevent @mouseenter="selectedIndex = idx" @click="submit">
+          <span class="launcher-result-icon"><Favicon v-if="result.entry.kind === 'website'" :url="result.entry.url ?? ''" :favicon="result.entry.favicon" /><Command v-else :size="17" /></span>
           <span class="launcher-result-copy"><strong>{{ result.entry.name }}</strong><small>{{ result.entry.subtitle }}</small></span>
           <span class="launcher-result-match" v-if="result.match !== 'name'">{{ result.match === 'pinyin' ? '拼音' : result.match === 'alias' ? '别名' : '首字母' }}</span>
           <CornerDownLeft v-if="selectedIndex === idx" :size="15" class="launcher-enter-icon" />
         </button>
+        <button v-if="result.entry.kind === 'website'" class="launcher-add" title="添加到收藏夹" @mousedown.prevent @click="promptBookmark(result.entry)"><BookmarkPlus :size="16" /></button>
+        </div>
         <div v-if="!results.length" class="launcher-empty">没有找到匹配的应用</div>
       </template>
       <p v-if="error" class="launcher-error">{{ error }}</p>
     </section>
     <footer v-if="query.trim()" class="launcher-foot"><span>↑↓ 选择</span><span><kbd>Enter</kbd> 打开</span><span><kbd>Esc</kbd> 关闭</span><span class="launcher-foot-spacer"></span><span><ArrowUpRight :size="12" /> WebTools</span></footer>
+    <BookmarkDialog v-if="showBookmarkDialog && bookmarkTarget" :folders="folders" :website-name="bookmarkTarget.name" :saving="savingBookmark" @save="saveBookmark" @cancel="showBookmarkDialog = false" />
   </main>
 </template>

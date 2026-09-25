@@ -1,22 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import {
-  Bookmark, CircleHelp, Command, Compass, Languages, Search, Settings2, SlidersHorizontal,
+  CircleHelp, Command, Compass, Languages, Search, Settings2, SlidersHorizontal,
 } from '@lucide/vue'
 import SearchView from './features/search/SearchView.vue'
 import EntriesView from './features/entries/EntriesView.vue'
 import SettingsView from './features/settings/SettingsView.vue'
-import BookmarksView from './features/bookmarks/BookmarksView.vue'
 import TranslateView from './features/translate/TranslateView.vue'
 
-type Section = 'search' | 'bookmarks' | 'entries' | 'translate' | 'settings'
+type Section = 'search' | 'entries' | 'translate' | 'settings'
 
 const activeSection = ref<Section>('search')
 
 const navItems: { id: Section; label: string; icon: typeof Search }[] = [
   { id: 'search', label: '快速搜索', icon: Search },
-  { id: 'bookmarks', label: '收藏夹', icon: Bookmark },
-  { id: 'entries', label: '网址与工具', icon: Compass },
+  { id: 'entries', label: '网址', icon: Compass },
   { id: 'translate', label: '翻译', icon: Languages },
 ]
 
@@ -88,7 +86,6 @@ onMounted(() => {
       </header>
 
       <SearchView v-if="activeSection === 'search'" @navigate="activeSection = $event" />
-      <BookmarksView v-else-if="activeSection === 'bookmarks'" />
       <EntriesView v-else-if="activeSection === 'entries'" class="entry-manager" />
       <SettingsView v-else-if="activeSection === 'settings'" />
       <TranslateView v-else-if="activeSection === 'translate'" @settings="activeSection = 'settings'" />

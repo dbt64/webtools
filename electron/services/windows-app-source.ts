@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
 import { join, parse, resolve, basename } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -36,9 +36,11 @@ export class WindowsAppSource {
         try {
           const details = shell.readShortcutLink(shortcut)
           if (!details.target) continue
+          const targetPath = resolve(details.target)
+          if (!(await stat(targetPath).catch(() => null))?.isFile()) continue
           const name = parse(shortcut).name.trim()
-          const aliases = [details.description, basename(details.target).replace(/\.exe$/i, ''), details.target].filter((x): x is string => Boolean(x?.trim()))
-          records.push({ name, aliases: [...new Set(aliases)], source: 'desktop', launchTarget: { kind: 'shortcut', shortcutPath: shortcut, targetPath: resolve(details.target) } })
+          const aliases = [details.description, basename(targetPath).replace(/\.exe$/i, '')].filter((x): x is string => Boolean(x?.trim()))
+          records.push({ name, aliases: [...new Set(aliases)], source: 'desktop', launchTarget: { kind: 'shortcut', shortcutPath: shortcut, targetPath } })
         } catch { /* Ignore malformed shortcuts individually. */ }
       }
     }
@@ -68,13 +70,19 @@ export class WindowsAppSource {
       const { stdout } = await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true, timeout: 8000, maxBuffer: 4 * 1024 * 1024 })
       const parsed: unknown = JSON.parse(stdout.trim() || '[]')
       const rows = Array.isArray(parsed) ? parsed : [parsed]
-      return rows.flatMap((row: AppPathRecord) => {
+      const candidates: CatalogRecord[] = rows.flatMap((row: AppPathRecord) => {
         if (typeof row.Name !== 'string' || typeof row.Path !== 'string') return []
         const path = resolve(row.Path.trim().replace(/^"|"$/g, ''))
         if (!/\.exe$/i.test(path) || /[\r\n\0]/.test(path)) return []
         const name = row.Name.replace(/\.exe$/i, '').trim()
         return [{ name, aliases: [row.Name, basename(path, '.exe')], source: 'desktop' as const, launchTarget: { kind: 'executable' as const, path } }]
       })
+      const verified: CatalogRecord[] = []
+      for (const record of candidates) {
+        if (record.launchTarget.kind === 'executable' && !(await stat(record.launchTarget.path).catch(() => null))?.isFile()) continue
+        verified.push(record)
+      }
+      return verified
     } catch { return [] }
   }
 

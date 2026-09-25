@@ -1,6 +1,6 @@
 import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type Bookmark, type BookmarkFolder, type SearchProvider, type WebsiteEntry } from '../../src/shared/domain'
+import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type BookmarkFolder, type SearchProvider, type WebsiteEntry } from '../../src/shared/domain'
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 const isString = (value: unknown): value is string => typeof value === 'string'
@@ -44,7 +44,7 @@ export function migrateV1ToV2(input: unknown): AppData {
     }
     byUrl.set(key, {
       ...current,
-      name: incoming.name || current.name,
+      name: current.name || incoming.name || key,
       description: incoming.description || current.description,
       favicon: current.favicon || incoming.favicon,
       folderIds: [...new Set([...current.folderIds, ...(incoming.folderIds ?? [])])],
@@ -53,7 +53,7 @@ export function migrateV1ToV2(input: unknown): AppData {
   }
 
   for (const entry of input.webEntries) add(entry.url, { id: entry.id, name: entry.name, description: entry.description, folderIds: [], createdAt: entry.createdAt })
-  for (const bookmark of input.bookmarks as Bookmark[]) add(bookmark.url, { id: bookmark.id, name: bookmark.title, favicon: bookmark.favicon, folderIds: [bookmark.folderId], createdAt: bookmark.createdAt })
+  for (const bookmark of input.bookmarks as { id: string; folderId: string; title: string; url: string; favicon?: string; createdAt: number }[]) add(bookmark.url, { id: bookmark.id, name: bookmark.title, favicon: bookmark.favicon, folderIds: [bookmark.folderId], createdAt: bookmark.createdAt })
   result.webEntries = [...byUrl.values()]
   result.bookmarkFolders = (input.bookmarkFolders as BookmarkFolder[]).map((f) => ({ ...f }))
   const provider = (input.settings.defaultSearchProvider ?? 'google') as SearchProvider

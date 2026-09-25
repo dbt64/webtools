@@ -91,7 +91,7 @@ async function fetchBounded(startUrl: URL, limit: number): Promise<BoundedRespon
     const response = await fetch(currentUrl, {
       redirect: 'manual',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      headers: { 'user-agent': 'Nook/0.1 favicon fetcher', accept: 'text/html,image/*,*/*;q=0.2' },
+      headers: { 'user-agent': 'WebTools/0.1 metadata fetcher', accept: 'text/html,image/*,*/*;q=0.2' },
     })
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get('location')
@@ -142,15 +142,27 @@ function getFallbackInitial(siteUrl: URL): string {
   return [...hostname].find((character) => /[\p{L}\p{N}]/u.test(character))?.toLocaleUpperCase() ?? '?'
 }
 
-export async function fetchFavicon(siteUrl: URL): Promise<{ dataUrl?: string; fallbackInitial: string }> {
+function decodeHtmlEntities(value: string): string {
+  return value.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (whole, entity: string) => {
+    const named: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
+    if (entity[0] !== '#') return named[entity.toLowerCase()] ?? whole
+    const point = entity[1]?.toLowerCase() === 'x' ? Number.parseInt(entity.slice(2), 16) : Number.parseInt(entity.slice(1), 10)
+    return Number.isFinite(point) && point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : whole
+  }).trim().replace(/\s+/g, ' ')
+}
+
+export async function fetchWebsiteMetadata(siteUrl: URL): Promise<{ title?: string; favicon?: string }> {
   const pageUrl = safeHttpUrl(siteUrl)
-  const fallbackInitial = getFallbackInitial(pageUrl)
+  let title: string | undefined
   const candidates: URL[] = []
 
   try {
     const page = await fetchBounded(pageUrl, MAX_PAGE_BYTES)
     if (page.contentType.includes('html')) {
-      candidates.push(...findDeclaredIcons(new TextDecoder().decode(page.bytes), page.finalUrl).slice(0, 3))
+      const html = new TextDecoder().decode(page.bytes)
+      const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html)
+      title = titleMatch ? decodeHtmlEntities(titleMatch[1].replace(/<[^>]*>/g, '').slice(0, 300)) || undefined : undefined
+      candidates.push(...findDeclaredIcons(html, page.finalUrl).slice(0, 3))
     }
   } catch {
     // The root favicon can still work when the document itself is unavailable.
@@ -162,10 +174,15 @@ export async function fetchFavicon(siteUrl: URL): Promise<{ dataUrl?: string; fa
     try {
       const image = await fetchBounded(candidate, MAX_ICON_BYTES)
       const mime = mimeForIcon(image.contentType, image.finalUrl)
-      if (mime && image.bytes.byteLength > 0) return { dataUrl: toDataUrl(image.bytes, mime), fallbackInitial }
+      if (mime && image.bytes.byteLength > 0) return { title, favicon: toDataUrl(image.bytes, mime) }
     } catch {
       // Continue to the next candidate; favicon failures never block saving a bookmark.
     }
   }
-  return { fallbackInitial }
+  return { title }
+}
+
+export async function fetchFavicon(siteUrl: URL): Promise<{ dataUrl?: string; fallbackInitial: string }> {
+  const result = await fetchWebsiteMetadata(siteUrl)
+  return { dataUrl: result.favicon, fallbackInitial: getFallbackInitial(siteUrl) }
 }

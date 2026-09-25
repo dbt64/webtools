@@ -4,6 +4,7 @@ export interface SearchableEntry {
   id: string
   name: string
   aliases?: string[]
+  folderIds?: string[]
   kind: 'app' | 'website' | 'tool'
   subtitle: string
 }
