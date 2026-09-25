@@ -17,6 +17,8 @@ import { WebsiteMetadataService } from './services/website-metadata'
 import { EverythingClient } from './services/everything-client'
 
 const isDevelopment = !app.isPackaged
+// Keep the original Nook data directory stable after changing the visible product name.
+app.setPath('userData', join(app.getPath('appData'), 'Nook'))
 let dataStore: DataStore
 let secretStore: SecretStore
 let managerWindow: BrowserWindow | null = null
@@ -140,7 +142,13 @@ app.whenReady().then(async () => {
   app.setAppUserModelId('dev.nook.launcher')
   dataStore = new DataStore(join(app.getPath('userData'), 'nook-data.json'))
   secretStore = new SecretStore(join(app.getPath('userData'), 'secrets.json'))
-  await dataStore.load()
+  try { await dataStore.load() } catch (error) {
+    dialog.showErrorBox('WebTools 本地数据无法读取', error instanceof Error ? error.message : '请检查本机数据文件和权限。')
+    app.quit()
+    return
+  }
+  const recoveryMessage = dataStore.getRecoveryMessage()
+  if (recoveryMessage) await dialog.showMessageBox({ type: 'info', title: 'WebTools 本地数据', message: '本机数据已完成升级或恢复。', detail: recoveryMessage, buttons: ['确定'] })
   const aiTranslationService = new AiTranslationService(dataStore, secretStore)
   const appCatalog = new AppCatalogService()
   const appLauncher = new AppLauncher(appCatalog)

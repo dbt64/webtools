@@ -59,7 +59,7 @@ onMounted(() => {
         >
           <component :is="item.icon" :size="17" :stroke-width="1.8" />
           <span>{{ item.label }}</span>
-          <span v-if="item.id === 'search'" class="nav-shortcut">Ctrl K</span>
+          <span v-if="item.id === 'search'" class="nav-shortcut">Ctrl+Alt+Space</span>
         </button>
       </nav>
 

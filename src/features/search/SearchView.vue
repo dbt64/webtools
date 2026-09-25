@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import {
-  Bookmark, Command, Languages, Search, Sparkles, SquareArrowOutUpRight,
+  Bookmark, Command, CornerDownLeft, File, Folder, Languages, Search, Sparkles, SquareArrowOutUpRight,
 } from '@lucide/vue'
-import { createDefaultAppData, type AppSearchEntry, type AppSettings, type WebsiteEntry } from '@/shared/domain'
+import { createDefaultAppData, type AppSearchEntry, type AppSettings, type WebsiteEntry, type EverythingResult } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry, type SearchResult as SearchResultItem } from '@/shared/search'
 import { parseSearchCommand } from '@/shared/search-command'
@@ -24,15 +24,20 @@ const bookmarkTarget = ref<SearchableEntry>()
 const showBookmarkDialog = ref(false)
 const savingBookmark = ref(false)
 const refreshing = ref(false)
+const fileResults = ref<EverythingResult[]>([])
+const fileStatus = ref('')
+let fileSearchSequence = 0
 const parsed = computed(() => parseSearchCommand(query.value))
 const isWebSearch = computed(() => parsed.value.mode === 'web')
+const isFileSearch = computed(() => parsed.value.mode === 'files')
 const defaultEngineName = computed(() => settings.value.searchEngines.find((engine) => engine.id === settings.value.defaultSearchEngineId)?.name ?? '默认搜索引擎')
 const searchableEntries = computed<SearchableEntry[]>(() => [
   ...apps.value.map((entry) => ({ id: entry.id, name: entry.name, aliases: entry.aliases, kind: 'app' as const, subtitle: '本地应用' })),
   ...webEntries.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'website' as const, subtitle: entry.url, url: entry.url, folderIds: entry.folderIds, searchText: `${entry.url} ${entry.description ?? ''}` })),
 ])
 const index = computed(() => buildSearchIndex(searchableEntries.value))
-const results = computed(() => isWebSearch.value ? [] : searchEntries(parsed.value.query, searchableEntries.value, index.value))
+const results = computed(() => parsed.value.mode !== 'local' ? [] : searchEntries(parsed.value.query, searchableEntries.value, index.value))
+const selectableCount = computed(() => isFileSearch.value ? fileResults.value.length : results.value.length)
 const resultGroups = computed(() => [
   { kind: 'app' as const, label: '应用', items: results.value.filter((result) => result.entry.kind === 'app') },
   { kind: 'website' as const, label: '网址', items: results.value.filter((result) => result.entry.kind === 'website') },
@@ -58,6 +63,13 @@ async function loadApps(refresh = false): Promise<void> {
 
 async function launchSelected(): Promise<void> {
   const selected = results.value[selectedIndex.value]
+  if (isFileSearch.value) {
+    const file = fileResults.value[selectedIndex.value]
+    if (!file) return
+    const result = await window.desktop.openEverythingResult(file.id)
+    if (!result.ok) window.alert(result.error.message)
+    return
+  }
   if (isWebSearch.value) {
     if (!parsed.value.query) return
     const result = await window.desktop.openSearch(parsed.value.query)
@@ -72,16 +84,16 @@ async function launchSelected(): Promise<void> {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
-  if (event.key === 'ArrowDown' && results.value.length) {
+  if (event.key === 'ArrowDown' && selectableCount.value) {
     event.preventDefault()
-    selectedIndex.value = (selectedIndex.value + 1) % results.value.length
-  } else if (event.key === 'ArrowUp' && results.value.length) {
+    selectedIndex.value = (selectedIndex.value + 1) % selectableCount.value
+  } else if (event.key === 'ArrowUp' && selectableCount.value) {
     event.preventDefault()
-    selectedIndex.value = (selectedIndex.value - 1 + results.value.length) % results.value.length
+    selectedIndex.value = (selectedIndex.value - 1 + selectableCount.value) % selectableCount.value
   } else if (event.key === 'Enter' && isWebSearch.value && parsed.value.query) {
     event.preventDefault()
     void launchSelected()
-  } else if (event.key === 'Enter' && results.value.length) {
+  } else if (event.key === 'Enter' && selectableCount.value) {
     event.preventDefault()
     void launchSelected()
   } else if (event.key === 'Escape') {
@@ -119,7 +131,23 @@ async function saveBookmark(input: { folderId?: string; newFolderName?: string }
   }
 }
 
-watch(query, () => { selectedIndex.value = 0 })
+watch(query, (value) => {
+  selectedIndex.value = 0
+  const sequence = ++fileSearchSequence
+  const command = parseSearchCommand(value)
+  fileResults.value = []
+  fileStatus.value = ''
+  if (command.mode !== 'files') return
+  fileStatus.value = command.query ? '正在搜索 Everything…' : '输入 file: 和关键词搜索文件。'
+  if (!command.query) return
+  window.setTimeout(async () => {
+    if (sequence !== fileSearchSequence) return
+    const result = await window.desktop.searchEverything(command.query)
+    if (sequence !== fileSearchSequence) return
+    if (result.ok) { fileResults.value = result.data; fileStatus.value = result.data.length ? '' : '没有找到匹配的文件或文件夹。' }
+    else fileStatus.value = result.error.message
+  }, 160)
+})
 onMounted(() => {
   void loadApps()
   searchInput.value?.focus()
@@ -142,7 +170,7 @@ onMounted(() => {
         ref="searchInput"
         v-model="query"
         autocomplete="off"
-        placeholder="搜索应用、网址或工具…"
+        placeholder="搜索应用或网址…"
         spellcheck="false"
         @keydown="handleKeydown"
       />
@@ -154,6 +182,10 @@ onMounted(() => {
         <span class="mode-chip"><Search :size="13" /> 网页搜索</span>
         <span>{{ defaultEngineName }} · {{ parsed.query ? `按 Enter 搜索“${parsed.query}”` : '请输入关键词' }}</span>
       </template>
+      <template v-else-if="isFileSearch">
+        <span class="mode-chip"><Folder :size="13" /> Everything 文件搜索</span>
+        <span>{{ fileStatus || `${fileResults.length} 项 · 点击结果打开文件或文件夹` }}</span>
+      </template>
       <template v-else>
         <span class="mode-chip"><Command :size="13" /> 本地搜索</span>
         <span>{{ results.length }} 项 · 应用支持拼音和首字母</span>
@@ -161,7 +193,11 @@ onMounted(() => {
       </template>
     </div>
 
-    <div v-if="query && !isWebSearch" class="result-list" role="listbox" aria-label="应用搜索结果">
+    <div v-if="query && isFileSearch" class="result-list" role="listbox" aria-label="Everything 文件搜索结果">
+      <button v-for="(file, idx) in fileResults" :key="file.id" class="file-manager-result" :class="{ selected: selectedIndex === idx }" @mouseenter="selectedIndex = idx" @click="launchSelected"><span class="file-manager-icon"><Folder v-if="file.kind === 'folder'" :size="16" /><File v-else :size="16" /></span><span><strong>{{ file.name }}</strong><small>{{ file.locationLabel }}</small></span><CornerDownLeft v-if="selectedIndex === idx" :size="14" /></button>
+      <div v-if="fileStatus" class="empty-results"><strong>{{ fileStatus }}</strong></div>
+    </div>
+    <div v-else-if="query && !isWebSearch && !isFileSearch" class="result-list" role="listbox" aria-label="应用搜索结果">
       <div v-for="group in resultGroups" :key="group.kind" class="result-group">
         <div class="result-group-heading"><span>{{ group.label }}</span><small>{{ group.items.length }}</small></div>
         <SearchResult

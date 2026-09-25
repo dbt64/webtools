@@ -123,6 +123,13 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .everything-path-row > div:last-child { display: flex; flex: 0 0 auto; gap: 6px; }
 .everything-settings .settings-note { margin-left: 2px; line-height: 1.7; }
 .everything-settings .settings-note kbd { padding: 2px 4px; border: 1px solid #36393d; border-radius: 4px; color: #cdd2d3; background: #202226; font: inherit; }
+.file-manager-result { display: flex; width: 100%; min-height: 47px; align-items: center; gap: 11px; padding: 6px 9px; border: 0; border-radius: 7px; color: #dfe3e5; background: transparent; text-align: left; cursor: pointer; }
+.file-manager-result:hover, .file-manager-result.selected { background: #22262a; }
+.file-manager-icon { display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-items: center; border-radius: 8px; color: #b3c4d4; background: #272d34; }
+.file-manager-result > span:nth-child(2) { display: grid; min-width: 0; flex: 1; gap: 3px; }
+.file-manager-result strong, .file-manager-result small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-manager-result strong { font-size: 11px; font-weight: 500; }
+.file-manager-result small { color: #7f8790; font-size: 9px; }
 .shortcut-row { display: flex; min-height: 55px; align-items: center; justify-content: space-between; gap: 14px; padding: 7px 3px; border-bottom: 1px solid #2a2d30; }
 .shortcut-row:last-child { border-bottom: 0; }
 .shortcut-row > div { display: grid; gap: 4px; }

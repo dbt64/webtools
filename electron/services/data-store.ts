@@ -88,7 +88,13 @@ export class DataStore {
       const backupPath = `${this.filePath}.v1.bak`
       try {
         await mkdir(dirname(this.filePath), { recursive: true })
-        try { await readFile(backupPath) } catch { await writeFile(backupPath, bytes) }
+        try {
+          const existingBackup = await readFile(backupPath)
+          if (!existingBackup.equals(bytes)) throw new Error('旧版数据备份已存在且与当前数据不一致；为避免覆盖备份，迁移已停止。')
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          await writeFile(backupPath, bytes, { flag: 'wx' })
+        }
         this.data = migrateV1ToV2(parsed)
         await this.persist(this.data)
         this.recoveryMessage = `旧版数据已迁移；原始数据备份位于 ${backupPath}`

@@ -241,10 +241,10 @@ export interface EverythingResult {
 - Modify: `electron/main.ts`, `src/styles/tokens.css`, all updated navigation/settings/search/website views as integration requires
 - Modify: `resources/app.ico` if a WebTools-specific replacement is included
 
-- [ ] **Step 1: Audit end-to-end integration.** Confirm appData schema initializes before app discovery and windows; renderer actions use only typed IPC; close hides manager; tray quit unregisters hotkey; no route still expects standalone bookmarks/tools; data migration runs once.
-- [ ] **Step 2: Update user guide.** Document WebTools branding, Ctrl+Alt+Space, `?` and `file:` syntax, Everything optional prerequisite/configuration, adding websites/folders, AI settings and Windows packaging.
-- [ ] **Step 3: Run release verification.** Run `npm run typecheck`, `npm run build`, then `npm run package:win`. On Windows manually execute the packaged install and verify existing userData is reused, tray/hotkey works, application search, website CRUD/migration, search engines, Everything status and AI/Google translation flows.
-- [ ] **Step 4: Commit final docs and packaging adjustments.** Commit `chore: prepare WebTools Windows release` and report the installer path plus observed checks.
+- [x] **Step 1: Audit end-to-end integration.** Confirm appData schema initializes before app discovery and windows; renderer actions use only typed IPC; close hides manager; tray quit unregisters hotkey; no route still expects standalone bookmarks/tools; data migration runs once. The app explicitly pins `userData` to the original `%APPDATA%\\Nook` path after product rename.
+- [x] **Step 2: Update user guide.** Document WebTools branding, Ctrl+Alt+Space, `?` and `file:` syntax, Everything optional prerequisite/configuration, adding websites/folders, AI settings and Windows packaging.
+- [ ] **Step 3: Run release verification.** `npm run typecheck`, `npm run build` and `npm run package:win` passed on retry. The installer is `release/WebTools-Setup-0.1.0.exe`. Interactive installation and native behavior remain for manual acceptance.
+- [x] **Step 4: Commit final docs and packaging adjustments.** Commit `chore: prepare WebTools Windows release`.
 
 ## Plan Self-Review
 
