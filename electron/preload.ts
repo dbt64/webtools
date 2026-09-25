@@ -1,9 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import { IPC_CHANNELS, type DesktopApi } from '../src/shared/ipc'
 
-const desktopApi = {
-  getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version') as Promise<string>,
+const desktopApi: DesktopApi = {
+  getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.getVersion) as Promise<string>,
 }
 
 contextBridge.exposeInMainWorld('desktop', desktopApi)
-
-export type DesktopApi = typeof desktopApi
