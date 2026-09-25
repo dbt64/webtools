@@ -26,6 +26,12 @@ export interface DesktopApi {
   addBookmark(input: { folderId: string; title?: string; url: string }): Promise<IpcResult<Bookmark>>
   deleteBookmark(bookmarkId: string): Promise<IpcResult<void>>
   openBookmark(bookmarkId: string): Promise<IpcResult<void>>
+  hasAiApiKey(): Promise<boolean>
+  saveAiApiKey(apiKey: string): Promise<IpcResult<void>>
+  clearAiApiKey(): Promise<IpcResult<void>>
+  translateWithAi(input: { text: string; targetLanguage: string }): Promise<IpcResult<{ translation: string }>>
+  testAiConnection(): Promise<IpcResult<{ model: string }>>
+  openGoogleTranslate(input: { text: string; targetLanguage: string }): Promise<IpcResult<void>>
 }
 
 export const IPC_CHANNELS = {
@@ -50,6 +56,12 @@ export const IPC_CHANNELS = {
   addBookmark: 'bookmarks:add',
   deleteBookmark: 'bookmarks:delete',
   openBookmark: 'bookmarks:open',
+  hasAiApiKey: 'ai:has-key',
+  saveAiApiKey: 'ai:save-key',
+  clearAiApiKey: 'ai:clear-key',
+  translateWithAi: 'ai:translate',
+  testAiConnection: 'ai:test-connection',
+  openGoogleTranslate: 'translate:open-google',
 } as const
 
 export type { SearchProvider }

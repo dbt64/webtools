@@ -10,9 +10,12 @@ import type { AppSettings, ToolEntry, WebEntry } from '../src/shared/domain'
 import { buildSearchUrl } from '../src/shared/search-providers'
 import { openExternalUrl, validateExternalUrl } from './services/external-opener'
 import { BookmarkService } from './services/bookmark-service'
+import { AiTranslationService } from './services/ai-translation'
+import { buildGoogleTranslateUrl } from './services/google-translate'
 
 const isDevelopment = !app.isPackaged
 let dataStore: DataStore
+let secretStore: SecretStore
 
 function fail<T>(code: string, message: string): IpcResult<T> {
   return { ok: false, error: { code, message } }
@@ -64,9 +67,9 @@ ipcMain.handle('app:get-version', () => app.getVersion())
 
 app.whenReady().then(async () => {
   dataStore = new DataStore(join(app.getPath('userData'), 'nook-data.json'))
-  const secretStore = new SecretStore(join(app.getPath('userData'), 'secrets.json'))
+  secretStore = new SecretStore(join(app.getPath('userData'), 'secrets.json'))
   await dataStore.load()
-  void secretStore
+  const aiTranslationService = new AiTranslationService(dataStore, secretStore)
   const appCatalog = new AppCatalogService()
   const appLauncher = new AppLauncher(appCatalog)
   const bookmarkService = new BookmarkService(dataStore)
@@ -207,6 +210,38 @@ app.whenReady().then(async () => {
     if (!bookmark) return fail('NOT_FOUND', '找不到这个收藏。')
     try { await openExternalUrl(bookmark.url); return { ok: true, data: undefined } } catch (error) {
       return fail('OPEN_BOOKMARK_FAILED', error instanceof Error ? error.message : '无法打开这个收藏。')
+    }
+  })
+  ipcMain.handle('ai:has-key', async () => {
+    try { return await secretStore.hasSecret('ai-api-key') } catch { return false }
+  })
+  ipcMain.handle('ai:save-key', async (_event, apiKey: unknown): Promise<IpcResult<void>> => {
+    if (typeof apiKey !== 'string' || apiKey.length > 1000) return fail('INVALID_API_KEY', 'API Key 无效。')
+    if (!apiKey.trim()) return fail('INVALID_API_KEY', '请输入 API Key。')
+    try { await secretStore.setSecret('ai-api-key', apiKey.trim()); return { ok: true, data: undefined } } catch (error) {
+      return fail('SAVE_API_KEY_FAILED', error instanceof Error ? error.message : '无法安全保存 API Key。')
+    }
+  })
+  ipcMain.handle('ai:clear-key', async (): Promise<IpcResult<void>> => {
+    try { await secretStore.deleteSecret('ai-api-key'); return { ok: true, data: undefined } } catch (error) {
+      return fail('CLEAR_API_KEY_FAILED', error instanceof Error ? error.message : '无法删除 API Key。')
+    }
+  })
+  ipcMain.handle('ai:translate', async (_event, input: unknown): Promise<IpcResult<{ translation: string }>> => {
+    if (!isRecord(input) || typeof input.text !== 'string' || typeof input.targetLanguage !== 'string') return fail('INVALID_TRANSLATION', '翻译输入无效。')
+    try { return { ok: true, data: { translation: await aiTranslationService.translate(input.text, input.targetLanguage) } } } catch (error) {
+      return fail('TRANSLATION_FAILED', error instanceof Error ? error.message : '翻译失败，请稍后再试。')
+    }
+  })
+  ipcMain.handle('ai:test-connection', async (): Promise<IpcResult<{ model: string }>> => {
+    try { return { ok: true, data: { model: await aiTranslationService.testConnection() } } } catch (error) {
+      return fail('AI_CONNECTION_FAILED', error instanceof Error ? error.message : '无法连接 AI 服务。')
+    }
+  })
+  ipcMain.handle('translate:open-google', async (_event, input: unknown): Promise<IpcResult<void>> => {
+    if (!isRecord(input) || typeof input.text !== 'string' || typeof input.targetLanguage !== 'string') return fail('INVALID_TRANSLATION', '翻译输入无效。')
+    try { await openExternalUrl(buildGoogleTranslateUrl(input.text, input.targetLanguage)); return { ok: true, data: undefined } } catch (error) {
+      return fail('GOOGLE_TRANSLATE_FAILED', error instanceof Error ? error.message : '无法打开 Google Translate。')
     }
   })
   createWindow()

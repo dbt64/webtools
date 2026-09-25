@@ -200,6 +200,30 @@ kbd { display: inline-grid; min-width: 19px; height: 19px; place-items: center; 
 .bookmark-empty { min-height: 260px; }
 select.field-label { appearance: none; }
 .field-label select { height: 39px; padding: 0 10px; border: 1px solid #34404b; border-radius: 8px; color: #e2e8eb; background: #121920; font-size: 11px; }
+.ai-settings { max-width: 590px; }
+.ai-settings .field-label { margin-top: 3px; }
+.secret-note { margin: 1px 0 2px; color: #778590; font-size: 9px; line-height: 1.6; }
+.ai-settings-actions { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+.remove-key { margin-left: auto; color: #d49a94; }
+.settings-result { margin: 4px 0 0; color: #a8d8bd; font-size: 10px; }
+.translation-toolbar { display: flex; align-items: center; gap: 11px; margin: -7px 0 12px; color: #aab5bd; font-size: 10px; }
+.language-label { display: inline-flex; align-items: center; gap: 6px; }
+.language-arrow { color: #63717c; }
+.translation-toolbar select { min-width: 100px; height: 31px; padding: 0 8px; border: 1px solid #35414b; border-radius: 7px; color: #dfe6e8; background: #19222b; font-size: 10px; }
+.translation-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.translation-pane { display: flex; min-height: 290px; flex-direction: column; padding: 14px; border: 1px solid #2d3943; border-radius: 11px; background: #171f28; }
+.pane-heading { display: flex; align-items: center; justify-content: space-between; color: #d7dfe3; font-size: 10px; font-weight: 500; }
+.pane-heading small { color: #75828d; font-size: 9px; font-weight: 400; }
+.pane-heading .text-button { padding: 2px; }
+.translation-pane textarea { width: 100%; min-height: 200px; flex: 1; resize: vertical; padding: 14px 0; border: 0; outline: 0; color: #e3e9eb; background: transparent; font-family: inherit; font-size: 12px; line-height: 1.8; }
+.translation-pane textarea::placeholder { color: #71808d; }
+.pane-foot { min-height: 15px; color: #6e7c88; font-size: 9px; }
+.translation-output { flex: 1; padding: 14px 0; color: #dfe7e9; font-size: 12px; line-height: 1.8; white-space: pre-wrap; }
+.translation-output.placeholder { color: #6e7c88; }
+.translate-actions { display: flex; align-items: center; gap: 9px; margin-top: 14px; }
+.configure-link { margin-left: auto; }
+.translate-page .inline-error { margin-top: 13px; }
+@media (max-width: 900px) { .translation-columns { grid-template-columns: 1fr; } .translation-pane { min-height: 220px; } }
 
 @media (max-width: 900px) {
   .sidebar { flex-basis: 200px; }

@@ -7,6 +7,7 @@ import SearchView from './features/search/SearchView.vue'
 import EntriesView from './features/entries/EntriesView.vue'
 import SettingsView from './features/settings/SettingsView.vue'
 import BookmarksView from './features/bookmarks/BookmarksView.vue'
+import TranslateView from './features/translate/TranslateView.vue'
 
 type Section = 'search' | 'bookmarks' | 'entries' | 'translate' | 'settings'
 
@@ -90,6 +91,7 @@ onMounted(() => {
       <BookmarksView v-else-if="activeSection === 'bookmarks'" />
       <EntriesView v-else-if="activeSection === 'entries'" class="entry-manager" />
       <SettingsView v-else-if="activeSection === 'settings'" />
+      <TranslateView v-else-if="activeSection === 'translate'" @settings="activeSection = 'settings'" />
 
       <section v-else class="section-placeholder">
         <div class="section-symbol">
