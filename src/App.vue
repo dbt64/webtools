@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import {
-  Bookmark, CircleHelp, Compass, Languages, Search, Settings2, SlidersHorizontal,
+  Bookmark, CircleHelp, Command, Compass, Languages, Search, Settings2, SlidersHorizontal,
 } from '@lucide/vue'
 import SearchView from './features/search/SearchView.vue'
+import EntriesView from './features/entries/EntriesView.vue'
+import SettingsView from './features/settings/SettingsView.vue'
 
 type Section = 'search' | 'bookmarks' | 'entries' | 'translate' | 'settings'
 
@@ -57,7 +59,7 @@ onMounted(() => {
         >
           <component :is="item.icon" :size="17" :stroke-width="1.8" />
           <span>{{ item.label }}</span>
-          <span v-if="item.id === 'search'" class="nav-shortcut">⌘ K</span>
+          <span v-if="item.id === 'search'" class="nav-shortcut">Ctrl K</span>
         </button>
       </nav>
 
@@ -84,13 +86,13 @@ onMounted(() => {
       </header>
 
       <SearchView v-if="activeSection === 'search'" @navigate="activeSection = $event" />
+      <EntriesView v-else-if="activeSection === 'entries'" class="entry-manager" />
+      <SettingsView v-else-if="activeSection === 'settings'" />
 
       <section v-else class="section-placeholder">
         <div class="section-symbol">
           <Bookmark v-if="activeSection === 'bookmarks'" :size="24" />
-          <Compass v-else-if="activeSection === 'entries'" :size="24" />
-          <Languages v-else-if="activeSection === 'translate'" :size="24" />
-          <Settings2 v-else :size="24" />
+          <Languages v-else :size="24" />
         </div>
         <p class="eyebrow">{{ sectionLabel }}</p>
         <h1>{{ sectionLabel }}</h1>

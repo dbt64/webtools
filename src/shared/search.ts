@@ -1,12 +1,19 @@
-import type { AppEntry } from './domain'
 import { normalizeSearchText, type SearchIndex } from './pinyin-index'
 
-export interface AppSearchResult {
-  entry: AppEntry
+export interface SearchableEntry {
+  id: string
+  name: string
+  kind: 'app' | 'website' | 'tool'
+  subtitle: string
+}
+
+export interface SearchResult<T extends SearchableEntry = SearchableEntry> {
+  entry: T
+  rank: number
   match: 'name' | 'pinyin' | 'initials'
 }
 
-export function searchApps(query: string, entries: AppEntry[], index: SearchIndex): AppSearchResult[] {
+export function searchEntries<T extends SearchableEntry>(query: string, entries: T[], index: SearchIndex): SearchResult<T>[] {
   const normalizedQuery = normalizeSearchText(query)
   if (!normalizedQuery) return []
 
@@ -14,7 +21,7 @@ export function searchApps(query: string, entries: AppEntry[], index: SearchInde
     const indexed = index.get(entry.id)
     if (!indexed) return []
     let rank: number
-    let match: AppSearchResult['match']
+    let match: SearchResult<T>['match']
 
     if (indexed.normalizedName === normalizedQuery) {
       rank = 0
@@ -37,6 +44,9 @@ export function searchApps(query: string, entries: AppEntry[], index: SearchInde
     } else if (indexed.initials.includes(normalizedQuery)) {
       rank = 6
       match = 'initials'
+    } else if (indexed.normalizedText.includes(normalizedQuery)) {
+      rank = 7
+      match = 'name'
     } else {
       return []
     }
@@ -45,5 +55,5 @@ export function searchApps(query: string, entries: AppEntry[], index: SearchInde
 
   return matches
     .sort((left, right) => left.rank - right.rank || left.entry.name.localeCompare(right.entry.name, 'zh-CN'))
-    .map(({ entry, match }) => ({ entry, match }))
+    .map(({ entry, match, rank }) => ({ entry, match, rank }))
 }

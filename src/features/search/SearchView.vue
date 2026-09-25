@@ -3,33 +3,62 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   Bookmark, Command, Compass, Languages, Search, Sparkles, SquareArrowOutUpRight, Wrench,
 } from '@lucide/vue'
-import type { AppEntry } from '@/shared/domain'
+import type { AppEntry, AppSettings, ToolEntry, WebEntry } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
-import { searchApps } from '@/shared/search'
+import { searchEntries, type SearchableEntry } from '@/shared/search'
+import { parseSearchCommand } from '@/shared/search-command'
 import SearchResult from './SearchResult.vue'
 
 const emit = defineEmits<{ navigate: [section: 'bookmarks' | 'entries' | 'translate'] }>()
 
 const apps = ref<AppEntry[]>([])
+const webEntries = ref<WebEntry[]>([])
+const tools = ref<ToolEntry[]>([])
+const settings = ref<AppSettings>({ defaultSearchProvider: 'google', aiBaseUrl: '', aiModel: '' })
 const query = ref('')
 const selectedIndex = ref(0)
 const searchInput = ref<HTMLInputElement>()
-const index = computed(() => buildSearchIndex(apps.value))
-const isWebSearch = computed(() => query.value.startsWith('?'))
-const results = computed(() => isWebSearch.value ? [] : searchApps(query.value, apps.value, index.value))
+const parsed = computed(() => parseSearchCommand(query.value))
+const isWebSearch = computed(() => parsed.value.mode === 'web')
+const providerNames = { google: 'Google', baidu: '百度', bilibili: 'Bilibili' }
+const searchableEntries = computed<SearchableEntry[]>(() => [
+  ...apps.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'app' as const, subtitle: entry.targetPath })),
+  ...webEntries.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'website' as const, subtitle: entry.url, searchText: `${entry.url} ${entry.description ?? ''}` })),
+  ...tools.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'tool' as const, subtitle: entry.command, searchText: `${entry.command} ${entry.description ?? ''}` })),
+])
+const index = computed(() => buildSearchIndex(searchableEntries.value))
+const results = computed(() => isWebSearch.value ? [] : searchEntries(parsed.value.query, searchableEntries.value, index.value))
 
 async function loadApps(refresh = false): Promise<void> {
   try {
-    apps.value = refresh ? await window.desktop.refreshApps() : await window.desktop.getApps()
+    const [loadedApps, entries, loadedSettings] = await Promise.all([
+      refresh ? window.desktop.refreshApps() : window.desktop.getApps(),
+      window.desktop.getEntries(),
+      window.desktop.getSettings(),
+    ])
+    apps.value = loadedApps
+    webEntries.value = entries.webEntries
+    tools.value = entries.tools
+    settings.value = loadedSettings
   } catch {
-    apps.value = []
+    // Show an empty result state while keeping the search box usable.
   }
 }
 
 async function launchSelected(): Promise<void> {
   const selected = results.value[selectedIndex.value]
+  if (isWebSearch.value) {
+    if (!parsed.value.query) return
+    const result = await window.desktop.openSearch(parsed.value.query)
+    if (!result.ok) window.alert(result.error.message)
+    return
+  }
   if (!selected) return
-  const result = await window.desktop.launchApp(selected.entry.id)
+  const result = selected.entry.kind === 'app'
+    ? await window.desktop.launchApp(selected.entry.id)
+    : selected.entry.kind === 'website'
+      ? await window.desktop.openWebEntry(selected.entry.id)
+      : await window.desktop.openToolEntry(selected.entry.id)
   if (!result.ok) window.alert(result.error.message)
 }
 
@@ -40,6 +69,9 @@ function handleKeydown(event: KeyboardEvent): void {
   } else if (event.key === 'ArrowUp' && results.value.length) {
     event.preventDefault()
     selectedIndex.value = (selectedIndex.value - 1 + results.value.length) % results.value.length
+  } else if (event.key === 'Enter' && isWebSearch.value && parsed.value.query) {
+    event.preventDefault()
+    void launchSelected()
   } else if (event.key === 'Enter' && results.value.length) {
     event.preventDefault()
     void launchSelected()
@@ -82,11 +114,11 @@ onMounted(() => {
     <div v-if="query" class="search-feedback">
       <template v-if="isWebSearch">
         <span class="mode-chip"><Search :size="13" /> 网页搜索</span>
-        <span>输入关键词后按 Enter 搜索</span>
+        <span>{{ providerNames[settings.defaultSearchProvider] }} · {{ parsed.query ? `按 Enter 搜索“${parsed.query}”` : '请输入关键词' }}</span>
       </template>
       <template v-else>
         <span class="mode-chip"><Command :size="13" /> 本地搜索</span>
-        <span>应用 {{ results.length }} 项 · 支持中文、拼音和首字母</span>
+        <span>{{ results.length }} 项 · 应用支持拼音和首字母</span>
         <button class="refresh-button" title="重新扫描应用" @click="loadApps(true)">重新扫描</button>
       </template>
     </div>
@@ -94,7 +126,7 @@ onMounted(() => {
     <div v-if="query && !isWebSearch" class="result-list" role="listbox" aria-label="应用搜索结果">
       <SearchResult
         v-for="(result, resultIndex) in results"
-        :key="result.entry.id"
+        :key="`${result.entry.kind}-${result.entry.id}`"
         :result="result"
         :selected="resultIndex === selectedIndex"
         @select="launchSelected"
