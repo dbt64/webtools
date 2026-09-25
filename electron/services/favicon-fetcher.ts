@@ -1,3 +1,6 @@
+import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
+
 const MAX_PAGE_BYTES = 512 * 1024
 const MAX_ICON_BYTES = 256 * 1024
 const REQUEST_TIMEOUT_MS = 5000
@@ -15,6 +18,43 @@ function safeHttpUrl(value: string | URL): URL {
   url.username = ''
   url.password = ''
   return url
+}
+
+function isPrivateIpv4(address: string): boolean {
+  const parts = address.split('.').map(Number)
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true
+  const [first, second] = parts
+  return first === 0 || first === 10 || first === 127 || first >= 224
+    || (first === 100 && second >= 64 && second <= 127)
+    || (first === 169 && second === 254)
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && (second === 0 || second === 168))
+    || (first === 198 && (second === 18 || second === 19 || second === 51))
+    || (first === 203 && second === 0)
+}
+
+function isPrivateIp(address: string): boolean {
+  const version = isIP(address)
+  if (version === 4) return isPrivateIpv4(address)
+  if (version !== 6) return true
+  const normalized = address.toLowerCase()
+  if (normalized.startsWith('::ffff:')) return isPrivateIpv4(normalized.slice(7))
+  return normalized === '::' || normalized === '::1'
+    || /^f[cd]/.test(normalized)
+    || /^fe[89ab]/.test(normalized)
+    || /^ff/.test(normalized)
+    || normalized.startsWith('64:ff9b:')
+}
+
+async function assertPublicDestination(url: URL): Promise<void> {
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) {
+    throw new Error('Local network icon requests are blocked.')
+  }
+  const addresses = isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true })
+  if (!addresses.length || addresses.some(({ address }) => isPrivateIp(address))) {
+    throw new Error('Private network icon requests are blocked.')
+  }
 }
 
 async function readLimitedBody(response: Response, limit: number): Promise<Uint8Array> {
@@ -47,6 +87,7 @@ async function readLimitedBody(response: Response, limit: number): Promise<Uint8
 async function fetchBounded(startUrl: URL, limit: number): Promise<BoundedResponse> {
   let currentUrl = safeHttpUrl(startUrl)
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
+    await assertPublicDestination(currentUrl)
     const response = await fetch(currentUrl, {
       redirect: 'manual',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
