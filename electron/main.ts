@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, screen } from 'electron'
 import { isAbsolute, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { DataStore } from './services/data-store'
@@ -18,6 +18,7 @@ const isDevelopment = !app.isPackaged
 let dataStore: DataStore
 let secretStore: SecretStore
 let managerWindow: BrowserWindow | null = null
+let launcherWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
 let hotkeyService: GlobalHotkeyService | null = null
@@ -83,6 +84,49 @@ function showManager(): void {
   else { managerWindow.show(); managerWindow.focus() }
 }
 
+function createLauncherWindow(): BrowserWindow {
+  if (launcherWindow && !launcherWindow.isDestroyed()) return launcherWindow
+  const window = new BrowserWindow({
+    width: 850,
+    height: 88,
+    frame: false,
+    resizable: false,
+    show: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    backgroundColor: '#00000000',
+    title: 'WebTools 快速搜索',
+    webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+  })
+  launcherWindow = window
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.on('will-navigate', (event, url) => { if (!url.startsWith('file:') && !url.startsWith('http://localhost:')) event.preventDefault() })
+  window.on('closed', () => { if (launcherWindow === window) launcherWindow = null })
+  if (isDevelopment && process.env.ELECTRON_RENDERER_URL) void window.loadURL(`${process.env.ELECTRON_RENDERER_URL}/launcher.html`)
+  else void window.loadFile(join(__dirname, '../renderer/launcher.html'))
+  return window
+}
+
+function showLauncher(): void {
+  const window = createLauncherWindow()
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const bounds = display.workArea
+  window.setBounds({ x: Math.round(bounds.x + (bounds.width - 850) / 2), y: Math.round(bounds.y + bounds.height * 0.22), width: 850, height: 88 })
+  window.show()
+  window.focus()
+  if (window.webContents.isLoading()) window.webContents.once('did-finish-load', () => void window.webContents.executeJavaScript("window.dispatchEvent(new Event('webtools-launcher-show'))"))
+  else void window.webContents.executeJavaScript("window.dispatchEvent(new Event('webtools-launcher-show'))")
+}
+
+function resizeLauncher(expanded: boolean): void {
+  if (!launcherWindow || launcherWindow.isDestroyed()) return
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const bounds = display.workArea
+  const height = expanded ? 440 : 88
+  launcherWindow.setBounds({ x: Math.round(bounds.x + (bounds.width - 850) / 2), y: Math.round(bounds.y + bounds.height * 0.22), width: 850, height })
+}
+
 function createTray(): void {
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect x="1" y="1" width="30" height="30" rx="8" fill="#9fdfc3"/><path d="M11 10h10M11 16h10M11 22h10" stroke="#15261f" stroke-width="2" stroke-linecap="round"/></svg>'
   const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
@@ -113,11 +157,13 @@ app.whenReady().then(async () => {
   const bookmarkService = new BookmarkService(dataStore)
   await appCatalog.refresh()
   hotkeyService = new GlobalHotkeyService()
-  const shortcutResult = hotkeyService.register(dataStore.snapshot().settings.quickSearchShortcut, showManager)
+  const shortcutResult = hotkeyService.register(dataStore.snapshot().settings.quickSearchShortcut, showLauncher)
   if (!shortcutResult.ok) console.warn(shortcutResult.error.message)
   app.setLoginItemSettings({ openAtLogin: dataStore.snapshot().settings.launchOnStartup })
   createTray()
-  ipcMain.handle('window:show-launcher', () => showManager())
+  ipcMain.handle('window:show-launcher', () => showLauncher())
+  ipcMain.handle('window:hide-launcher', () => launcherWindow?.hide())
+  ipcMain.handle('window:set-launcher-expanded', (_event, expanded: unknown) => resizeLauncher(expanded === true))
   ipcMain.handle('window:show-manager', () => showManager())
   ipcMain.handle('apps:list', () => appCatalog.list())
   ipcMain.handle('apps:refresh', () => appCatalog.refresh())

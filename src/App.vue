@@ -45,7 +45,7 @@ onMounted(() => {
       <div class="brand-lockup">
         <div class="brand-mark"><Command :size="19" :stroke-width="2.4" /></div>
         <div>
-          <div class="brand-name">Nook</div>
+          <div class="brand-name">WebTools</div>
           <div class="brand-caption">个人效率空间</div>
         </div>
       </div>
@@ -99,7 +99,7 @@ onMounted(() => {
         </div>
         <p class="eyebrow">{{ sectionLabel }}</p>
         <h1>{{ sectionLabel }}</h1>
-        <p>这里会呈现你的个人内容，先从搜索框开始使用 Nook。</p>
+        <p>这里会呈现你的个人内容，先从搜索框开始使用 WebTools。</p>
         <button class="back-search" @click="focusSearch"><Search :size="16" /> 回到快速搜索</button>
       </section>
     </main>

@@ -3,6 +3,8 @@ import { IPC_CHANNELS, type DesktopApi } from '../src/shared/ipc'
 
 const desktopApi: DesktopApi = {
   showLauncher: () => ipcRenderer.invoke(IPC_CHANNELS.showLauncher) as Promise<void>,
+  hideLauncher: () => ipcRenderer.invoke(IPC_CHANNELS.hideLauncher) as Promise<void>,
+  setLauncherExpanded: (expanded) => ipcRenderer.invoke(IPC_CHANNELS.setLauncherExpanded, expanded) as Promise<void>,
   showManager: () => ipcRenderer.invoke(IPC_CHANNELS.showManager) as Promise<void>,
   getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.getVersion) as Promise<string>,
   getApps: () => ipcRenderer.invoke(IPC_CHANNELS.getApps) as Promise<Awaited<ReturnType<DesktopApi['getApps']>>>,

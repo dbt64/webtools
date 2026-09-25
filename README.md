@@ -1,6 +1,6 @@
-# Nook
+# WebTools
 
-Nook 是一款面向 Windows 的个人桌面启动器，使用 Electron、Vue 3 和 TypeScript 构建。
+WebTools 是一款面向 Windows 的个人桌面启动器，使用 Electron、Vue 3 和 TypeScript 构建。
 
 ## 已包含的功能
 

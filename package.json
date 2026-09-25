@@ -1,5 +1,5 @@
 {
-  "name": "nook-desktop",
+  "name": "webtools-desktop",
   "version": "0.1.0",
   "private": true,
   "description": "A personal Windows launcher and web toolkit",
@@ -28,7 +28,7 @@
   },
   "build": {
     "appId": "dev.nook.launcher",
-    "productName": "Nook",
+    "productName": "WebTools",
     "directories": {
       "output": "release"
     },
@@ -39,7 +39,7 @@
     "win": {
       "icon": "resources/app.ico",
       "target": ["nsis"],
-      "artifactName": "Nook-Setup-${version}.${ext}"
+      "artifactName": "WebTools-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
