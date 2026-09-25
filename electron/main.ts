@@ -1,5 +1,5 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, screen } from 'electron'
-import { join } from 'node:path'
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, screen, dialog, type OpenDialogOptions } from 'electron'
+import { basename, isAbsolute, join } from 'node:path'
 import { DataStore } from './services/data-store'
 import { SecretStore } from './services/secret-store'
 import { AppCatalogService } from './services/app-catalog'
@@ -14,6 +14,7 @@ import { buildGoogleTranslateUrl } from './services/google-translate'
 import { GlobalHotkeyService } from './services/global-hotkey'
 import { WebsiteService } from './services/website-service'
 import { WebsiteMetadataService } from './services/website-metadata'
+import { EverythingClient } from './services/everything-client'
 
 const isDevelopment = !app.isPackaged
 let dataStore: DataStore
@@ -146,6 +147,7 @@ app.whenReady().then(async () => {
   const bookmarkService = new BookmarkService(dataStore)
   const websiteService = new WebsiteService(dataStore)
   const websiteMetadata = new WebsiteMetadataService()
+  const everything = new EverythingClient(() => dataStore.snapshot().settings.everythingEsPath)
   await appCatalog.refresh()
   hotkeyService = new GlobalHotkeyService()
   const shortcutResult = hotkeyService.register(dataStore.snapshot().settings.quickSearchShortcut, showLauncher)
@@ -166,6 +168,24 @@ app.whenReady().then(async () => {
   ipcMain.handle('websites:fetch-metadata', async (_event, url: unknown) => {
     if (typeof url !== 'string') return fail('INVALID_URL', '网址格式不正确。')
     try { return { ok: true, data: await websiteMetadata.fetch(url) } } catch (error) { return fail('FETCH_METADATA_FAILED', error instanceof Error ? error.message : '无法获取网站信息。') }
+  })
+  ipcMain.handle('everything:detect', () => everything.detect())
+  ipcMain.handle('everything:choose-path', async () => {
+    const options: OpenDialogOptions = { title: '选择 Everything ES 命令行工具', properties: ['openFile'], filters: [{ name: 'ES 命令行工具', extensions: ['exe'] }] }
+    const result = managerWindow ? await dialog.showOpenDialog(managerWindow, options) : await dialog.showOpenDialog(options)
+    const path = result.canceled ? undefined : result.filePaths[0]
+    return path && basename(path).toLocaleLowerCase() === 'es.exe' ? path : null
+  })
+  ipcMain.handle('everything:search', async (_event, query: unknown): Promise<IpcResult<Awaited<ReturnType<EverythingClient['search']>>>> => {
+    if (typeof query !== 'string' || !query.trim()) return { ok: true, data: [] }
+    if (!dataStore.snapshot().settings.everythingEnabled) return fail('EVERYTHING_DISABLED', '请先在设置中启用 Everything 搜索。')
+    try { return { ok: true, data: await everything.search(query, 20) } }
+    catch (error) { return fail('EVERYTHING_SEARCH_FAILED', error instanceof Error ? error.message : 'Everything 搜索失败。') }
+  })
+  ipcMain.handle('everything:open', async (_event, id: unknown): Promise<IpcResult<void>> => {
+    if (typeof id !== 'string' || !/^[a-f\d]{24}$/i.test(id)) return fail('INVALID_RESULT', '文件搜索结果无效。')
+    try { await everything.open(id); return { ok: true, data: undefined } }
+    catch (error) { return fail('EVERYTHING_OPEN_FAILED', error instanceof Error ? error.message : '无法打开这个搜索结果。') }
   })
   ipcMain.handle('window:show-manager', () => showManager())
   ipcMain.handle('apps:list', () => appCatalog.list())
@@ -190,6 +210,8 @@ app.whenReady().then(async () => {
     if (settings.quickSearchShortcut !== undefined && (typeof settings.quickSearchShortcut !== 'string' || settings.quickSearchShortcut.length > 80)) return fail('INVALID_SETTINGS', '快捷键格式无效。')
     if (settings.launchOnStartup !== undefined && typeof settings.launchOnStartup !== 'boolean') return fail('INVALID_SETTINGS', '开机启动设置无效。')
     if (settings.websiteLayout !== undefined && !['grid', 'list'].includes(String(settings.websiteLayout))) return fail('INVALID_SETTINGS', '网址排布模式无效。')
+    if (settings.everythingEnabled !== undefined && typeof settings.everythingEnabled !== 'boolean') return fail('INVALID_SETTINGS', 'Everything 启用状态无效。')
+    if (settings.everythingEsPath !== undefined && (typeof settings.everythingEsPath !== 'string' || settings.everythingEsPath.length > 1000 || (settings.everythingEsPath && (!isAbsolute(settings.everythingEsPath) || basename(settings.everythingEsPath).toLocaleLowerCase() !== 'es.exe')))) return fail('INVALID_SETTINGS', 'ES 路径必须指向绝对路径下的 es.exe。')
     let searchEngines = dataStore.snapshot().settings.searchEngines
     if (settings.searchEngines !== undefined) {
       try { searchEngines = normalizeSearchEngines(settings.searchEngines) } catch (error) { return fail('INVALID_SEARCH_ENGINES', error instanceof Error ? error.message : '搜索引擎配置无效。') }
@@ -215,6 +237,8 @@ app.whenReady().then(async () => {
           quickSearchShortcut: nextShortcut,
           launchOnStartup: typeof settings.launchOnStartup === 'boolean' ? settings.launchOnStartup : data.settings.launchOnStartup,
           websiteLayout: settings.websiteLayout === 'list' ? 'list' : settings.websiteLayout === 'grid' ? 'grid' : data.settings.websiteLayout,
+          everythingEnabled: typeof settings.everythingEnabled === 'boolean' ? settings.everythingEnabled : data.settings.everythingEnabled,
+          everythingEsPath: typeof settings.everythingEsPath === 'string' ? settings.everythingEsPath : data.settings.everythingEsPath,
           aiBaseUrl: typeof settings.aiBaseUrl === 'string' ? settings.aiBaseUrl : data.settings.aiBaseUrl,
           aiModel: typeof settings.aiModel === 'string' ? settings.aiModel : data.settings.aiModel,
         },

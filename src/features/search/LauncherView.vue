@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { ArrowUpRight, BookmarkPlus, Command, CornerDownLeft, Globe, Search } from '@lucide/vue'
-import type { AppSearchEntry, BookmarkFolder, WebsiteEntry } from '@/shared/domain'
+import { ArrowUpRight, BookmarkPlus, Command, CornerDownLeft, File, Folder, Globe, Search } from '@lucide/vue'
+import type { AppSearchEntry, BookmarkFolder, WebsiteEntry, EverythingResult } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry } from '@/shared/search'
 import { parseSearchCommand } from '@/shared/search-command'
@@ -16,17 +16,22 @@ const folders = ref<BookmarkFolder[]>([])
 const selectedIndex = ref(0)
 const input = ref<HTMLInputElement>()
 const error = ref('')
+const fileResults = ref<EverythingResult[]>([])
+const fileStatus = ref('')
+let fileSearchSequence = 0
 const bookmarkTarget = ref<LauncherEntry>()
 const showBookmarkDialog = ref(false)
 const savingBookmark = ref(false)
 const parsed = computed(() => parseSearchCommand(query.value))
 const isWeb = computed(() => parsed.value.mode === 'web')
+const isFiles = computed(() => parsed.value.mode === 'files')
 const entries = computed<LauncherEntry[]>(() => [
   ...apps.value.map((app) => ({ id: app.id, name: app.name, aliases: app.aliases, kind: 'app' as const, subtitle: '本地应用' })),
   ...websites.value.map((site) => ({ id: site.id, name: site.name, kind: 'website' as const, subtitle: site.url, url: site.url, favicon: site.favicon, folderIds: site.folderIds, searchText: site.description ?? '' })),
 ])
 const index = computed(() => buildSearchIndex(entries.value))
-const results = computed(() => isWeb.value ? [] : searchEntries(parsed.value.query, entries.value, index.value).slice(0, 8))
+const results = computed(() => parsed.value.mode !== 'local' ? [] : searchEntries(parsed.value.query, entries.value, index.value).slice(0, 8))
+const selectableCount = computed(() => isFiles.value ? fileResults.value.length : results.value.length)
 
 async function focus(): Promise<void> {
   await nextTick()
@@ -54,6 +59,14 @@ async function submit(): Promise<void> {
   if (isWeb.value) {
     if (!parsed.value.query) return
     const result = await window.desktop.openSearch(parsed.value.query)
+    if (!result.ok) { error.value = result.error.message; return }
+    await hide()
+    return
+  }
+  if (isFiles.value) {
+    const item = fileResults.value[selectedIndex.value]
+    if (!item) return
+    const result = await window.desktop.openEverythingResult(item.id)
     if (!result.ok) { error.value = result.error.message; return }
     await hide()
     return
@@ -90,8 +103,8 @@ async function saveBookmark(input: { folderId?: string; newFolderName?: string }
 
 function keydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') { event.preventDefault(); void hide() }
-  else if (event.key === 'ArrowDown' && results.value.length) { event.preventDefault(); selectedIndex.value = (selectedIndex.value + 1) % results.value.length }
-  else if (event.key === 'ArrowUp' && results.value.length) { event.preventDefault(); selectedIndex.value = (selectedIndex.value - 1 + results.value.length) % results.value.length }
+  else if (event.key === 'ArrowDown' && selectableCount.value) { event.preventDefault(); selectedIndex.value = (selectedIndex.value + 1) % selectableCount.value }
+  else if (event.key === 'ArrowUp' && selectableCount.value) { event.preventDefault(); selectedIndex.value = (selectedIndex.value - 1 + selectableCount.value) % selectableCount.value }
   else if (event.key === 'Enter') { event.preventDefault(); void submit() }
 }
 
@@ -99,6 +112,20 @@ watch(query, (value) => {
   selectedIndex.value = 0
   error.value = ''
   void window.desktop.setLauncherExpanded(Boolean(value.trim()))
+  const sequence = ++fileSearchSequence
+  const command = parseSearchCommand(value)
+  fileResults.value = []
+  fileStatus.value = ''
+  if (command.mode === 'files' && command.query) {
+    fileStatus.value = '正在搜索 Everything…'
+    window.setTimeout(async () => {
+      if (sequence !== fileSearchSequence) return
+      const result = await window.desktop.searchEverything(command.query)
+      if (sequence !== fileSearchSequence) return
+      if (result.ok) { fileResults.value = result.data; fileStatus.value = result.data.length ? '' : '没有找到匹配的文件或文件夹。' }
+      else fileStatus.value = result.error.message
+    }, 160)
+  } else if (command.mode === 'files') fileStatus.value = '输入关键词搜索文件和文件夹。'
 })
 
 onMounted(() => {
@@ -119,6 +146,14 @@ onMounted(() => {
     </div>
     <section v-if="query.trim()" class="launcher-results">
       <div v-if="isWeb" class="launcher-hint"><Globe :size="16" /><span>{{ parsed.query ? `使用默认搜索引擎搜索“${parsed.query}”` : '输入关键词后按 Enter 搜索网页' }}</span><kbd>Enter ↵</kbd></div>
+      <template v-else-if="isFiles">
+        <button v-for="(result, idx) in fileResults.slice(0, 8)" :key="result.id" class="launcher-result" :class="{ selected: selectedIndex === idx }" @mousedown.prevent @mouseenter="selectedIndex = idx" @click="submit">
+          <span class="launcher-result-icon file-result-icon"><Folder v-if="result.kind === 'folder'" :size="17" /><File v-else :size="17" /></span>
+          <span class="launcher-result-copy"><strong>{{ result.name }}</strong><small>{{ result.locationLabel }}</small></span>
+          <CornerDownLeft v-if="selectedIndex === idx" :size="15" class="launcher-enter-icon" />
+        </button>
+        <div v-if="fileStatus" class="launcher-empty">{{ fileStatus }}</div>
+      </template>
       <template v-else>
         <div v-for="(result, idx) in results" :key="result.entry.id" class="launcher-result-wrap">
         <button class="launcher-result" :class="{ selected: selectedIndex === idx }" @mousedown.prevent @mouseenter="selectedIndex = idx" @click="submit">

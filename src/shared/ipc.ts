@@ -1,4 +1,4 @@
-import type { AppSearchEntry, AppSettings, BookmarkFolder, WebsiteEntry } from './domain'
+import type { AppSearchEntry, AppSettings, BookmarkFolder, WebsiteEntry, EverythingResult } from './domain'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -32,8 +32,10 @@ export interface DesktopApi {
   addWebsiteToFolders(id: string, folderIds: string[]): Promise<IpcResult<WebsiteEntry>>
   fetchWebsiteMetadata(url: string): Promise<IpcResult<{ title?: string; favicon?: string }>>
   cacheWebsiteMetadata(id: string, metadata: { title?: string; favicon?: string }): Promise<IpcResult<WebsiteEntry>>
-  searchEverything(query: string): Promise<IpcResult<import('./domain').EverythingResult[]>>
+  searchEverything(query: string): Promise<IpcResult<EverythingResult[]>>
   openEverythingResult(id: string): Promise<IpcResult<void>>
+  detectEverything(): Promise<{ executablePath?: string; running: boolean; version?: string }>
+  chooseEverythingPath(): Promise<string | null>
 }
 
 export const IPC_CHANNELS = {
@@ -66,4 +68,6 @@ export const IPC_CHANNELS = {
   cacheWebsiteMetadata: 'websites:cache-metadata',
   searchEverything: 'everything:search',
   openEverythingResult: 'everything:open',
+  detectEverything: 'everything:detect',
+  chooseEverythingPath: 'everything:choose-path',
 } as const
