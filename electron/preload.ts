@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS, type DesktopApi } from '../src/shared/ipc'
 
 const desktopApi: DesktopApi = {
+  showLauncher: () => ipcRenderer.invoke(IPC_CHANNELS.showLauncher) as Promise<void>,
+  showManager: () => ipcRenderer.invoke(IPC_CHANNELS.showManager) as Promise<void>,
   getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.getVersion) as Promise<string>,
   getApps: () => ipcRenderer.invoke(IPC_CHANNELS.getApps) as Promise<Awaited<ReturnType<DesktopApi['getApps']>>>,
   refreshApps: () => ipcRenderer.invoke(IPC_CHANNELS.refreshApps) as Promise<Awaited<ReturnType<DesktopApi['refreshApps']>>>,
@@ -30,6 +32,13 @@ const desktopApi: DesktopApi = {
   translateWithAi: (input) => ipcRenderer.invoke(IPC_CHANNELS.translateWithAi, input) as ReturnType<DesktopApi['translateWithAi']>,
   testAiConnection: () => ipcRenderer.invoke(IPC_CHANNELS.testAiConnection) as ReturnType<DesktopApi['testAiConnection']>,
   openGoogleTranslate: (input) => ipcRenderer.invoke(IPC_CHANNELS.openGoogleTranslate, input) as ReturnType<DesktopApi['openGoogleTranslate']>,
+  listWebsites: (folderId) => ipcRenderer.invoke(IPC_CHANNELS.listWebsites, folderId) as ReturnType<DesktopApi['listWebsites']>,
+  saveWebsite: (input) => ipcRenderer.invoke(IPC_CHANNELS.saveWebsite, input) as ReturnType<DesktopApi['saveWebsite']>,
+  deleteWebsite: (id) => ipcRenderer.invoke(IPC_CHANNELS.deleteWebsite, id) as ReturnType<DesktopApi['deleteWebsite']>,
+  addWebsiteToFolders: (id, folderIds) => ipcRenderer.invoke(IPC_CHANNELS.addWebsiteToFolders, id, folderIds) as ReturnType<DesktopApi['addWebsiteToFolders']>,
+  fetchWebsiteMetadata: (url) => ipcRenderer.invoke(IPC_CHANNELS.fetchWebsiteMetadata, url) as ReturnType<DesktopApi['fetchWebsiteMetadata']>,
+  searchEverything: (query) => ipcRenderer.invoke(IPC_CHANNELS.searchEverything, query) as ReturnType<DesktopApi['searchEverything']>,
+  openEverythingResult: (id) => ipcRenderer.invoke(IPC_CHANNELS.openEverythingResult, id) as ReturnType<DesktopApi['openEverythingResult']>,
 }
 
 contextBridge.exposeInMainWorld('desktop', desktopApi)

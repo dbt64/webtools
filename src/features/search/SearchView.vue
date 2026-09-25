@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   Bookmark, Command, Compass, Languages, Search, Sparkles, SquareArrowOutUpRight, Wrench,
 } from '@lucide/vue'
-import type { AppEntry, AppSettings, ToolEntry, WebEntry } from '@/shared/domain'
+import { createDefaultAppData, type AppEntry, type AppSettings, type ToolEntry, type WebEntry } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry, type SearchResult as SearchResultItem } from '@/shared/search'
 import { parseSearchCommand } from '@/shared/search-command'
@@ -16,7 +16,7 @@ const emit = defineEmits<{ navigate: [section: 'bookmarks' | 'entries' | 'transl
 const apps = ref<AppEntry[]>([])
 const webEntries = ref<WebEntry[]>([])
 const tools = ref<ToolEntry[]>([])
-const settings = ref<AppSettings>({ defaultSearchProvider: 'google', aiBaseUrl: '', aiModel: '' })
+const settings = ref<AppSettings>(createDefaultAppData().settings)
 const query = ref('')
 const selectedIndex = ref(0)
 const searchInput = ref<HTMLInputElement>()

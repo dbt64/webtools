@@ -1,10 +1,12 @@
-import type { AppEntry, AppSettings, Bookmark, BookmarkFolder, SearchProvider, ToolEntry, WebEntry } from './domain'
+import type { AppEntry, AppSettings, Bookmark, BookmarkFolder, SearchProvider, ToolEntry, WebEntry, WebsiteEntry } from './domain'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: { code: string; message: string } }
 
 export interface DesktopApi {
+  showLauncher(): Promise<void>
+  showManager(): Promise<void>
   getVersion(): Promise<string>
   getApps(): Promise<AppEntry[]>
   refreshApps(): Promise<AppEntry[]>
@@ -33,9 +35,18 @@ export interface DesktopApi {
   translateWithAi(input: { text: string; targetLanguage: string }): Promise<IpcResult<{ translation: string }>>
   testAiConnection(): Promise<IpcResult<{ model: string }>>
   openGoogleTranslate(input: { text: string; targetLanguage: string }): Promise<IpcResult<void>>
+  listWebsites(folderId?: string): Promise<WebsiteEntry[]>
+  saveWebsite(input: Omit<WebsiteEntry, 'id' | 'createdAt' | 'favicon' | 'folderIds'> & { id?: string }): Promise<IpcResult<WebsiteEntry>>
+  deleteWebsite(id: string): Promise<IpcResult<void>>
+  addWebsiteToFolders(id: string, folderIds: string[]): Promise<IpcResult<WebsiteEntry>>
+  fetchWebsiteMetadata(url: string): Promise<IpcResult<{ title?: string; favicon?: string }>>
+  searchEverything(query: string): Promise<IpcResult<import('./domain').EverythingResult[]>>
+  openEverythingResult(id: string): Promise<IpcResult<void>>
 }
 
 export const IPC_CHANNELS = {
+  showLauncher: 'window:show-launcher',
+  showManager: 'window:show-manager',
   getVersion: 'app:get-version',
   getApps: 'apps:list',
   refreshApps: 'apps:refresh',
@@ -64,6 +75,13 @@ export const IPC_CHANNELS = {
   translateWithAi: 'ai:translate',
   testAiConnection: 'ai:test-connection',
   openGoogleTranslate: 'translate:open-google',
+  listWebsites: 'websites:list',
+  saveWebsite: 'websites:save',
+  deleteWebsite: 'websites:delete',
+  addWebsiteToFolders: 'websites:add-to-folders',
+  fetchWebsiteMetadata: 'websites:fetch-metadata',
+  searchEverything: 'everything:search',
+  openEverythingResult: 'everything:open',
 } as const
 
 export type { SearchProvider }

@@ -90,7 +90,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('entries:list', () => {
     const data = dataStore.snapshot()
-    return { webEntries: data.webEntries, tools: data.tools }
+    return { webEntries: data.webEntries.map(({ id, name, url, description }) => ({ id, name, url, description })), tools: [] }
   })
   ipcMain.handle('entries:save-website', async (_event, input: unknown): Promise<IpcResult<WebEntry>> => {
     if (!isRecord(input)) return fail('INVALID_ENTRY', '网址信息无效。')
@@ -106,11 +106,12 @@ app.whenReady().then(async () => {
     const existing = dataStore.snapshot().webEntries.some((entry) => entry.id === next.id)
     if (input.id && !existing) return fail('NOT_FOUND', '找不到要编辑的网址。')
     try {
-      await dataStore.update((data) => ({ ...data, webEntries: existing ? data.webEntries.map((entry) => entry.id === next.id ? next : entry) : [...data.webEntries, next] }))
+      await dataStore.update((data) => ({ ...data, webEntries: existing ? data.webEntries.map((entry) => entry.id === next.id ? { ...entry, ...next } : entry) : [...data.webEntries, { ...next, folderIds: [], createdAt: Date.now() }] }))
     } catch (error) {
       return fail('SAVE_ENTRY_FAILED', error instanceof Error ? error.message : '无法保存网址。')
     }
-    return { ok: true, data: next }
+    const saved = dataStore.snapshot().webEntries.find((entry) => entry.id === next.id)!
+    return { ok: true, data: { id: saved.id, name: saved.name, url: saved.url, description: saved.description } }
   })
   ipcMain.handle('entries:delete-website', async (_event, id: unknown): Promise<IpcResult<void>> => {
     if (typeof id !== 'string') return fail('INVALID_ID', '网址编号无效。')
@@ -122,6 +123,8 @@ app.whenReady().then(async () => {
     return { ok: true, data: undefined }
   })
   ipcMain.handle('entries:save-tool', async (_event, input: unknown): Promise<IpcResult<ToolEntry>> => {
+    return fail('TOOLS_REMOVED', '工具入口已由快速搜索中的应用目录取代。')
+    /* legacy handler retained temporarily for type compatibility
     if (!isRecord(input)) return fail('INVALID_ENTRY', '工具信息无效。')
     const name = normalizeName(input.name)
     const description = normalizeDescription(input.description)
@@ -136,8 +139,11 @@ app.whenReady().then(async () => {
       return fail('SAVE_TOOL_FAILED', error instanceof Error ? error.message : '无法保存工具。')
     }
     return { ok: true, data: next }
+    */
   })
   ipcMain.handle('entries:delete-tool', async (_event, id: unknown): Promise<IpcResult<void>> => {
+    return fail('TOOLS_REMOVED', '工具入口已由快速搜索中的应用目录取代。')
+    /* legacy handler retained temporarily for type compatibility
     if (typeof id !== 'string') return fail('INVALID_ID', '工具编号无效。')
     const current = dataStore.snapshot()
     if (!current.tools.some((entry) => entry.id === id)) return fail('NOT_FOUND', '找不到要删除的工具。')
@@ -145,6 +151,7 @@ app.whenReady().then(async () => {
       return fail('DELETE_TOOL_FAILED', error instanceof Error ? error.message : '无法删除工具。')
     }
     return { ok: true, data: undefined }
+    */
   })
   ipcMain.handle('entries:open-website', async (_event, id: unknown): Promise<IpcResult<void>> => {
     if (typeof id !== 'string') return fail('INVALID_ID', '网址编号无效。')
@@ -155,6 +162,8 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.handle('entries:open-tool', async (_event, id: unknown): Promise<IpcResult<void>> => {
+    return fail('TOOLS_REMOVED', '工具入口已由快速搜索中的应用目录取代。')
+    /* legacy handler retained temporarily for type compatibility
     if (typeof id !== 'string') return fail('INVALID_ID', '工具编号无效。')
     const entry = dataStore.snapshot().tools.find((item) => item.id === id)
     if (!entry) return fail('NOT_FOUND', '找不到这个工具。')
@@ -164,6 +173,7 @@ app.whenReady().then(async () => {
     } catch (error) {
       return fail('OPEN_TOOL_FAILED', error instanceof Error ? error.message : '无法打开这个工具。')
     }
+    */
   })
   ipcMain.handle('settings:get', () => dataStore.snapshot().settings)
   ipcMain.handle('settings:update', async (_event, settings: unknown): Promise<IpcResult<AppSettings>> => {
@@ -176,7 +186,9 @@ app.whenReady().then(async () => {
       next = await dataStore.update((data) => ({
         ...data,
         settings: {
+          ...data.settings,
           defaultSearchProvider: typeof settings.defaultSearchProvider === 'string' ? settings.defaultSearchProvider as AppSettings['defaultSearchProvider'] : data.settings.defaultSearchProvider,
+          defaultSearchEngineId: typeof settings.defaultSearchProvider === 'string' ? settings.defaultSearchProvider : data.settings.defaultSearchEngineId,
           aiBaseUrl: typeof settings.aiBaseUrl === 'string' ? settings.aiBaseUrl : data.settings.aiBaseUrl,
           aiModel: typeof settings.aiModel === 'string' ? settings.aiModel : data.settings.aiModel,
         },
@@ -230,7 +242,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('bookmarks:open', async (_event, bookmarkId: unknown): Promise<IpcResult<void>> => {
     if (typeof bookmarkId !== 'string') return fail('INVALID_BOOKMARK', '收藏编号无效。')
-    const bookmark = dataStore.snapshot().bookmarks.find((item) => item.id === bookmarkId)
+    const bookmark = dataStore.snapshot().webEntries.find((item) => item.id === bookmarkId)
     if (!bookmark) return fail('NOT_FOUND', '找不到这个收藏。')
     try { await openExternalUrl(bookmark.url); return { ok: true, data: undefined } } catch (error) {
       return fail('OPEN_BOOKMARK_FAILED', error instanceof Error ? error.message : '无法打开这个收藏。')

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { Check, Globe, KeyRound, Search } from '@lucide/vue'
-import type { AppSettings, SearchProvider } from '@/shared/domain'
+import { createDefaultAppData, type AppSettings, type SearchProvider } from '@/shared/domain'
 
-const settings = ref<AppSettings>({ defaultSearchProvider: 'google', aiBaseUrl: '', aiModel: '' })
+const settings = ref<AppSettings>(createDefaultAppData().settings)
 const saved = ref(false)
 const errorMessage = ref('')
 const apiKey = ref('')
