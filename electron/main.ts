@@ -6,7 +6,7 @@ import { AppCatalogService } from './services/app-catalog'
 import { AppLauncher } from './services/app-launcher'
 import type { IpcResult } from '../src/shared/ipc'
 import type { AppSettings } from '../src/shared/domain'
-import { buildSearchUrl } from '../src/shared/search-providers'
+import { buildSearchUrl, normalizeSearchEngines } from '../src/shared/search-providers'
 import { openExternalUrl } from './services/external-opener'
 import { BookmarkService } from './services/bookmark-service'
 import { AiTranslationService } from './services/ai-translation'
@@ -185,12 +185,19 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:get', () => dataStore.snapshot().settings)
   ipcMain.handle('settings:update', async (_event, settings: unknown): Promise<IpcResult<AppSettings>> => {
     if (!isRecord(settings)) return fail('INVALID_SETTINGS', '设置内容无效。')
-    if (settings.defaultSearchProvider !== undefined && !['google', 'baidu', 'bilibili'].includes(String(settings.defaultSearchProvider))) return fail('INVALID_PROVIDER', '不支持的搜索平台。')
     if (settings.aiBaseUrl !== undefined && (typeof settings.aiBaseUrl !== 'string' || settings.aiBaseUrl.length > 500)) return fail('INVALID_SETTINGS', 'AI 服务地址无效。')
     if (settings.aiModel !== undefined && (typeof settings.aiModel !== 'string' || settings.aiModel.length > 120)) return fail('INVALID_SETTINGS', 'AI 模型名称无效。')
     if (settings.quickSearchShortcut !== undefined && (typeof settings.quickSearchShortcut !== 'string' || settings.quickSearchShortcut.length > 80)) return fail('INVALID_SETTINGS', '快捷键格式无效。')
     if (settings.launchOnStartup !== undefined && typeof settings.launchOnStartup !== 'boolean') return fail('INVALID_SETTINGS', '开机启动设置无效。')
     if (settings.websiteLayout !== undefined && !['grid', 'list'].includes(String(settings.websiteLayout))) return fail('INVALID_SETTINGS', '网址排布模式无效。')
+    let searchEngines = dataStore.snapshot().settings.searchEngines
+    if (settings.searchEngines !== undefined) {
+      try { searchEngines = normalizeSearchEngines(settings.searchEngines) } catch (error) { return fail('INVALID_SEARCH_ENGINES', error instanceof Error ? error.message : '搜索引擎配置无效。') }
+    }
+    const requestedEngineId = typeof settings.defaultSearchEngineId === 'string' ? settings.defaultSearchEngineId : dataStore.snapshot().settings.defaultSearchEngineId
+    const defaultSearchEngineId = searchEngines.some((engine) => engine.id === requestedEngineId && engine.enabled)
+      ? requestedEngineId
+      : searchEngines.find((engine) => engine.enabled)!.id
     const currentShortcut = dataStore.snapshot().settings.quickSearchShortcut
     const nextShortcut = typeof settings.quickSearchShortcut === 'string' ? settings.quickSearchShortcut : currentShortcut
     if (nextShortcut !== currentShortcut) {
@@ -203,8 +210,8 @@ app.whenReady().then(async () => {
         ...data,
         settings: {
           ...data.settings,
-          defaultSearchProvider: typeof settings.defaultSearchProvider === 'string' ? settings.defaultSearchProvider as AppSettings['defaultSearchProvider'] : data.settings.defaultSearchProvider,
-          defaultSearchEngineId: typeof settings.defaultSearchProvider === 'string' ? settings.defaultSearchProvider : data.settings.defaultSearchEngineId,
+          searchEngines,
+          defaultSearchEngineId,
           quickSearchShortcut: nextShortcut,
           launchOnStartup: typeof settings.launchOnStartup === 'boolean' ? settings.launchOnStartup : data.settings.launchOnStartup,
           websiteLayout: settings.websiteLayout === 'list' ? 'list' : settings.websiteLayout === 'grid' ? 'grid' : data.settings.websiteLayout,
@@ -222,8 +229,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('search:open-web', async (_event, query: unknown): Promise<IpcResult<void>> => {
     if (typeof query !== 'string' || !query.trim()) return fail('EMPTY_QUERY', '请输入要搜索的内容。')
     try {
-      const url = buildSearchUrl(dataStore.snapshot().settings.defaultSearchProvider, query)
-      await openExternalUrl(url)
+      const settings = dataStore.snapshot().settings
+      const engine = settings.searchEngines.find((item) => item.id === settings.defaultSearchEngineId && item.enabled)
+      if (!engine) throw new Error('没有可用的网页搜索引擎，请前往设置添加。')
+      const url = buildSearchUrl(engine, query)
+      await openExternalUrl(url.toString())
       return { ok: true, data: undefined }
     } catch (error) {
       return fail('WEB_SEARCH_FAILED', error instanceof Error ? error.message : '无法打开搜索页面。')

@@ -26,7 +26,7 @@ const savingBookmark = ref(false)
 const refreshing = ref(false)
 const parsed = computed(() => parseSearchCommand(query.value))
 const isWebSearch = computed(() => parsed.value.mode === 'web')
-const providerNames = { google: 'Google', baidu: '百度', bilibili: 'Bilibili' }
+const defaultEngineName = computed(() => settings.value.searchEngines.find((engine) => engine.id === settings.value.defaultSearchEngineId)?.name ?? '默认搜索引擎')
 const searchableEntries = computed<SearchableEntry[]>(() => [
   ...apps.value.map((entry) => ({ id: entry.id, name: entry.name, aliases: entry.aliases, kind: 'app' as const, subtitle: '本地应用' })),
   ...webEntries.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'website' as const, subtitle: entry.url, url: entry.url, folderIds: entry.folderIds, searchText: `${entry.url} ${entry.description ?? ''}` })),
@@ -152,7 +152,7 @@ onMounted(() => {
     <div v-if="query" class="search-feedback">
       <template v-if="isWebSearch">
         <span class="mode-chip"><Search :size="13" /> 网页搜索</span>
-        <span>{{ providerNames[settings.defaultSearchProvider] }} · {{ parsed.query ? `按 Enter 搜索“${parsed.query}”` : '请输入关键词' }}</span>
+        <span>{{ defaultEngineName }} · {{ parsed.query ? `按 Enter 搜索“${parsed.query}”` : '请输入关键词' }}</span>
       </template>
       <template v-else>
         <span class="mode-chip"><Command :size="13" /> 本地搜索</span>

@@ -1,5 +1,3 @@
-export type SearchProvider = 'google' | 'baidu' | 'bilibili'
-
 export interface BookmarkFolder { id: string; name: string; createdAt: number }
 
 export interface WebsiteEntry {
@@ -34,8 +32,6 @@ export interface AppSettings {
   everythingEsPath: string
   aiBaseUrl: string
   aiModel: string
-  // Transitional renderer compatibility; removed after settings UI migration.
-  defaultSearchProvider: SearchProvider
 }
 
 export interface AppData {
@@ -65,7 +61,6 @@ export const DEFAULT_APP_DATA: AppData = {
     everythingEsPath: '',
     aiBaseUrl: '',
     aiModel: '',
-    defaultSearchProvider: 'google',
   },
 }
 

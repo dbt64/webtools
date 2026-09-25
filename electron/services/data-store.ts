@@ -1,6 +1,6 @@
 import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type BookmarkFolder, type SearchProvider, type WebsiteEntry } from '../../src/shared/domain'
+import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type BookmarkFolder, type WebsiteEntry } from '../../src/shared/domain'
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 const isString = (value: unknown): value is string => typeof value === 'string'
@@ -56,12 +56,11 @@ export function migrateV1ToV2(input: unknown): AppData {
   for (const bookmark of input.bookmarks as { id: string; folderId: string; title: string; url: string; favicon?: string; createdAt: number }[]) add(bookmark.url, { id: bookmark.id, name: bookmark.title, favicon: bookmark.favicon, folderIds: [bookmark.folderId], createdAt: bookmark.createdAt })
   result.webEntries = [...byUrl.values()]
   result.bookmarkFolders = (input.bookmarkFolders as BookmarkFolder[]).map((f) => ({ ...f }))
-  const provider = (input.settings.defaultSearchProvider ?? 'google') as SearchProvider
+  const provider = ['google', 'baidu', 'bilibili'].includes(String(input.settings.defaultSearchProvider)) ? String(input.settings.defaultSearchProvider) : 'google'
   result.settings = {
     ...result.settings,
     searchEngines: DEFAULT_SEARCH_ENGINES.map((engine) => ({ ...engine })),
     defaultSearchEngineId: provider,
-    defaultSearchProvider: provider,
     aiBaseUrl: typeof input.settings.aiBaseUrl === 'string' ? input.settings.aiBaseUrl : '',
     aiModel: typeof input.settings.aiModel === 'string' ? input.settings.aiModel : '',
   }

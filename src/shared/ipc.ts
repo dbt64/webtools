@@ -1,4 +1,4 @@
-import type { AppSearchEntry, AppSettings, BookmarkFolder, SearchProvider, WebsiteEntry } from './domain'
+import type { AppSearchEntry, AppSettings, BookmarkFolder, WebsiteEntry } from './domain'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -67,5 +67,3 @@ export const IPC_CHANNELS = {
   searchEverything: 'everything:search',
   openEverythingResult: 'everything:open',
 } as const
-
-export type { SearchProvider }

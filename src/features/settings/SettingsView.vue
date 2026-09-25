@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { Check, Globe, KeyRound, Search } from '@lucide/vue'
-import { createDefaultAppData, type AppSettings, type SearchProvider } from '@/shared/domain'
+import { Check, Keyboard, KeyRound } from '@lucide/vue'
+import { createDefaultAppData, type AppSettings } from '@/shared/domain'
+import SearchEngineEditor from './SearchEngineEditor.vue'
 
 const settings = ref<AppSettings>(createDefaultAppData().settings)
 const saved = ref(false)
@@ -10,22 +11,46 @@ const apiKey = ref('')
 const hasSavedKey = ref(false)
 const testing = ref(false)
 const testMessage = ref('')
-const options: { id: SearchProvider; name: string; detail: string; icon: string }[] = [
-  { id: 'google', name: 'Google', detail: '全球网页搜索', icon: 'G' },
-  { id: 'baidu', name: '百度', detail: '中文网页搜索', icon: '百' },
-  { id: 'bilibili', name: 'Bilibili', detail: '视频与创作内容', icon: 'B' },
-]
+const recordingShortcut = ref(false)
+const savingShortcut = ref(false)
 
-async function choose(provider: SearchProvider): Promise<void> {
-  const currentAiSettings = { aiBaseUrl: settings.value.aiBaseUrl, aiModel: settings.value.aiModel }
-  const result = await window.desktop.updateSettings({ defaultSearchProvider: provider })
-  if (result.ok) {
-    settings.value = { ...result.data, ...currentAiSettings }
-    saved.value = true
-    errorMessage.value = ''
-    window.setTimeout(() => { saved.value = false }, 1800)
-  } else errorMessage.value = result.error.message
+function markSaved(): void { saved.value = true; window.setTimeout(() => { saved.value = false }, 1800) }
+
+async function updateShortcut(shortcut: string): Promise<void> {
+  savingShortcut.value = true
+  const result = await window.desktop.updateSettings({ quickSearchShortcut: shortcut })
+  savingShortcut.value = false
+  if (!result.ok) { errorMessage.value = result.error.message; recordingShortcut.value = false; return }
+  settings.value = result.data
+  errorMessage.value = ''
+  recordingShortcut.value = false
+  markSaved()
 }
+
+function handleShortcutKeydown(event: KeyboardEvent): void {
+  if (!recordingShortcut.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (event.key === 'Escape') { recordingShortcut.value = false; return }
+  if (['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) return
+  const modifiers = [event.ctrlKey ? 'Control' : '', event.altKey ? 'Alt' : '', event.shiftKey ? 'Shift' : '', event.metaKey ? 'Super' : ''].filter(Boolean)
+  if (!modifiers.length) return
+  const names: Record<string, string> = { ' ': 'Space', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', PageUp: 'PageUp', PageDown: 'PageDown' }
+  const key = names[event.key] ?? (/^[a-z]$/i.test(event.key) ? event.key.toUpperCase() : event.key)
+  if (!/^[A-Z0-9]$/.test(key) && !/^F(?:[1-9]|1[0-2])$/.test(key) && !['Space', 'Up', 'Down', 'Left', 'Right', 'PageUp', 'PageDown', 'Home', 'End', 'Insert', 'Delete', 'Backspace', 'Tab', 'Enter'].includes(key)) {
+    errorMessage.value = '此按键不能用作全局快捷键，请尝试字母、数字或功能键。'
+    return
+  }
+  void updateShortcut([...modifiers, key].join('+'))
+}
+
+async function toggleStartup(): Promise<void> {
+  const result = await window.desktop.updateSettings({ launchOnStartup: !settings.value.launchOnStartup })
+  if (!result.ok) errorMessage.value = result.error.message
+  else { settings.value = result.data; errorMessage.value = ''; markSaved() }
+}
+
+function handleEnginesSaved(value: AppSettings): void { settings.value = value; markSaved() }
 
 async function saveAiSettings(): Promise<boolean> {
   const result = await window.desktop.updateSettings({ aiBaseUrl: settings.value.aiBaseUrl.trim(), aiModel: settings.value.aiModel.trim() })
@@ -77,11 +102,11 @@ onMounted(async () => {
 <template>
   <section class="content-page settings-page">
     <div class="page-heading"><div><p class="eyebrow">偏好与连接</p><h1>设置</h1><p class="page-description">调整 WebTools 的搜索方式与服务连接。</p></div></div>
-    <div class="settings-group">
-      <div class="settings-group-heading"><span class="settings-group-icon"><Search :size="17" /></span><div><strong>网页搜索</strong><p>输入 ?关键词 时默认打开的平台</p></div></div>
-      <button v-for="option in options" :key="option.id" class="provider-option" :class="{ selected: settings.defaultSearchProvider === option.id }" @click="choose(option.id)">
-        <span class="provider-logo">{{ option.icon }}</span><span class="provider-copy"><strong>{{ option.name }}</strong><small>{{ option.detail }}</small></span><span v-if="settings.defaultSearchProvider === option.id" class="selected-check"><Check :size="15" /></span>
-      </button>
+    <SearchEngineEditor :settings="settings" @saved="handleEnginesSaved" />
+    <div class="settings-group shortcut-settings">
+      <div class="settings-group-heading"><span class="settings-group-icon"><Keyboard :size="17" /></span><div><strong>快速搜索快捷键</strong><p>在其他应用中按下快捷键显示 WebTools 搜索框</p></div></div>
+      <div class="shortcut-row"><div><strong>唤起搜索框</strong><small>快捷键会在后台全局生效</small></div><button class="shortcut-recorder" :class="{ recording: recordingShortcut }" :disabled="savingShortcut" @click="recordingShortcut = true" @keydown="handleShortcutKeydown">{{ recordingShortcut ? '按下组合键…（Esc 取消）' : settings.quickSearchShortcut.replace('Control', 'Ctrl').replace('Super', 'Win') }}<span v-if="!recordingShortcut">⌨</span></button></div>
+      <div class="shortcut-row"><div><strong>登录 Windows 时启动</strong><small>启动到托盘，随时可用全局快捷键</small></div><button class="toggle-switch" :class="{ enabled: settings.launchOnStartup }" role="switch" :aria-checked="settings.launchOnStartup" @click="toggleStartup"><span /></button></div>
     </div>
     <div class="settings-group ai-settings">
       <div class="settings-group-heading"><span class="settings-group-icon"><KeyRound :size="17" /></span><div><strong>AI 翻译服务</strong><p>OpenAI 兼容接口 · 支持 OpenAI、DeepSeek</p></div></div>
