@@ -5,9 +5,11 @@ import {
 } from '@lucide/vue'
 import type { AppEntry, AppSettings, ToolEntry, WebEntry } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
-import { searchEntries, type SearchableEntry } from '@/shared/search'
+import { searchEntries, type SearchableEntry, type SearchResult as SearchResultItem } from '@/shared/search'
 import { parseSearchCommand } from '@/shared/search-command'
 import SearchResult from './SearchResult.vue'
+import BookmarkDialog from '../bookmarks/BookmarkDialog.vue'
+import type { BookmarkFolder } from '@/shared/domain'
 
 const emit = defineEmits<{ navigate: [section: 'bookmarks' | 'entries' | 'translate'] }>()
 
@@ -18,6 +20,9 @@ const settings = ref<AppSettings>({ defaultSearchProvider: 'google', aiBaseUrl: 
 const query = ref('')
 const selectedIndex = ref(0)
 const searchInput = ref<HTMLInputElement>()
+const bookmarkFolders = ref<BookmarkFolder[]>([])
+const bookmarkTarget = ref<SearchableEntry>()
+const showBookmarkDialog = ref(false)
 const parsed = computed(() => parseSearchCommand(query.value))
 const isWebSearch = computed(() => parsed.value.mode === 'web')
 const providerNames = { google: 'Google', baidu: '百度', bilibili: 'Bilibili' }
@@ -81,6 +86,26 @@ function handleKeydown(event: KeyboardEvent): void {
   }
 }
 
+async function addSearchResultBookmark(result: SearchResultItem<SearchableEntry>): Promise<void> {
+  const loaded = await window.desktop.listBookmarkFolders()
+  bookmarkFolders.value = loaded
+  bookmarkTarget.value = result.entry
+  showBookmarkDialog.value = true
+}
+
+async function saveBookmark(input: { folderId?: string; newFolderName?: string; title: string; url: string }): Promise<void> {
+  let folderId = input.folderId
+  if (input.newFolderName) {
+    const folder = await window.desktop.saveBookmarkFolder({ name: input.newFolderName })
+    if (!folder.ok) { window.alert(folder.error.message); return }
+    folderId = folder.data.id
+  }
+  if (!folderId) return
+  const result = await window.desktop.addBookmark({ folderId, title: input.title || bookmarkTarget.value?.name, url: input.url })
+  if (!result.ok) { window.alert(result.error.message); return }
+  showBookmarkDialog.value = false
+}
+
 watch(query, () => { selectedIndex.value = 0 })
 onMounted(() => {
   void loadApps()
@@ -130,6 +155,7 @@ onMounted(() => {
         :result="result"
         :selected="resultIndex === selectedIndex"
         @select="launchSelected"
+        @bookmark="addSearchResultBookmark(result)"
         @mouseenter="selectedIndex = resultIndex"
       />
       <div v-if="!results.length" class="empty-results">
@@ -168,5 +194,13 @@ onMounted(() => {
       <span>搜索按键 <kbd>?</kbd> 可切换网页模式</span>
       <span>{{ apps.length }} 个本地应用</span>
     </footer>
+    <BookmarkDialog
+      v-if="showBookmarkDialog && bookmarkTarget?.kind === 'website'"
+      :folders="bookmarkFolders"
+      :initial-title="bookmarkTarget.name"
+      :initial-url="bookmarkTarget.subtitle"
+      @save="saveBookmark"
+      @cancel="showBookmarkDialog = false"
+    />
   </section>
 </template>

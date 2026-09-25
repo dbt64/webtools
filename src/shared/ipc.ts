@@ -1,4 +1,4 @@
-import type { AppEntry, AppSettings, SearchProvider, ToolEntry, WebEntry } from './domain'
+import type { AppEntry, AppSettings, Bookmark, BookmarkFolder, SearchProvider, ToolEntry, WebEntry } from './domain'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -19,6 +19,13 @@ export interface DesktopApi {
   getSettings(): Promise<AppSettings>
   updateSettings(settings: Partial<AppSettings>): Promise<IpcResult<AppSettings>>
   openSearch(query: string): Promise<IpcResult<void>>
+  listBookmarkFolders(): Promise<BookmarkFolder[]>
+  saveBookmarkFolder(input: { id?: string; name: string }): Promise<IpcResult<BookmarkFolder>>
+  deleteBookmarkFolder(folderId: string): Promise<IpcResult<void>>
+  listBookmarks(folderId: string): Promise<Bookmark[]>
+  addBookmark(input: { folderId: string; title?: string; url: string }): Promise<IpcResult<Bookmark>>
+  deleteBookmark(bookmarkId: string): Promise<IpcResult<void>>
+  openBookmark(bookmarkId: string): Promise<IpcResult<void>>
 }
 
 export const IPC_CHANNELS = {
@@ -36,6 +43,13 @@ export const IPC_CHANNELS = {
   getSettings: 'settings:get',
   updateSettings: 'settings:update',
   openSearch: 'search:open-web',
+  listBookmarkFolders: 'bookmarks:list-folders',
+  saveBookmarkFolder: 'bookmarks:save-folder',
+  deleteBookmarkFolder: 'bookmarks:delete-folder',
+  listBookmarks: 'bookmarks:list',
+  addBookmark: 'bookmarks:add',
+  deleteBookmark: 'bookmarks:delete',
+  openBookmark: 'bookmarks:open',
 } as const
 
 export type { SearchProvider }

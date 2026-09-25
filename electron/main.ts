@@ -9,6 +9,7 @@ import type { IpcResult } from '../src/shared/ipc'
 import type { AppSettings, ToolEntry, WebEntry } from '../src/shared/domain'
 import { buildSearchUrl } from '../src/shared/search-providers'
 import { openExternalUrl, validateExternalUrl } from './services/external-opener'
+import { BookmarkService } from './services/bookmark-service'
 
 const isDevelopment = !app.isPackaged
 let dataStore: DataStore
@@ -68,6 +69,7 @@ app.whenReady().then(async () => {
   void secretStore
   const appCatalog = new AppCatalogService()
   const appLauncher = new AppLauncher(appCatalog)
+  const bookmarkService = new BookmarkService(dataStore)
   await appCatalog.refresh()
   ipcMain.handle('apps:list', () => appCatalog.list())
   ipcMain.handle('apps:refresh', () => appCatalog.refresh())
@@ -140,8 +142,12 @@ app.whenReady().then(async () => {
     if (typeof id !== 'string') return fail('INVALID_ID', '工具编号无效。')
     const entry = dataStore.snapshot().tools.find((item) => item.id === id)
     if (!entry) return fail('NOT_FOUND', '找不到这个工具。')
-    const error = await import('electron').then(({ shell }) => shell.openPath(entry.command))
-    return error ? fail('OPEN_TOOL_FAILED', error) : { ok: true, data: undefined }
+    try {
+      const error = await import('electron').then(({ shell }) => shell.openPath(entry.command))
+      return error ? fail('OPEN_TOOL_FAILED', error) : { ok: true, data: undefined }
+    } catch (error) {
+      return fail('OPEN_TOOL_FAILED', error instanceof Error ? error.message : '无法打开这个工具。')
+    }
   })
   ipcMain.handle('settings:get', () => dataStore.snapshot().settings)
   ipcMain.handle('settings:update', async (_event, settings: unknown): Promise<IpcResult<AppSettings>> => {
@@ -167,6 +173,40 @@ app.whenReady().then(async () => {
       return { ok: true, data: undefined }
     } catch (error) {
       return fail('WEB_SEARCH_FAILED', error instanceof Error ? error.message : '无法打开搜索页面。')
+    }
+  })
+  ipcMain.handle('bookmarks:list-folders', () => bookmarkService.listFolders())
+  ipcMain.handle('bookmarks:save-folder', async (_event, input: unknown): Promise<IpcResult<Awaited<ReturnType<BookmarkService['saveFolder']>>>> => {
+    if (!isRecord(input) || typeof input.name !== 'string' || input.name.length > 80 || (input.id !== undefined && typeof input.id !== 'string')) return fail('INVALID_FOLDER', '收藏夹信息无效。')
+    try { return { ok: true, data: await bookmarkService.saveFolder({ id: input.id as string | undefined, name: input.name }) } } catch (error) {
+      return fail('SAVE_FOLDER_FAILED', error instanceof Error ? error.message : '无法保存收藏夹。')
+    }
+  })
+  ipcMain.handle('bookmarks:delete-folder', async (_event, folderId: unknown): Promise<IpcResult<void>> => {
+    if (typeof folderId !== 'string') return fail('INVALID_FOLDER', '收藏夹编号无效。')
+    try { await bookmarkService.deleteFolder(folderId); return { ok: true, data: undefined } } catch (error) {
+      return fail('DELETE_FOLDER_FAILED', error instanceof Error ? error.message : '无法删除收藏夹。')
+    }
+  })
+  ipcMain.handle('bookmarks:list', (_event, folderId: unknown) => typeof folderId === 'string' ? bookmarkService.listBookmarks(folderId) : [])
+  ipcMain.handle('bookmarks:add', async (_event, input: unknown): Promise<IpcResult<Awaited<ReturnType<BookmarkService['addBookmark']>>>> => {
+    if (!isRecord(input) || typeof input.folderId !== 'string' || typeof input.url !== 'string' || (input.title !== undefined && typeof input.title !== 'string')) return fail('INVALID_BOOKMARK', '收藏信息无效。')
+    try { return { ok: true, data: await bookmarkService.addBookmark({ folderId: input.folderId, title: input.title as string | undefined, url: input.url }) } } catch (error) {
+      return fail('ADD_BOOKMARK_FAILED', error instanceof Error ? error.message : '无法添加收藏。')
+    }
+  })
+  ipcMain.handle('bookmarks:delete', async (_event, bookmarkId: unknown): Promise<IpcResult<void>> => {
+    if (typeof bookmarkId !== 'string') return fail('INVALID_BOOKMARK', '收藏编号无效。')
+    try { await bookmarkService.deleteBookmark(bookmarkId); return { ok: true, data: undefined } } catch (error) {
+      return fail('DELETE_BOOKMARK_FAILED', error instanceof Error ? error.message : '无法删除收藏。')
+    }
+  })
+  ipcMain.handle('bookmarks:open', async (_event, bookmarkId: unknown): Promise<IpcResult<void>> => {
+    if (typeof bookmarkId !== 'string') return fail('INVALID_BOOKMARK', '收藏编号无效。')
+    const bookmark = dataStore.snapshot().bookmarks.find((item) => item.id === bookmarkId)
+    if (!bookmark) return fail('NOT_FOUND', '找不到这个收藏。')
+    try { await openExternalUrl(bookmark.url); return { ok: true, data: undefined } } catch (error) {
+      return fail('OPEN_BOOKMARK_FAILED', error instanceof Error ? error.message : '无法打开这个收藏。')
     }
   })
   createWindow()

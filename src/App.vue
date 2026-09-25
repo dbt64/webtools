@@ -6,6 +6,7 @@ import {
 import SearchView from './features/search/SearchView.vue'
 import EntriesView from './features/entries/EntriesView.vue'
 import SettingsView from './features/settings/SettingsView.vue'
+import BookmarksView from './features/bookmarks/BookmarksView.vue'
 
 type Section = 'search' | 'bookmarks' | 'entries' | 'translate' | 'settings'
 
@@ -86,13 +87,13 @@ onMounted(() => {
       </header>
 
       <SearchView v-if="activeSection === 'search'" @navigate="activeSection = $event" />
+      <BookmarksView v-else-if="activeSection === 'bookmarks'" />
       <EntriesView v-else-if="activeSection === 'entries'" class="entry-manager" />
       <SettingsView v-else-if="activeSection === 'settings'" />
 
       <section v-else class="section-placeholder">
         <div class="section-symbol">
-          <Bookmark v-if="activeSection === 'bookmarks'" :size="24" />
-          <Languages v-else :size="24" />
+          <Languages :size="24" />
         </div>
         <p class="eyebrow">{{ sectionLabel }}</p>
         <h1>{{ sectionLabel }}</h1>
