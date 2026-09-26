@@ -16,8 +16,10 @@ export function registerSettingsIpcHandlers(deps: {
   openExternal: (url: string) => Promise<void>
 }): void {
   const { dataStore, hotkeyService } = deps
+  let pendingSettingsUpdate: Promise<void> = Promise.resolve()
   ipcMain.handle('settings:get', () => dataStore.snapshot().settings)
-  ipcMain.handle('settings:update', async (_event, settings: unknown): Promise<IpcResult<AppSettings>> => {
+  ipcMain.handle('settings:update', (_event, settings: unknown) => {
+    const operation = pendingSettingsUpdate.then(async (): Promise<IpcResult<AppSettings>> => {
     if (!isRecord(settings)) return fail('INVALID_SETTINGS', '设置内容无效。')
     if (settings.aiBaseUrl !== undefined && (typeof settings.aiBaseUrl !== 'string' || settings.aiBaseUrl.length > 500)) return fail('INVALID_SETTINGS', 'AI 服务地址无效。')
     if (settings.aiModel !== undefined && (typeof settings.aiModel !== 'string' || settings.aiModel.length > 120)) return fail('INVALID_SETTINGS', 'AI 模型名称无效。')
@@ -71,6 +73,9 @@ export function registerSettingsIpcHandlers(deps: {
       return fail('SAVE_SETTINGS_FAILED', error instanceof Error ? error.message : '无法保存设置。')
     }
     return { ok: true, data: next.settings }
+    })
+    pendingSettingsUpdate = operation.then(() => undefined, () => undefined)
+    return operation
   })
   ipcMain.handle('search:open-web', async (_event, query: unknown): Promise<IpcResult<void>> => {
     if (typeof query !== 'string' || !query.trim()) return fail('EMPTY_QUERY', '请输入要搜索的内容。')

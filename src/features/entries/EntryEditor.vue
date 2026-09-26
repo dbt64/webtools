@@ -35,7 +35,7 @@ async function submit(): Promise<void> {
   let name = form.name.trim()
   if (!name && fetchedTitle.value) name = fetchedTitle.value
   if (!name) { try { name = new URL(form.url).hostname.replace(/^www\./i, '') } catch { name = form.url.trim() } }
-  emit('save', { id: props.entry?.id, name, url: form.url.trim(), description: form.description.trim() || undefined, favicon: favicon.value, folderIds: folderIds.value })
+  emit('save', { id: props.entry?.id, name, url: form.url.trim(), description: form.description.trim(), favicon: favicon.value, folderIds: folderIds.value })
 }
 </script>
 

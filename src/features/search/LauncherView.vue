@@ -15,6 +15,7 @@ const websites = ref<WebsiteEntry[]>([])
 const folders = ref<BookmarkFolder[]>([])
 const selectedIndex = ref(0)
 const input = ref<HTMLInputElement>()
+const resultsPanel = ref<HTMLElement>()
 const error = ref('')
 const fileResults = ref<EverythingResult[]>([])
 const fileStatus = ref('')
@@ -32,6 +33,11 @@ const entries = computed<LauncherEntry[]>(() => [
 const index = computed(() => buildSearchIndex(entries.value))
 const results = computed(() => parsed.value.mode !== 'local' ? [] : searchEntries(parsed.value.query, entries.value, index.value).slice(0, 8))
 const selectableCount = computed(() => isFiles.value ? fileResults.value.length : results.value.length)
+
+watch(selectedIndex, async () => {
+  await nextTick()
+  resultsPanel.value?.querySelector<HTMLElement>('.launcher-result.selected')?.scrollIntoView({ block: 'nearest' })
+})
 
 async function focus(): Promise<void> {
   await nextTick()
@@ -144,7 +150,7 @@ onMounted(() => {
         <Command :size="19" :stroke-width="2.4" />
       </button>
     </div>
-    <section v-if="query.trim()" class="launcher-results">
+    <section v-if="query.trim()" ref="resultsPanel" class="launcher-results">
       <div v-if="isWeb" class="launcher-hint"><Globe :size="16" /><span>{{ parsed.query ? `使用默认搜索引擎搜索“${parsed.query}”` : '输入关键词后按 Enter 搜索网页' }}</span><kbd>Enter ↵</kbd></div>
       <template v-else-if="isFiles">
         <button v-for="(result, idx) in fileResults.slice(0, 8)" :key="result.id" class="launcher-result" :class="{ selected: selectedIndex === idx }" @mousedown.prevent @mouseenter="selectedIndex = idx" @click="submit">

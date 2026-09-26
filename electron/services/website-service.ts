@@ -22,15 +22,20 @@ export class WebsiteService {
     if (input.description !== undefined && (typeof input.description !== 'string' || input.description.length > 1000)) return fail('INVALID_ENTRY', '网址备注不能超过 1000 个字符。')
     if (!Array.isArray(input.folderIds) || input.folderIds.some((folderId) => typeof folderId !== 'string')) return fail('INVALID_FOLDER', '收藏夹编号无效。')
     if (input.favicon !== undefined && (typeof input.favicon !== 'string' || input.favicon.length > 500_000 || !/^data:image\/(?:png|jpeg|gif|webp|x-icon|vnd\.microsoft\.icon);base64,/i.test(input.favicon))) return fail('INVALID_METADATA', '网站图标无效。')
-    const current = this.store.snapshot().webEntries
     const folderIds = [...new Set(input.folderIds)]
-    if (folderIds.some((folderId) => !this.store.snapshot().bookmarkFolders.some((folder) => folder.id === folderId))) return fail('INVALID_FOLDER', '一个或多个收藏夹不存在。')
-    const existing = input.id ? current.find((entry) => entry.id === input.id) : current.find((entry) => entry.url === url)
-    if (input.id && !existing) return fail('NOT_FOUND', '找不到要编辑的网址。')
     try {
       let website!: WebsiteEntry
+      let mutationFailure: 'INVALID_FOLDER' | 'NOT_FOUND' | undefined
       await this.store.update((data) => {
+        if (folderIds.some((folderId) => !data.bookmarkFolders.some((folder) => folder.id === folderId))) {
+          mutationFailure = 'INVALID_FOLDER'
+          return data
+        }
         const current = input.id ? data.webEntries.find((entry) => entry.id === input.id) : data.webEntries.find((entry) => entry.url === url)
+        if (input.id && !current) {
+          mutationFailure = 'NOT_FOUND'
+          return data
+        }
         website = {
           id: current?.id ?? input.id ?? randomUUID(), name, url,
           description: input.description === undefined ? current?.description : input.description.trim() || undefined,
@@ -40,6 +45,8 @@ export class WebsiteService {
         }
         return { ...data, webEntries: current ? data.webEntries.map((entry) => entry.id === website.id ? website : entry) : [...data.webEntries, website] }
       })
+      if (mutationFailure === 'INVALID_FOLDER') return fail('INVALID_FOLDER', '一个或多个收藏夹不存在。')
+      if (mutationFailure === 'NOT_FOUND') return fail('NOT_FOUND', '找不到要编辑的网址。')
       return { ok: true, data: website }
     } catch (error) {
       console.warn('[website:save] persistence failed', error)
