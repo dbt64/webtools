@@ -27,15 +27,17 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 ::selection { color: var(--accent-ink); background: var(--accent); }
 
 #app { min-height: 100vh; }
-.launcher-mode, .launcher-mode body { background: transparent; }
-.launcher-shell { min-height: 100vh; padding: 10px; color: #eceef0; background: transparent; }
-.launcher-bar { display: flex; height: 68px; align-items: center; gap: 13px; padding: 0 13px 0 18px; border: 1px solid #45474c; border-radius: 11px; background: #202226; box-shadow: 0 14px 38px #0008; }
+.launcher-mode, .launcher-mode body { height: 100%; overflow: hidden; background: transparent; }
+.launcher-mode body { min-width: 0; min-height: 0; }
+.launcher-mode #app { min-height: 0; height: 100%; overflow: hidden; }
+.launcher-shell { height: 100%; min-height: 0; overflow: hidden; padding: 10px; color: #eceef0; background: transparent; }
+.launcher-bar { display: flex; height: 68px; align-items: center; gap: 13px; padding: 0 13px 0 18px; border: 1px solid #45474c; border-radius: 11px; background: #202226; }
 .launcher-search-icon { flex: 0 0 auto; color: #9da3ab; }
 .launcher-bar input { min-width: 0; flex: 1; border: 0; outline: 0; color: #f2f3f4; background: transparent; font-size: 19px; }
 .launcher-bar input::placeholder { color: #848991; }
 .launcher-brand { display: grid; width: 40px; height: 40px; flex: 0 0 auto; place-items: center; border: 1px solid #39815f; border-radius: 11px; color: #123321; background: var(--accent); cursor: pointer; transition: filter .15s ease, transform .15s ease; }
 .launcher-brand:hover { filter: brightness(1.08); transform: translateY(-1px); }
-.launcher-results { overflow: hidden; margin-top: 8px; border: 1px solid #383a3f; border-radius: 10px; background: #202226; box-shadow: 0 14px 38px #0007; }
+.launcher-results { max-height: calc(100vh - 130px); overflow-x: hidden; overflow-y: auto; margin-top: 8px; border: 1px solid #383a3f; border-radius: 10px; background: #202226; scrollbar-width: thin; }
 .launcher-result { display: flex; width: 100%; min-height: 51px; align-items: center; gap: 12px; padding: 6px 14px; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .launcher-result-wrap { display: flex; align-items: stretch; padding-right: 7px; }
 .launcher-result-wrap .launcher-result { flex: 1; }

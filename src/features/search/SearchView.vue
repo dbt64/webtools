@@ -174,7 +174,6 @@ onMounted(() => {
         spellcheck="false"
         @keydown="handleKeydown"
       />
-      <span class="search-hint"><kbd>Ctrl</kbd><kbd>K</kbd></span>
     </label>
 
     <div v-if="query" class="search-feedback">

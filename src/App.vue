@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import {
   CircleHelp, Command, Compass, Languages, Search, Settings2, SlidersHorizontal,
 } from '@lucide/vue'
@@ -25,16 +25,6 @@ function focusSearch(): void {
   requestAnimationFrame(() => document.getElementById('quick-search')?.focus())
 }
 
-function handleGlobalKeydown(event: KeyboardEvent): void {
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
-    event.preventDefault()
-    focusSearch()
-  }
-}
-
-onMounted(() => {
-  window.addEventListener('keydown', handleGlobalKeydown)
-})
 </script>
 
 <template>
