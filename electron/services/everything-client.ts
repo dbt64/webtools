@@ -100,4 +100,68 @@ export class EverythingClient {
       ({ stdout } = await execFileAsync(status.executablePath, args, { windowsHide: true, timeout: COMMAND_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, encoding: 'utf8' }))
     } catch (error) {
       const cause = error as NodeJS.ErrnoException
-      if (cause.co
+      if (cause.code === 'ETIMEDOUT') throw new Error('Everything 搜索超时，请缩短关键词后重试。')
+      if ((error as { code?: number }).code === 8) throw new Error('Everything 没有运行。请先启动 Everything，再搜索文件。')
+      if ((error as { code?: number }).code === 9) return []
+      throw new Error(`ES 搜索失败：${error instanceof Error ? error.message : '无法读取 Everything 搜索结果。'}`)
+    }
+
+    let paths: string[]
+    if (supportsJson) {
+      try {
+        const parsed: unknown = JSON.parse(stdout.trim() || '[]')
+        const rows = Array.isArray(parsed) ? parsed : [parsed]
+        paths = rows.map(fullPathFromJson).filter((path): path is string => Boolean(path))
+      } catch { throw new Error('当前 ES JSON 输出格式无法读取，请更新 ES 后重试。') }
+    } else paths = parseCsv(stdout).filter(isAbsolute)
+
+    const results: EverythingResult[] = []
+    const nextResultPaths = new Map<string, string>()
+    for (const rawPath of paths.slice(0, maximum)) {
+      const path = rawPath.replace(/[\\/]+$/, '') || rawPath
+      const info = await stat(path).catch(() => null)
+      if (sequence !== this.searchSequence) return []
+      if (!info) continue
+      const id = createHash('sha256').update(`${path.toLocaleLowerCase()}\0${Date.now()}\0${results.length}`).digest('hex').slice(0, 24)
+      nextResultPaths.set(id, path)
+      results.push({ id, name: basename(path), locationLabel: basename(dirname(path)) || path.slice(0, 3), kind: info.isDirectory() ? 'folder' : 'file' })
+    }
+    if (sequence !== this.searchSequence) return []
+    for (const [id, path] of nextResultPaths) this.resultPaths.set(id, path)
+    return results
+  }
+
+  async open(id: string): Promise<void> {
+    const path = this.resultPaths.get(id)
+    if (!path) throw new Error('这个搜索结果已过期，请重新搜索。')
+    const info = await stat(path).catch(() => null)
+    if (!info) throw new Error('文件或文件夹已不存在。')
+    if (info.isDirectory()) {
+      try { await execFileAsync('explorer.exe', [path], { windowsHide: true, timeout: 5000 }) }
+      catch (error) { throw new Error(error instanceof Error ? error.message : '无法打开文件夹。') }
+      return
+    }
+    const message = await shell.openPath(path)
+    if (message) throw new Error(message)
+  }
+
+  private async findExecutable(configuredPath: string): Promise<string | undefined> {
+    const candidates = [
+      configuredPath,
+      process.env.ProgramFiles && join(process.env.ProgramFiles, 'Everything', 'es.exe'),
+      process.env['ProgramFiles(x86)'] && join(process.env['ProgramFiles(x86)'], 'Everything', 'es.exe'),
+      process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps', 'es.exe'),
+      ...(process.env.PATH ?? '').split(delimiter).map((directory) => join(directory, 'es.exe')),
+    ].filter((path): path is string => Boolean(path))
+    for (const candidate of [...new Set(candidates)]) {
+      if (!isAbsolute(candidate) || basename(candidate).toLocaleLowerCase() !== 'es.exe') continue
+      try { await access(candidate); if ((await stat(candidate)).isFile()) return candidate } catch { /* try next path */ }
+    }
+    return undefined
+  }
+
+  private cacheStatus(configuredPath: string, result: { executablePath?: string; running: boolean; version?: string }) {
+    this.cachedStatus = { at: Date.now(), configuredPath, result }
+    return result
+  }
+}

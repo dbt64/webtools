@@ -95,4 +95,27 @@ onMounted(() => { void refresh() })
         </div>
         <button class="folder-add" @click="addFolder"><Plus :size="14" /> 新建收藏夹</button>
       </div>
-  
+      <div class="layout-switch" aria-label="排布模式">
+        <button :class="{ selected: layout === 'grid' }" aria-label="网格模式" @click="setLayout('grid')"><LayoutGrid :size="15" /></button>
+        <button :class="{ selected: layout === 'list' }" aria-label="列表模式" @click="setLayout('list')"><List :size="15" /></button>
+      </div>
+    </div>
+
+    <p v-if="errorMessage" class="inline-error">{{ errorMessage }}</p>
+    <div v-if="visibleWebsites.length" class="website-collection" :class="`layout-${layout}`">
+      <article v-for="website in visibleWebsites" :key="website.id" class="website-card" role="link" tabindex="0" @click="open(website)" @keydown.enter="open(website)">
+        <span class="website-favicon">
+          <Favicon :url="website.url" :favicon="website.favicon" />
+        </span>
+        <span class="website-copy"><strong>{{ website.name }}</strong><small>{{ website.url }}</small><em v-if="website.description">{{ website.description }}</em></span>
+        <span class="website-actions" @click.stop>
+          <button class="icon-button" :aria-label="`编辑${website.name}`" @click="edit(website)"><Pencil :size="15" /></button>
+          <button class="icon-button danger" :aria-label="`删除${website.name}`" @click="remove(website)"><Trash2 :size="15" /></button>
+        </span>
+      </article>
+    </div>
+    <div v-else class="empty-panel"><span class="empty-orb"><Globe :size="18" /></span><strong>{{ selectedFolder ? '这个收藏夹还没有网址' : '这里还没有网址' }}</strong><span>添加网址后，可在快速搜索和收藏夹中随时打开。</span><button class="text-button" @click="edit()"><Plus :size="14" /> 添加网址</button></div>
+
+    <EntryEditor v-if="editing" :entry="current" :folders="folders" :saving="saving" @save="save" @cancel="editing = false" />
+  </section>
+</template>

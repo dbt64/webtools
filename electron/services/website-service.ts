@@ -74,4 +74,17 @@ export class WebsiteService {
   async cacheMetadata(id: string, metadata: { title?: string; favicon?: string }): Promise<IpcResult<WebsiteEntry>> {
     const entry = this.store.snapshot().webEntries.find((item) => item.id === id)
     if (!entry) return fail('NOT_FOUND', '找不到这个网址。')
-    if (metadata.title !== undefined && (
+    if (metadata.title !== undefined && (metadata.title.length > 300 || typeof metadata.title !== 'string')) return fail('INVALID_METADATA', '网站标题无效。')
+    if (metadata.favicon !== undefined && (metadata.favicon.length > 500_000 || !/^data:image\/(?:png|jpeg|gif|webp|x-icon|vnd\.microsoft\.icon);base64,/i.test(metadata.favicon))) return fail('INVALID_METADATA', '网站图标无效。')
+    const updated = { ...entry, favicon: metadata.favicon ?? entry.favicon }
+    try { await this.store.update((data) => ({ ...data, webEntries: data.webEntries.map((item) => item.id === id ? updated : item) })); return { ok: true, data: updated } }
+    catch (error) { return fail('SAVE_ENTRY_FAILED', error instanceof Error ? error.message : '无法保存网站图标。') }
+  }
+
+  async open(id: string): Promise<IpcResult<void>> {
+    const entry = this.store.snapshot().webEntries.find((item) => item.id === id)
+    if (!entry) return fail('NOT_FOUND', '找不到这个网址。')
+    try { await openExternalUrl(entry.url); return { ok: true, data: undefined } }
+    catch (error) { return fail('OPEN_URL_FAILED', error instanceof Error ? error.message : '无法打开这个网址。') }
+  }
+}

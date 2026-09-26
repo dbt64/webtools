@@ -91,4 +91,10 @@ export class WindowsAppSource {
     try { entries = await readdir(root, { withFileTypes: true }) } catch { return [] }
     const shortcuts: string[] = []
     for (const entry of entries) {
-      const path = join(roo
+      const path = join(root, entry.name)
+      if (entry.isDirectory()) shortcuts.push(...await this.findShortcuts(path))
+      else if (entry.isFile() && entry.name.toLocaleLowerCase().endsWith('.lnk')) shortcuts.push(path)
+    }
+    return shortcuts
+  }
+}

@@ -80,4 +80,20 @@ async function remove(engine: SearchEngine): Promise<void> {
       <div class="engine-actions">
         <button class="icon-button" :disabled="index === 0 || saving" aria-label="上移" @click="move(index, -1)"><ChevronUp :size="15" /></button>
         <button class="icon-button" :disabled="index === engines.length - 1 || saving" aria-label="下移" @click="move(index, 1)"><ChevronDown :size="15" /></button>
-        <button class="icon-button" :disabled="saving" :aria-label="engine.enabled ? '停用搜索引擎' : '启用搜索引擎'" @click="toggle(engine)"><Eye v-if="engine.enabled" :size="14" /><EyeOff 
+        <button class="icon-button" :disabled="saving" :aria-label="engine.enabled ? '停用搜索引擎' : '启用搜索引擎'" @click="toggle(engine)"><Eye v-if="engine.enabled" :size="14" /><EyeOff v-else :size="14" /></button>
+        <button v-if="!engine.builtIn" class="icon-button" :disabled="saving" aria-label="编辑搜索引擎" @click="openEditor(engine)"><Pencil :size="14" /></button>
+        <button v-if="!engine.builtIn" class="icon-button danger" :disabled="saving" aria-label="删除搜索引擎" @click="remove(engine)"><Trash2 :size="14" /></button>
+      </div>
+    </article>
+    <button class="secondary-button engine-add" :disabled="saving" @click="openEditor()"><Plus :size="15" /> 添加自定义搜索引擎</button>
+    <p v-if="error" class="inline-error">{{ error }}</p>
+    <div v-if="editing" class="dialog-backdrop" @click.self="!saving && (editing = false)">
+      <form class="editor-dialog" @submit.prevent="saveEditor">
+        <div class="dialog-heading"><div><p class="eyebrow">搜索方式</p><h2>{{ editingId ? '编辑' : '添加' }}搜索引擎</h2></div><button type="button" class="icon-button" :disabled="saving" @click="editing = false">×</button></div>
+        <label class="field-label">名称<input v-model="name" autofocus placeholder="例如：DuckDuckGo" :disabled="saving" /></label>
+        <label class="field-label">搜索网址<small>使用 %s 代替搜索词，例如 https://example.com/search?q=%s</small><input v-model="template" placeholder="https://example.com/search?q=%s" :disabled="saving" /></label>
+        <div class="dialog-actions"><button type="button" class="secondary-button" :disabled="saving" @click="editing = false">取消</button><button class="primary-button" :disabled="saving">保存</button></div>
+      </form>
+    </div>
+  </section>
+</template>
