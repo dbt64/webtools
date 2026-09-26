@@ -27,7 +27,17 @@ function edit(website?: WebsiteEntry): void { current.value = website; editing.v
 async function save(value: WebsiteSaveInput): Promise<void> {
   saving.value = true
   try {
-    const result = await window.desktop.saveWebsite(value)
+    // Vue deeply wraps folderIds in a Proxy; Electron IPC's structured clone
+    // cannot serialize proxies, so send a plain DTO across the process boundary.
+    const input: WebsiteSaveInput = {
+      id: value.id,
+      name: value.name,
+      url: value.url,
+      description: value.description,
+      favicon: value.favicon,
+      folderIds: [...value.folderIds],
+    }
+    const result = await window.desktop.saveWebsite(input)
     if (!result.ok) { errorMessage.value = result.error.message; return }
     editing.value = false
     errorMessage.value = ''
