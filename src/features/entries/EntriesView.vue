@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { Folder, Globe, LayoutGrid, List, Pencil, Plus, Trash2 } from '@lucide/vue'
-import type { BookmarkFolder, WebsiteEntry } from '@/shared/domain'
+import type { BookmarkFolder, WebsiteEntry, WebsiteSaveInput } from '@/shared/domain'
 import EntryEditor from './EntryEditor.vue'
 import Favicon from '../bookmarks/Favicon.vue'
 
@@ -24,18 +24,15 @@ async function refresh(): Promise<void> {
 
 function edit(website?: WebsiteEntry): void { current.value = website; editing.value = true }
 
-async function save(value: { id?: string; name: string; url: string; description?: string; favicon?: string; folderIds: string[] }): Promise<void> {
+async function save(value: WebsiteSaveInput): Promise<void> {
   saving.value = true
   try {
     const result = await window.desktop.saveWebsite(value)
     if (!result.ok) { errorMessage.value = result.error.message; return }
-    if (value.favicon) await window.desktop.cacheWebsiteMetadata(result.data.id, { favicon: value.favicon })
-    const foldersResult = await window.desktop.addWebsiteToFolders(result.data.id, value.folderIds)
-    if (!foldersResult.ok) { errorMessage.value = foldersResult.error.message; return }
     editing.value = false
     errorMessage.value = ''
-    await refresh()
-  } catch { errorMessage.value = '保存失败，请重试。' } finally { saving.value = false }
+    try { await refresh() } catch { errorMessage.value = '网址已保存，但列表刷新失败；请重新进入网址页面。' }
+  } catch { errorMessage.value = '保存请求失败，请重试。' } finally { saving.value = false }
 }
 
 async function open(website: WebsiteEntry): Promise<void> {

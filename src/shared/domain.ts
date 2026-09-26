@@ -10,6 +10,15 @@ export interface WebsiteEntry {
   createdAt: number
 }
 
+export interface WebsiteSaveInput {
+  id?: string
+  name: string
+  url: string
+  description?: string
+  favicon?: string
+  folderIds: string[]
+}
+
 export interface SearchEngine {
   id: string
   name: string

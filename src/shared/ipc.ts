@@ -1,4 +1,4 @@
-import type { AppSearchEntry, AppSettings, BookmarkFolder, WebsiteEntry, EverythingResult } from './domain'
+import type { AppSearchEntry, AppSettings, BookmarkFolder, WebsiteEntry, WebsiteSaveInput, EverythingResult } from './domain'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -27,11 +27,10 @@ export interface DesktopApi {
   testAiConnection(): Promise<IpcResult<{ model: string }>>
   openGoogleTranslate(input: { text: string; targetLanguage: string }): Promise<IpcResult<void>>
   listWebsites(folderId?: string): Promise<WebsiteEntry[]>
-  saveWebsite(input: Omit<WebsiteEntry, 'id' | 'createdAt' | 'favicon' | 'folderIds'> & { id?: string }): Promise<IpcResult<WebsiteEntry>>
+  saveWebsite(input: WebsiteSaveInput): Promise<IpcResult<WebsiteEntry>>
   deleteWebsite(id: string): Promise<IpcResult<void>>
   addWebsiteToFolders(id: string, folderIds: string[]): Promise<IpcResult<WebsiteEntry>>
   fetchWebsiteMetadata(url: string): Promise<IpcResult<{ title?: string; favicon?: string }>>
-  cacheWebsiteMetadata(id: string, metadata: { title?: string; favicon?: string }): Promise<IpcResult<WebsiteEntry>>
   searchEverything(query: string): Promise<IpcResult<EverythingResult[]>>
   openEverythingResult(id: string): Promise<IpcResult<void>>
   detectEverything(): Promise<{ executablePath?: string; running: boolean; version?: string }>
@@ -65,7 +64,6 @@ export const IPC_CHANNELS = {
   deleteWebsite: 'websites:delete',
   addWebsiteToFolders: 'websites:add-to-folders',
   fetchWebsiteMetadata: 'websites:fetch-metadata',
-  cacheWebsiteMetadata: 'websites:cache-metadata',
   searchEverything: 'everything:search',
   openEverythingResult: 'everything:open',
   detectEverything: 'everything:detect',
