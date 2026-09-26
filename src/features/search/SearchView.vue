@@ -22,6 +22,7 @@ const searchInput = ref<HTMLInputElement>()
 const enginePicker = ref<HTMLElement>()
 const engineTrigger = ref<HTMLButtonElement>()
 const settingsReady = ref(false)
+const settingsLoadError = ref('')
 const enginePickerOpen = ref(false)
 const enginePickerIndex = ref(0)
 const enginePickerSaving = ref(false)
@@ -87,6 +88,7 @@ async function chooseEngine(engine: SearchEngine): Promise<void> {
     const result = await window.desktop.updateSettings({ defaultSearchEngineId: engine.id })
     if (!result.ok) { enginePickerError.value = result.error.message; return }
     settings.value = result.data
+    settingsLoadError.value = ''
     closeEnginePicker(true)
   } catch {
     enginePickerError.value = '无法保存默认搜索引擎，请重试。'
@@ -114,8 +116,14 @@ async function loadApps(refresh = false): Promise<void> {
   refreshing.value = refresh
   try {
     if (!refresh) {
-      settings.value = await window.desktop.getSettings()
-      settingsReady.value = true
+      try {
+        settings.value = await window.desktop.getSettings()
+        settingsLoadError.value = ''
+      } catch {
+        settingsLoadError.value = '无法加载搜索引擎设置，当前使用默认选项。'
+      } finally {
+        settingsReady.value = true
+      }
     }
     const [loadedApps, entries] = await Promise.all([
       refresh ? window.desktop.refreshApps() : window.desktop.getApps(),
@@ -283,6 +291,7 @@ onUnmounted(() => document.removeEventListener('pointerdown', handleOutsidePoint
         <p v-if="enginePickerError" class="engine-picker-error" role="alert">{{ enginePickerError }}</p>
       </div>
     </div>
+    <p v-if="settingsLoadError" class="engine-load-error" role="alert">{{ settingsLoadError }}</p>
 
     <div v-if="query" class="search-feedback">
       <template v-if="isWebSearch">
@@ -372,4 +381,5 @@ onUnmounted(() => document.removeEventListener('pointerdown', handleOutsidePoint
 .engine-option-check { margin-left: auto; color: #9fdfc3; }
 .engine-add-action { margin-top: 5px; border-top: 1px solid #33414a; border-radius: 0 0 7px 7px; color: #b7d9c3; }
 .engine-picker-error { margin: 7px 9px 5px; color: #ffb0a6; font-size: 11px; }
+.engine-load-error { margin: 8px 4px 0; color: #ffb0a6; font-size: 11px; }
 </style>
