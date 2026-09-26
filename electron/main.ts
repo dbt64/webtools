@@ -27,6 +27,9 @@ let secretStore: SecretStore
 let managerWindow: BrowserWindow | null = null
 let launcherWindow: BrowserWindow | null = null
 let launcherPositioned = false
+let launcherRendererReady = false
+let launcherReadyPromise: Promise<void> = Promise.resolve()
+let resolveLauncherReady: (() => void) | undefined
 let tray: Tray | null = null
 let quitting = false
 let hotkeyService: GlobalHotkeyService | null = null
@@ -72,8 +75,14 @@ function showManager(): void {
   else { managerWindow.show(); managerWindow.focus() }
 }
 
+function resetLauncherReadiness(): void {
+  launcherRendererReady = false
+  launcherReadyPromise = new Promise((resolve) => { resolveLauncherReady = resolve })
+}
+
 function createLauncherWindow(): BrowserWindow {
   if (launcherWindow && !launcherWindow.isDestroyed()) return launcherWindow
+  resetLauncherReadiness()
   const window = new BrowserWindow({
     width: 850,
     height: 128,
@@ -90,10 +99,16 @@ function createLauncherWindow(): BrowserWindow {
   launcherWindow = window
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event, url) => { if (!url.startsWith('file:') && !url.startsWith('http://localhost:')) event.preventDefault() })
+  window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace && launcherRendererReady) resetLauncherReadiness()
+  })
   window.on('closed', () => {
     if (launcherWindow === window) {
       launcherWindow = null
       launcherPositioned = false
+      launcherRendererReady = false
+      resolveLauncherReady?.()
+      resolveLauncherReady = undefined
     }
   })
   window.on('blur', () => {
@@ -104,7 +119,14 @@ function createLauncherWindow(): BrowserWindow {
   return window
 }
 
-function showLauncher(): void {
+function markLauncherRendererReady(sender: WebContents): void {
+  if (!launcherWindow || launcherWindow.isDestroyed() || sender !== launcherWindow.webContents || launcherRendererReady) return
+  launcherRendererReady = true
+  resolveLauncherReady?.()
+  resolveLauncherReady = undefined
+}
+
+async function showLauncher(): Promise<void> {
   const window = createLauncherWindow()
   const launcherDisplayMode = dataStore.snapshot().settings.launcherDisplayMode
   if (!launcherPositioned) {
@@ -114,16 +136,13 @@ function showLauncher(): void {
     launcherPositioned = true
   }
   resizeLauncher(launcherDisplayMode === 'expanded')
-  const showAfterRendererReset = () => {
-    const detail = JSON.stringify({ launcherDisplayMode })
-    void window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('webtools-launcher-show', { detail: ${detail} }))`).catch(() => undefined).then(() => {
-      if (window.isDestroyed()) return
-      window.show()
-      window.focus()
-    })
-  }
-  if (window.webContents.isLoading()) window.webContents.once('did-finish-load', showAfterRendererReset)
-  else showAfterRendererReset()
+  if (!launcherRendererReady) await launcherReadyPromise
+  if (window.isDestroyed() || launcherWindow !== window) return
+  const detail = JSON.stringify({ launcherDisplayMode })
+  await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('webtools-launcher-show', { detail: ${detail} }))`).catch(() => undefined)
+  if (window.isDestroyed() || launcherWindow !== window) return
+  window.show()
+  window.focus()
 }
 
 function resizeLauncher(expanded: boolean, expandedSections = 0, hasSearchResults = false): void {
@@ -197,7 +216,7 @@ app.whenReady().then(async () => {
   if (!shortcutResult.ok) console.warn(shortcutResult.error.message)
   app.setLoginItemSettings({ openAtLogin: dataStore.snapshot().settings.launchOnStartup })
   createTray()
-  registerWindowIpcHandlers({ showLauncher, hideLauncher: () => launcherWindow?.hide(), setLauncherExpanded: resizeLauncher, moveLauncherBy, showManager })
+  registerWindowIpcHandlers({ showLauncher, hideLauncher: () => launcherWindow?.hide(), setLauncherExpanded: resizeLauncher, moveLauncherBy, markLauncherRendererReady, showManager })
   registerAppIpcHandlers({ appCatalog, appLauncher })
   registerWebsiteIpcHandlers({ websiteService, websiteMetadata, bookmarkService })
   registerSettingsIpcHandlers({ dataStore, hotkeyService, setOpenAtLogin: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled }), openExternal: openExternalUrl })

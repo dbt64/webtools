@@ -295,6 +295,7 @@ onMounted(() => {
   void focus()
   void observeShortcutSections()
   window.addEventListener('webtools-launcher-show', handleLauncherShow)
+  window.desktop.launcherReady()
 })
 
 watch([websites, expanded], () => { if (expanded.value) void observeShortcutSections() }, { deep: true })

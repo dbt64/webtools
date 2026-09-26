@@ -5,10 +5,12 @@ export function registerWindowIpcHandlers(deps: {
   hideLauncher: () => void
   setLauncherExpanded: (expanded: boolean, expandedSections: number, hasSearchResults: boolean) => void
   moveLauncherBy: (sender: WebContents, deltaX: number, deltaY: number) => void
+  markLauncherRendererReady: (sender: WebContents) => void
   showManager: () => void
 }): void {
   ipcMain.handle('window:show-launcher', () => deps.showLauncher())
   ipcMain.handle('window:hide-launcher', () => deps.hideLauncher())
+  ipcMain.on('window:launcher-ready', (event) => deps.markLauncherRendererReady(event.sender))
   ipcMain.handle('window:set-launcher-expanded', (_event, expanded: unknown, expandedSections: unknown, hasSearchResults: unknown) => {
     const sectionCount = typeof expandedSections === 'number' && Number.isInteger(expandedSections)
       ? Math.max(0, Math.min(2, expandedSections))
