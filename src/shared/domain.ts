@@ -31,6 +31,9 @@ export interface SearchEngine {
 export interface AppSearchEntry { id: string; name: string; aliases: string[]; source: 'desktop' | 'packaged'; icon?: string }
 export interface EverythingResult { id: string; name: string; locationLabel: string; kind: 'file' | 'folder' }
 
+export type ThemePreference = 'light' | 'dark' | 'system'
+export type LauncherDisplayMode = 'compact' | 'expanded'
+
 export interface AppSettings {
   searchEngines: SearchEngine[]
   defaultSearchEngineId: string
@@ -41,6 +44,8 @@ export interface AppSettings {
   everythingEsPath: string
   aiBaseUrl: string
   aiModel: string
+  theme: ThemePreference
+  launcherDisplayMode: LauncherDisplayMode
 }
 
 export interface AppData {
@@ -70,6 +75,8 @@ export const DEFAULT_APP_DATA: AppData = {
     everythingEsPath: '',
     aiBaseUrl: '',
     aiModel: '',
+    theme: 'dark',
+    launcherDisplayMode: 'compact',
   },
 }
 

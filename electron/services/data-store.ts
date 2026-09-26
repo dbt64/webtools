@@ -1,6 +1,10 @@
 import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type BookmarkFolder, type WebsiteEntry } from '../../src/shared/domain'
+import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type AppSettings, type BookmarkFolder, type WebsiteEntry } from '../../src/shared/domain'
+
+type LegacyV2AppData = Omit<AppData, 'settings'> & {
+  settings: Omit<AppSettings, 'theme' | 'launcherDisplayMode'> & Partial<Pick<AppSettings, 'theme' | 'launcherDisplayMode'>>
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 const isString = (value: unknown): value is string => typeof value === 'string'
@@ -16,15 +20,28 @@ function validV1(value: unknown): value is Record<string, any> {
     && value.bookmarks.every((x: unknown) => isRecord(x) && isString(x.id) && isString(x.folderId) && isString(x.title) && isString(x.url) && typeof x.createdAt === 'number')
 }
 
-function validV2(value: unknown): value is AppData {
+function validV2(value: unknown): value is LegacyV2AppData {
   if (!isRecord(value) || value.version !== 2 || !Array.isArray(value.webEntries) || !Array.isArray(value.bookmarkFolders) || !isRecord(value.settings)) return false
   const s = value.settings
   return Array.isArray(s.searchEngines) && s.searchEngines.every((x: unknown) => isRecord(x) && isString(x.id) && isString(x.name) && isString(x.template) && typeof x.enabled === 'boolean' && typeof x.builtIn === 'boolean' && typeof x.order === 'number')
     && isString(s.defaultSearchEngineId) && isString(s.quickSearchShortcut) && typeof s.launchOnStartup === 'boolean'
     && ['grid', 'list'].includes(String(s.websiteLayout)) && typeof s.everythingEnabled === 'boolean' && isString(s.everythingEsPath)
     && isString(s.aiBaseUrl) && isString(s.aiModel)
+    && (s.theme === undefined || s.theme === 'light' || s.theme === 'dark' || s.theme === 'system')
+    && (s.launcherDisplayMode === undefined || s.launcherDisplayMode === 'compact' || s.launcherDisplayMode === 'expanded')
     && value.webEntries.every((x: unknown) => isRecord(x) && isString(x.id) && isString(x.name) && isString(x.url) && Array.isArray(x.folderIds) && x.folderIds.every(isString) && typeof x.createdAt === 'number')
     && value.bookmarkFolders.every((x: unknown) => isRecord(x) && isString(x.id) && isString(x.name) && typeof x.createdAt === 'number')
+}
+
+function normalizeV2(input: LegacyV2AppData): AppData {
+  return {
+    ...input,
+    settings: {
+      ...input.settings,
+      theme: input.settings.theme ?? 'dark',
+      launcherDisplayMode: input.settings.launcherDisplayMode ?? 'compact',
+    },
+  }
 }
 
 function canonicalUrl(raw: string): string {
@@ -83,7 +100,7 @@ export class DataStore {
     }
     let parsed: unknown
     try { parsed = JSON.parse(bytes.toString('utf8')) } catch { return this.recoverCorrupt() }
-    if (validV2(parsed)) { this.data = parsed; return this.snapshot() }
+    if (validV2(parsed)) { this.data = normalizeV2(parsed); return this.snapshot() }
     if (validV1(parsed)) {
       const backupPath = `${this.filePath}.v1.bak`
       try {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, screen, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, screen, dialog, type WebContents } from 'electron'
 import { join } from 'node:path'
 import { DataStore } from './services/data-store'
 import { SecretStore } from './services/secret-store'
@@ -26,6 +26,11 @@ let dataStore: DataStore
 let secretStore: SecretStore
 let managerWindow: BrowserWindow | null = null
 let launcherWindow: BrowserWindow | null = null
+let launcherPositioned = false
+interface LauncherReadiness { ready: boolean; promise: Promise<void>; resolve: () => void }
+const launcherReadiness = new WeakMap<BrowserWindow, LauncherReadiness>()
+interface LauncherToggleRequest { shouldShow: boolean }
+let launcherToggleRequest: LauncherToggleRequest | null = null
 let tray: Tray | null = null
 let quitting = false
 let hotkeyService: GlobalHotkeyService | null = null
@@ -71,11 +76,31 @@ function showManager(): void {
   else { managerWindow.show(); managerWindow.focus() }
 }
 
+function createLauncherReadiness(): LauncherReadiness {
+  let resolve!: () => void
+  const promise = new Promise<void>((complete) => { resolve = complete })
+  return { ready: false, promise, resolve }
+}
+
+function resetLauncherReadiness(window: BrowserWindow): void {
+  launcherReadiness.get(window)?.resolve()
+  launcherReadiness.set(window, createLauncherReadiness())
+}
+
+async function waitForLauncherRenderer(window: BrowserWindow): Promise<boolean> {
+  while (!window.isDestroyed() && launcherWindow === window) {
+    const readiness = launcherReadiness.get(window)
+    if (!readiness || readiness.ready) return true
+    await readiness.promise
+  }
+  return false
+}
+
 function createLauncherWindow(): BrowserWindow {
   if (launcherWindow && !launcherWindow.isDestroyed()) return launcherWindow
   const window = new BrowserWindow({
     width: 850,
-    height: 88,
+    height: 128,
     frame: false,
     resizable: false,
     show: false,
@@ -87,31 +112,89 @@ function createLauncherWindow(): BrowserWindow {
     webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   })
   launcherWindow = window
+  launcherReadiness.set(window, createLauncherReadiness())
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event, url) => { if (!url.startsWith('file:') && !url.startsWith('http://localhost:')) event.preventDefault() })
-  window.on('closed', () => { if (launcherWindow === window) launcherWindow = null })
+  window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace && launcherReadiness.get(window)?.ready) resetLauncherReadiness(window)
+  })
+  window.on('closed', () => {
+    launcherReadiness.get(window)?.resolve()
+    if (launcherWindow === window) {
+      launcherWindow = null
+      launcherPositioned = false
+    }
+  })
+  window.on('blur', () => {
+    if (window.isVisible()) window.hide()
+  })
   if (isDevelopment && process.env.ELECTRON_RENDERER_URL) void window.loadURL(`${process.env.ELECTRON_RENDERER_URL}/launcher.html`)
   else void window.loadFile(join(__dirname, '../renderer/launcher.html'))
   return window
 }
 
-function showLauncher(): void {
-  const window = createLauncherWindow()
-  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-  const bounds = display.workArea
-  window.setBounds({ x: Math.round(bounds.x + (bounds.width - 850) / 2), y: Math.round(bounds.y + bounds.height * 0.22), width: 850, height: 88 })
-  window.show()
-  window.focus()
-  if (window.webContents.isLoading()) window.webContents.once('did-finish-load', () => void window.webContents.executeJavaScript("window.dispatchEvent(new Event('webtools-launcher-show'))"))
-  else void window.webContents.executeJavaScript("window.dispatchEvent(new Event('webtools-launcher-show'))")
+function markLauncherRendererReady(sender: WebContents): void {
+  if (!launcherWindow || launcherWindow.isDestroyed() || sender !== launcherWindow.webContents) return
+  const readiness = launcherReadiness.get(launcherWindow)
+  if (!readiness || readiness.ready) return
+  readiness.ready = true
+  readiness.resolve()
 }
 
-function resizeLauncher(expanded: boolean): void {
+async function showLauncher(toggleRequest?: LauncherToggleRequest): Promise<void> {
+  const window = createLauncherWindow()
+  const { launcherDisplayMode, theme } = dataStore.snapshot().settings
+  if (!launcherPositioned) {
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+    const bounds = display.workArea
+    window.setBounds({ x: Math.round(bounds.x + (bounds.width - 850) / 2), y: Math.round(bounds.y + bounds.height * 0.18), width: 850, height: 128 })
+    launcherPositioned = true
+  }
+  resizeLauncher(launcherDisplayMode === 'expanded')
+  if (!await waitForLauncherRenderer(window)) return
+  if (toggleRequest && !toggleRequest.shouldShow) return
+  const detail = JSON.stringify({ launcherDisplayMode, theme })
+  await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('webtools-launcher-show', { detail: ${detail} }))`).catch(() => undefined)
+  if (window.isDestroyed() || launcherWindow !== window || (toggleRequest && !toggleRequest.shouldShow)) return
+  window.show()
+  window.focus()
+}
+
+function resizeLauncher(expanded: boolean, expandedSections = 0, hasSearchResults = false): void {
   if (!launcherWindow || launcherWindow.isDestroyed()) return
-  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const current = launcherWindow.getBounds()
+  const display = screen.getDisplayMatching(current)
   const bounds = display.workArea
-  const height = expanded ? 440 : 88
-  launcherWindow.setBounds({ x: Math.round(bounds.x + (bounds.width - 850) / 2), y: Math.round(bounds.y + bounds.height * 0.22), width: 850, height })
+  const height = !expanded ? 128 : hasSearchResults ? 466 : 326 + Math.min(2, expandedSections) * 120
+  const x = Math.max(bounds.x, Math.min(current.x, bounds.x + bounds.width - current.width))
+  const y = Math.max(bounds.y, Math.min(current.y, bounds.y + bounds.height - height))
+  launcherWindow.setBounds({ x, y, width: current.width, height })
+}
+
+function moveLauncherBy(sender: WebContents, deltaX: number, deltaY: number): void {
+  if (!launcherWindow || launcherWindow.isDestroyed() || !launcherWindow.isVisible() || sender !== launcherWindow.webContents) return
+  const current = launcherWindow.getBounds()
+  const workArea = screen.getDisplayMatching(current).workArea
+  const x = Math.max(workArea.x, Math.min(current.x + Math.round(deltaX), workArea.x + workArea.width - current.width))
+  const y = Math.max(workArea.y, Math.min(current.y + Math.round(deltaY), workArea.y + workArea.height - current.height))
+  launcherWindow.setPosition(x, y)
+}
+
+function toggleLauncher(): void {
+  if (launcherWindow && !launcherWindow.isDestroyed() && launcherWindow.isVisible()) {
+    if (launcherToggleRequest) launcherToggleRequest.shouldShow = false
+    launcherWindow.hide()
+    return
+  }
+  if (launcherToggleRequest) {
+    launcherToggleRequest.shouldShow = !launcherToggleRequest.shouldShow
+    return
+  }
+  const request: LauncherToggleRequest = { shouldShow: true }
+  launcherToggleRequest = request
+  void showLauncher(request).finally(() => {
+    if (launcherToggleRequest === request) launcherToggleRequest = null
+  })
 }
 
 function createTray(): void {
@@ -153,11 +236,11 @@ app.whenReady().then(async () => {
   const everything = new EverythingClient(() => dataStore.snapshot().settings.everythingEsPath)
   await appCatalog.refresh()
   hotkeyService = new GlobalHotkeyService()
-  const shortcutResult = hotkeyService.register(dataStore.snapshot().settings.quickSearchShortcut, showLauncher)
+  const shortcutResult = hotkeyService.register(dataStore.snapshot().settings.quickSearchShortcut, toggleLauncher)
   if (!shortcutResult.ok) console.warn(shortcutResult.error.message)
   app.setLoginItemSettings({ openAtLogin: dataStore.snapshot().settings.launchOnStartup })
   createTray()
-  registerWindowIpcHandlers({ showLauncher, hideLauncher: () => launcherWindow?.hide(), setLauncherExpanded: resizeLauncher, showManager })
+  registerWindowIpcHandlers({ showLauncher, hideLauncher: () => launcherWindow?.hide(), setLauncherExpanded: resizeLauncher, moveLauncherBy, markLauncherRendererReady, showManager })
   registerAppIpcHandlers({ appCatalog, appLauncher })
   registerWebsiteIpcHandlers({ websiteService, websiteMetadata, bookmarkService })
   registerSettingsIpcHandlers({ dataStore, hotkeyService, setOpenAtLogin: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled }), openExternal: openExternalUrl })

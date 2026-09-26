@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
-  Bookmark, Command, CornerDownLeft, File, Folder, Languages, Search, Sparkles, SquareArrowOutUpRight,
+  Bookmark, Check, ChevronDown, Command, CornerDownLeft, File, Folder, Languages, Plus, Search, Sparkles, SquareArrowOutUpRight,
 } from '@lucide/vue'
-import { createDefaultAppData, type AppSearchEntry, type AppSettings, type WebsiteEntry, type EverythingResult } from '@/shared/domain'
+import { createDefaultAppData, type AppSearchEntry, type AppSettings, type SearchEngine, type WebsiteEntry, type EverythingResult } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry, type SearchResult as SearchResultItem } from '@/shared/search'
 import { parseSearchCommand } from '@/shared/search-command'
@@ -11,7 +11,7 @@ import SearchResult from './SearchResult.vue'
 import BookmarkDialog from '../bookmarks/BookmarkDialog.vue'
 import type { BookmarkFolder } from '@/shared/domain'
 
-const emit = defineEmits<{ navigate: [section: 'entries' | 'translate'] }>()
+const emit = defineEmits<{ navigate: [section: 'entries' | 'translate' | 'settings'] }>()
 
 const apps = ref<AppSearchEntry[]>([])
 const webEntries = ref<WebsiteEntry[]>([])
@@ -19,6 +19,14 @@ const settings = ref<AppSettings>(createDefaultAppData().settings)
 const query = ref('')
 const selectedIndex = ref(0)
 const searchInput = ref<HTMLInputElement>()
+const enginePicker = ref<HTMLElement>()
+const engineTrigger = ref<HTMLButtonElement>()
+const settingsReady = ref(false)
+const settingsLoadError = ref('')
+const enginePickerOpen = ref(false)
+const enginePickerIndex = ref(0)
+const enginePickerSaving = ref(false)
+const enginePickerError = ref('')
 const bookmarkFolders = ref<BookmarkFolder[]>([])
 const bookmarkTarget = ref<SearchableEntry>()
 const showBookmarkDialog = ref(false)
@@ -30,7 +38,68 @@ let fileSearchSequence = 0
 const parsed = computed(() => parseSearchCommand(query.value))
 const isWebSearch = computed(() => parsed.value.mode === 'web')
 const isFileSearch = computed(() => parsed.value.mode === 'files')
-const defaultEngineName = computed(() => settings.value.searchEngines.find((engine) => engine.id === settings.value.defaultSearchEngineId)?.name ?? '默认搜索引擎')
+const enabledEngines = computed(() => settings.value.searchEngines.filter((engine) => engine.enabled).sort((a, b) => a.order - b.order))
+const selectedEngine = computed(() => enabledEngines.value.find((engine) => engine.id === settings.value.defaultSearchEngineId) ?? enabledEngines.value[0])
+const defaultEngineName = computed(() => selectedEngine.value?.name ?? '默认搜索引擎')
+const segmenter = new Intl.Segmenter('zh', { granularity: 'grapheme' })
+function engineMark(engine: SearchEngine): string {
+  if (engine.id === 'google') return 'G'
+  if (engine.id === 'baidu') return '百'
+  if (engine.id === 'bilibili') return 'B'
+  return segmenter.segment(engine.name.trim())[Symbol.iterator]().next().value?.segment?.toLocaleUpperCase() ?? '?'
+}
+
+async function openEnginePicker(): Promise<void> {
+  if (!settingsReady.value) return
+  enginePickerError.value = ''
+  enginePickerIndex.value = Math.max(0, enabledEngines.value.findIndex((engine) => engine.id === selectedEngine.value?.id))
+  enginePickerOpen.value = true
+  await nextTick()
+  focusEngineOption(enginePickerIndex.value)
+}
+
+function focusEngineOption(index: number): void {
+  enginePicker.value?.querySelectorAll<HTMLButtonElement>('.engine-option')[index]?.focus()
+}
+
+function closeEnginePicker(restoreFocus = false): void {
+  enginePickerOpen.value = false
+  if (restoreFocus) nextTick(() => engineTrigger.value?.focus())
+}
+
+function handleEnginePickerKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeEnginePicker(true)
+  } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    const count = enabledEngines.value.length
+    if (!count) return
+    enginePickerIndex.value = (enginePickerIndex.value + (event.key === 'ArrowDown' ? 1 : -1) + count) % count
+    focusEngineOption(enginePickerIndex.value)
+  }
+}
+
+async function chooseEngine(engine: SearchEngine): Promise<void> {
+  if (enginePickerSaving.value) return
+  enginePickerSaving.value = true
+  enginePickerError.value = ''
+  try {
+    const result = await window.desktop.updateSettings({ defaultSearchEngineId: engine.id })
+    if (!result.ok) { enginePickerError.value = result.error.message; return }
+    settings.value = result.data
+    settingsLoadError.value = ''
+    closeEnginePicker(true)
+  } catch {
+    enginePickerError.value = '无法保存默认搜索引擎，请重试。'
+  } finally {
+    enginePickerSaving.value = false
+  }
+}
+
+function handleOutsidePointer(event: PointerEvent): void {
+  if (enginePickerOpen.value && !enginePicker.value?.contains(event.target as Node)) closeEnginePicker()
+}
 const searchableEntries = computed<SearchableEntry[]>(() => [
   ...apps.value.map((entry) => ({ id: entry.id, name: entry.name, aliases: entry.aliases, kind: 'app' as const, subtitle: '本地应用' })),
   ...webEntries.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'website' as const, subtitle: entry.url, url: entry.url, folderIds: entry.folderIds, searchText: `${entry.url} ${entry.description ?? ''}` })),
@@ -46,14 +115,22 @@ const resultGroups = computed(() => [
 async function loadApps(refresh = false): Promise<void> {
   refreshing.value = refresh
   try {
-    const [loadedApps, entries, loadedSettings] = await Promise.all([
+    if (!refresh) {
+      try {
+        settings.value = await window.desktop.getSettings()
+        settingsLoadError.value = ''
+      } catch {
+        settingsLoadError.value = '无法加载搜索引擎设置，当前使用默认选项。'
+      } finally {
+        settingsReady.value = true
+      }
+    }
+    const [loadedApps, entries] = await Promise.all([
       refresh ? window.desktop.refreshApps() : window.desktop.getApps(),
       window.desktop.listWebsites(),
-      window.desktop.getSettings(),
     ])
     apps.value = loadedApps
     webEntries.value = entries
-    settings.value = loadedSettings
   } catch {
     // Show an empty result state while keeping the search box usable.
   } finally {
@@ -151,7 +228,9 @@ watch(query, (value) => {
 onMounted(() => {
   void loadApps()
   searchInput.value?.focus()
+  document.addEventListener('pointerdown', handleOutsidePointer)
 })
+onUnmounted(() => document.removeEventListener('pointerdown', handleOutsidePointer))
 </script>
 
 <template>
@@ -163,18 +242,56 @@ onMounted(() => {
       <p class="welcome-copy">搜索应用、打开常用网址，或者用 <kbd>?</kbd> 开始网页搜索。</p>
     </div>
 
-    <label class="search-box" for="quick-search">
-      <Search :size="20" class="search-icon" />
-      <input
-        id="quick-search"
-        ref="searchInput"
-        v-model="query"
-        autocomplete="off"
-        placeholder="搜索应用或网址…"
-        spellcheck="false"
-        @keydown="handleKeydown"
-      />
-    </label>
+    <div ref="enginePicker" class="search-input-wrap">
+      <div class="search-box">
+        <button
+          ref="engineTrigger"
+          type="button"
+          class="engine-trigger"
+          :aria-label="`选择搜索引擎，当前为${defaultEngineName}`"
+          aria-haspopup="listbox"
+          :aria-expanded="enginePickerOpen"
+          :disabled="!settingsReady"
+          @click="enginePickerOpen ? closeEnginePicker() : openEnginePicker()"
+          @keydown.esc.prevent="closeEnginePicker(true)"
+        >
+          <span class="engine-mark">{{ selectedEngine ? engineMark(selectedEngine) : '?' }}</span>
+          <ChevronDown :size="13" aria-hidden="true" />
+        </button>
+        <input
+          id="quick-search"
+          ref="searchInput"
+          v-model="query"
+          aria-label="搜索应用或网址"
+          autocomplete="off"
+          placeholder="搜索应用或网址…"
+          spellcheck="false"
+          @keydown="handleKeydown"
+        />
+      </div>
+      <div v-if="enginePickerOpen" class="engine-picker-panel" @keydown="handleEnginePickerKeydown">
+        <div class="engine-picker-list" role="listbox" aria-label="选择搜索引擎">
+          <button
+            v-for="(engine, index) in enabledEngines"
+            :key="engine.id"
+            type="button"
+            class="engine-option"
+            role="option"
+            :aria-selected="engine.id === selectedEngine?.id"
+            :disabled="enginePickerSaving"
+            @focus="enginePickerIndex = index"
+            @click="chooseEngine(engine)"
+          >
+            <span class="engine-option-mark">{{ engineMark(engine) }}</span>
+            <span>{{ engine.name }}</span>
+            <Check v-if="engine.id === selectedEngine?.id" :size="14" class="engine-option-check" aria-hidden="true" />
+          </button>
+        </div>
+        <button type="button" class="engine-add-action" @click="closeEnginePicker(); emit('navigate', 'settings')"><Plus :size="15" aria-hidden="true" /> 添加搜索引擎</button>
+        <p v-if="enginePickerError" class="engine-picker-error" role="alert">{{ enginePickerError }}</p>
+      </div>
+    </div>
+    <p v-if="settingsLoadError" class="engine-load-error" role="alert">{{ settingsLoadError }}</p>
 
     <div v-if="query" class="search-feedback">
       <template v-if="isWebSearch">
@@ -250,3 +367,19 @@ onMounted(() => {
     />
   </section>
 </template>
+
+<style scoped>
+.search-input-wrap { position: relative; }
+.engine-trigger { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; padding: 3px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; cursor: pointer; }
+.engine-trigger:hover, .engine-trigger:focus-visible { color: var(--text); background: var(--hover); outline: none; }
+.engine-mark, .engine-option-mark { display: grid; width: 25px; height: 25px; flex: 0 0 auto; place-items: center; border: 1px solid var(--line); border-radius: 7px; color: var(--accent); background: var(--accent-soft); font-size: 14px; font-weight: 700; }
+.engine-picker-panel { position: absolute; z-index: 10; top: calc(100% + 7px); left: 0; width: min(280px, 100%); overflow: hidden; padding: 5px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); box-shadow: 0 16px 35px #0007; }
+.engine-picker-list { display: grid; max-height: 240px; gap: 2px; overflow-y: auto; }
+.engine-option, .engine-add-action { display: flex; width: 100%; align-items: center; gap: 10px; padding: 7px 9px; border: 0; border-radius: 7px; color: var(--text); background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.engine-option:hover, .engine-option:focus-visible, .engine-add-action:hover, .engine-add-action:focus-visible { background: var(--hover); outline: none; }
+.engine-option:disabled { opacity: .6; cursor: wait; }
+.engine-option-check { margin-left: auto; color: var(--accent); }
+.engine-add-action { margin-top: 5px; border-top: 1px solid var(--line); border-radius: 0 0 7px 7px; color: var(--accent); }
+.engine-picker-error { margin: 7px 9px 5px; color: #ffb0a6; font-size: 11px; }
+.engine-load-error { margin: 8px 4px 0; color: #ffb0a6; font-size: 11px; }
+</style>
