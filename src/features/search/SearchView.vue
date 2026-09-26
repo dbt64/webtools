@@ -370,16 +370,16 @@ onUnmounted(() => document.removeEventListener('pointerdown', handleOutsidePoint
 
 <style scoped>
 .search-input-wrap { position: relative; }
-.engine-trigger { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; padding: 3px; border: 0; border-radius: 8px; color: #a9b6bf; background: transparent; cursor: pointer; }
-.engine-trigger:hover, .engine-trigger:focus-visible { color: #e5eee8; background: #27362f; outline: none; }
-.engine-mark, .engine-option-mark { display: grid; width: 25px; height: 25px; flex: 0 0 auto; place-items: center; border: 1px solid #405246; border-radius: 7px; color: #b8e3c9; background: #24352b; font-size: 14px; font-weight: 700; }
-.engine-picker-panel { position: absolute; z-index: 10; top: calc(100% + 7px); left: 0; width: min(280px, 100%); overflow: hidden; padding: 5px; border: 1px solid #374550; border-radius: 11px; background: #19232d; box-shadow: 0 16px 35px #0007; }
+.engine-trigger { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; padding: 3px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; cursor: pointer; }
+.engine-trigger:hover, .engine-trigger:focus-visible { color: var(--text); background: var(--hover); outline: none; }
+.engine-mark, .engine-option-mark { display: grid; width: 25px; height: 25px; flex: 0 0 auto; place-items: center; border: 1px solid var(--line); border-radius: 7px; color: var(--accent); background: var(--accent-soft); font-size: 14px; font-weight: 700; }
+.engine-picker-panel { position: absolute; z-index: 10; top: calc(100% + 7px); left: 0; width: min(280px, 100%); overflow: hidden; padding: 5px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); box-shadow: 0 16px 35px #0007; }
 .engine-picker-list { display: grid; max-height: 240px; gap: 2px; overflow-y: auto; }
-.engine-option, .engine-add-action { display: flex; width: 100%; align-items: center; gap: 10px; padding: 7px 9px; border: 0; border-radius: 7px; color: #dce5e8; background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
-.engine-option:hover, .engine-option:focus-visible, .engine-add-action:hover, .engine-add-action:focus-visible { background: #293b31; outline: none; }
+.engine-option, .engine-add-action { display: flex; width: 100%; align-items: center; gap: 10px; padding: 7px 9px; border: 0; border-radius: 7px; color: var(--text); background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.engine-option:hover, .engine-option:focus-visible, .engine-add-action:hover, .engine-add-action:focus-visible { background: var(--hover); outline: none; }
 .engine-option:disabled { opacity: .6; cursor: wait; }
-.engine-option-check { margin-left: auto; color: #9fdfc3; }
-.engine-add-action { margin-top: 5px; border-top: 1px solid #33414a; border-radius: 0 0 7px 7px; color: #b7d9c3; }
+.engine-option-check { margin-left: auto; color: var(--accent); }
+.engine-add-action { margin-top: 5px; border-top: 1px solid var(--line); border-radius: 0 0 7px 7px; color: var(--accent); }
 .engine-picker-error { margin: 7px 9px 5px; color: #ffb0a6; font-size: 11px; }
 .engine-load-error { margin: 8px 4px 0; color: #ffb0a6; font-size: 11px; }
 </style>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { ArrowDown, ArrowUp, ArrowUpRight, BookmarkPlus, Command, CornerDownLeft, File, Folder, Globe, Languages, Search } from '@lucide/vue'
-import type { AppSearchEntry, BookmarkFolder, WebsiteEntry, EverythingResult, LauncherDisplayMode } from '@/shared/domain'
+import type { AppSearchEntry, BookmarkFolder, WebsiteEntry, EverythingResult, LauncherDisplayMode, ThemePreference } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry } from '@/shared/search'
 import { parseSearchCommand } from '@/shared/search-command'
@@ -274,17 +274,16 @@ watch(query, (value) => {
 
 function handleLauncherShow(event: Event): void {
   const detail = event instanceof CustomEvent
-    ? event.detail as { launcherDisplayMode?: unknown } | undefined
+    ? event.detail as { launcherDisplayMode?: unknown; theme?: unknown } | undefined
     : undefined
   const launcherDisplayMode: LauncherDisplayMode = detail?.launcherDisplayMode === 'expanded' ? 'expanded' : 'compact'
+  const theme: ThemePreference = detail?.theme === 'light' || detail?.theme === 'dark' || detail?.theme === 'system' ? detail.theme : 'dark'
+  applyTheme(theme)
   query.value = ''
   expanded.value = launcherDisplayMode === 'expanded'
   websitesExpanded.value = false
   applicationsExpanded.value = false
   error.value = ''
-  void window.desktop.getSettings().then((settings) => applyTheme(settings.theme)).catch(() => {
-    // Keep the last applied theme if settings cannot be read during invocation.
-  })
   void load()
   syncWindowSize()
   void focus()

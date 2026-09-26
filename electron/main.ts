@@ -29,6 +29,8 @@ let launcherWindow: BrowserWindow | null = null
 let launcherPositioned = false
 interface LauncherReadiness { ready: boolean; promise: Promise<void>; resolve: () => void }
 const launcherReadiness = new WeakMap<BrowserWindow, LauncherReadiness>()
+interface LauncherToggleRequest { shouldShow: boolean }
+let launcherToggleRequest: LauncherToggleRequest | null = null
 let tray: Tray | null = null
 let quitting = false
 let hotkeyService: GlobalHotkeyService | null = null
@@ -139,9 +141,9 @@ function markLauncherRendererReady(sender: WebContents): void {
   readiness.resolve()
 }
 
-async function showLauncher(): Promise<void> {
+async function showLauncher(toggleRequest?: LauncherToggleRequest): Promise<void> {
   const window = createLauncherWindow()
-  const launcherDisplayMode = dataStore.snapshot().settings.launcherDisplayMode
+  const { launcherDisplayMode, theme } = dataStore.snapshot().settings
   if (!launcherPositioned) {
     const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
     const bounds = display.workArea
@@ -150,9 +152,10 @@ async function showLauncher(): Promise<void> {
   }
   resizeLauncher(launcherDisplayMode === 'expanded')
   if (!await waitForLauncherRenderer(window)) return
-  const detail = JSON.stringify({ launcherDisplayMode })
+  if (toggleRequest && !toggleRequest.shouldShow) return
+  const detail = JSON.stringify({ launcherDisplayMode, theme })
   await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('webtools-launcher-show', { detail: ${detail} }))`).catch(() => undefined)
-  if (window.isDestroyed() || launcherWindow !== window) return
+  if (window.isDestroyed() || launcherWindow !== window || (toggleRequest && !toggleRequest.shouldShow)) return
   window.show()
   window.focus()
 }
@@ -179,10 +182,19 @@ function moveLauncherBy(sender: WebContents, deltaX: number, deltaY: number): vo
 
 function toggleLauncher(): void {
   if (launcherWindow && !launcherWindow.isDestroyed() && launcherWindow.isVisible()) {
+    if (launcherToggleRequest) launcherToggleRequest.shouldShow = false
     launcherWindow.hide()
     return
   }
-  showLauncher()
+  if (launcherToggleRequest) {
+    launcherToggleRequest.shouldShow = !launcherToggleRequest.shouldShow
+    return
+  }
+  const request: LauncherToggleRequest = { shouldShow: true }
+  launcherToggleRequest = request
+  void showLauncher(request).finally(() => {
+    if (launcherToggleRequest === request) launcherToggleRequest = null
+  })
 }
 
 function createTray(): void {
