@@ -19,8 +19,9 @@ import { registerTranslationIpcHandlers } from './ipc/translation-handlers'
 import { registerEverythingIpcHandlers } from './ipc/everything-handlers'
 
 const isDevelopment = !app.isPackaged
-// Keep the original Nook data directory stable after changing the visible product name.
-app.setPath('userData', join(app.getPath('appData'), 'Nook'))
+if (isDevelopment) app.setName('webtools-desktop-dev')
+// Keep installed user data stable while isolating the development profile.
+app.setPath('userData', join(app.getPath('appData'), isDevelopment ? 'WebTools-Dev' : 'Nook'))
 let dataStore: DataStore
 let secretStore: SecretStore
 let managerWindow: BrowserWindow | null = null
