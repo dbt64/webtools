@@ -27,9 +27,8 @@ let secretStore: SecretStore
 let managerWindow: BrowserWindow | null = null
 let launcherWindow: BrowserWindow | null = null
 let launcherPositioned = false
-let launcherRendererReady = false
-let launcherReadyPromise: Promise<void> = Promise.resolve()
-let resolveLauncherReady: (() => void) | undefined
+interface LauncherReadiness { ready: boolean; promise: Promise<void>; resolve: () => void }
+const launcherReadiness = new WeakMap<BrowserWindow, LauncherReadiness>()
 let tray: Tray | null = null
 let quitting = false
 let hotkeyService: GlobalHotkeyService | null = null
@@ -75,14 +74,28 @@ function showManager(): void {
   else { managerWindow.show(); managerWindow.focus() }
 }
 
-function resetLauncherReadiness(): void {
-  launcherRendererReady = false
-  launcherReadyPromise = new Promise((resolve) => { resolveLauncherReady = resolve })
+function createLauncherReadiness(): LauncherReadiness {
+  let resolve!: () => void
+  const promise = new Promise<void>((complete) => { resolve = complete })
+  return { ready: false, promise, resolve }
+}
+
+function resetLauncherReadiness(window: BrowserWindow): void {
+  launcherReadiness.get(window)?.resolve()
+  launcherReadiness.set(window, createLauncherReadiness())
+}
+
+async function waitForLauncherRenderer(window: BrowserWindow): Promise<boolean> {
+  while (!window.isDestroyed() && launcherWindow === window) {
+    const readiness = launcherReadiness.get(window)
+    if (!readiness || readiness.ready) return true
+    await readiness.promise
+  }
+  return false
 }
 
 function createLauncherWindow(): BrowserWindow {
   if (launcherWindow && !launcherWindow.isDestroyed()) return launcherWindow
-  resetLauncherReadiness()
   const window = new BrowserWindow({
     width: 850,
     height: 128,
@@ -97,18 +110,17 @@ function createLauncherWindow(): BrowserWindow {
     webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   })
   launcherWindow = window
+  launcherReadiness.set(window, createLauncherReadiness())
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event, url) => { if (!url.startsWith('file:') && !url.startsWith('http://localhost:')) event.preventDefault() })
   window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
-    if (isMainFrame && !isInPlace && launcherRendererReady) resetLauncherReadiness()
+    if (isMainFrame && !isInPlace && launcherReadiness.get(window)?.ready) resetLauncherReadiness(window)
   })
   window.on('closed', () => {
+    launcherReadiness.get(window)?.resolve()
     if (launcherWindow === window) {
       launcherWindow = null
       launcherPositioned = false
-      launcherRendererReady = false
-      resolveLauncherReady?.()
-      resolveLauncherReady = undefined
     }
   })
   window.on('blur', () => {
@@ -120,10 +132,11 @@ function createLauncherWindow(): BrowserWindow {
 }
 
 function markLauncherRendererReady(sender: WebContents): void {
-  if (!launcherWindow || launcherWindow.isDestroyed() || sender !== launcherWindow.webContents || launcherRendererReady) return
-  launcherRendererReady = true
-  resolveLauncherReady?.()
-  resolveLauncherReady = undefined
+  if (!launcherWindow || launcherWindow.isDestroyed() || sender !== launcherWindow.webContents) return
+  const readiness = launcherReadiness.get(launcherWindow)
+  if (!readiness || readiness.ready) return
+  readiness.ready = true
+  readiness.resolve()
 }
 
 async function showLauncher(): Promise<void> {
@@ -136,8 +149,7 @@ async function showLauncher(): Promise<void> {
     launcherPositioned = true
   }
   resizeLauncher(launcherDisplayMode === 'expanded')
-  if (!launcherRendererReady) await launcherReadyPromise
-  if (window.isDestroyed() || launcherWindow !== window) return
+  if (!await waitForLauncherRenderer(window)) return
   const detail = JSON.stringify({ launcherDisplayMode })
   await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('webtools-launcher-show', { detail: ${detail} }))`).catch(() => undefined)
   if (window.isDestroyed() || launcherWindow !== window) return
