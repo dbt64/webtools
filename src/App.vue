@@ -25,6 +25,10 @@ function focusSearch(): void {
   requestAnimationFrame(() => document.getElementById('quick-search')?.focus())
 }
 
+function navigateFromSearch(section: Exclude<Section, 'search'>): void {
+  activeSection.value = section
+}
+
 </script>
 
 <template>
@@ -75,7 +79,7 @@ function focusSearch(): void {
         <button class="help-button" aria-label="帮助"><CircleHelp :size="17" /></button>
       </header>
 
-      <SearchView v-if="activeSection === 'search'" @navigate="activeSection = $event" />
+      <SearchView v-if="activeSection === 'search'" @navigate="navigateFromSearch" />
       <EntriesView v-else-if="activeSection === 'entries'" class="entry-manager" />
       <SettingsView v-else-if="activeSection === 'settings'" />
       <TranslateView v-else-if="activeSection === 'translate'" @settings="activeSection = 'settings'" />
