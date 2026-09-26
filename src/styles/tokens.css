@@ -191,8 +191,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .shortcut-recorder.recording { border-color: #589074; color: #a8e0c0; background: #1b2a22; }
 .toggle-switch { display: flex; width: 37px; height: 21px; align-items: center; padding: 2px; border: 1px solid #45484c; border-radius: 12px; background: #292b2e; cursor: pointer; }
 .toggle-switch span { width: 15px; height: 15px; border-radius: 50%; background: #92979d; transition: transform .16s ease, background .16s ease; }
-.toggle-switch.enabled { border-color: #4e9c76; background: #24412f; }
-.toggle-switch.enabled span { transform: translateX(15px); background: #9cddb5; }
+.toggle-switch.enabled { border-color: var(--accent); background: var(--accent-soft); }
+.toggle-switch.enabled span { transform: translateX(15px); background: var(--accent); }
 .bookmark-target-name { overflow: hidden; padding: 10px; border: 1px solid #34373b; border-radius: 8px; color: #d7dddf; background: #141619; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .app-frame { display: flex; min-height: 100vh; background: var(--canvas); }
 .sidebar { position: relative; display: flex; flex: 0 0 226px; flex-direction: column; padding: 26px 15px 13px; background: var(--sidebar); border-right: 1px solid #222b35; }
@@ -225,7 +225,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .search-page { position: relative; display: flex; width: min(760px, 100%); flex: 1; flex-direction: column; align-self: center; padding: 83px 48px 25px; }
 .welcome-block { margin-bottom: 31px; }
 .welcome-icon { display: grid; width: 31px; height: 31px; place-items: center; margin-bottom: 20px; border: 1px solid #3c493f; border-radius: 10px; color: var(--amber); background: #242a25; }
-.eyebrow { margin: 0 0 7px; color: #92a398; font-size: 11px; font-weight: 500; }
+.eyebrow { margin: 0 0 7px; color: var(--accent); font-size: 11px; font-weight: 500; }
 h1 { margin: 0; color: #edf1f3; font-size: 27px; font-weight: 600; letter-spacing: -.035em; }
 .welcome-copy { margin: 10px 0 0; color: #8793a0; font-size: 12px; }
 kbd { display: inline-grid; min-width: 19px; height: 19px; place-items: center; padding: 0 5px; border: 1px solid #36414d; border-radius: 5px; color: #bac3ca; background: #1a212a; font-family: inherit; font-size: 10px; }
@@ -313,7 +313,7 @@ kbd { display: inline-grid; min-width: 19px; height: 19px; place-items: center; 
 .editor-dialog { display: grid; width: min(430px, 100%); gap: 16px; padding: 24px; border: 1px solid #34404b; border-radius: 15px; background: #19222b; box-shadow: 0 25px 80px #0008; }
 .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 2px; }
 .dialog-heading h2 { margin: 0; color: #e8edf0; font-size: 18px; font-weight: 600; }
-.field-label { display: grid; gap: 7px; color: #9da8b2; font-size: 10px; }
+.field-label { display: grid; gap: 7px; color: var(--muted); font-size: 10px; }
 .field-label input { width: 100%; height: 39px; padding: 0 11px; border: 1px solid #34404b; border-radius: 8px; color: #e2e8eb; background: #121920; font-size: 11px; outline: 0; }
 .field-label input:focus { border-color: #76b896; box-shadow: 0 0 0 3px #9fdfc311; }
 .field-label input::placeholder { color: #687582; }
