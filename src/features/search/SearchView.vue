@@ -21,7 +21,7 @@ const selectedIndex = ref(0)
 const searchInput = ref<HTMLInputElement>()
 const enginePicker = ref<HTMLElement>()
 const engineTrigger = ref<HTMLButtonElement>()
-const engineOptions = ref<HTMLButtonElement[]>([])
+const settingsReady = ref(false)
 const enginePickerOpen = ref(false)
 const enginePickerIndex = ref(0)
 const enginePickerSaving = ref(false)
@@ -49,11 +49,16 @@ function engineMark(engine: SearchEngine): string {
 }
 
 async function openEnginePicker(): Promise<void> {
+  if (!settingsReady.value) return
   enginePickerError.value = ''
   enginePickerIndex.value = Math.max(0, enabledEngines.value.findIndex((engine) => engine.id === selectedEngine.value?.id))
   enginePickerOpen.value = true
   await nextTick()
-  engineOptions.value[enginePickerIndex.value]?.focus()
+  focusEngineOption(enginePickerIndex.value)
+}
+
+function focusEngineOption(index: number): void {
+  enginePicker.value?.querySelectorAll<HTMLButtonElement>('.engine-option')[index]?.focus()
 }
 
 function closeEnginePicker(restoreFocus = false): void {
@@ -70,7 +75,7 @@ function handleEnginePickerKeydown(event: KeyboardEvent): void {
     const count = enabledEngines.value.length
     if (!count) return
     enginePickerIndex.value = (enginePickerIndex.value + (event.key === 'ArrowDown' ? 1 : -1) + count) % count
-    engineOptions.value[enginePickerIndex.value]?.focus()
+    focusEngineOption(enginePickerIndex.value)
   }
 }
 
@@ -108,14 +113,16 @@ const resultGroups = computed(() => [
 async function loadApps(refresh = false): Promise<void> {
   refreshing.value = refresh
   try {
-    const [loadedApps, entries, loadedSettings] = await Promise.all([
+    if (!refresh) {
+      settings.value = await window.desktop.getSettings()
+      settingsReady.value = true
+    }
+    const [loadedApps, entries] = await Promise.all([
       refresh ? window.desktop.refreshApps() : window.desktop.getApps(),
       window.desktop.listWebsites(),
-      window.desktop.getSettings(),
     ])
     apps.value = loadedApps
     webEntries.value = entries
-    settings.value = loadedSettings
   } catch {
     // Show an empty result state while keeping the search box usable.
   } finally {
@@ -236,6 +243,7 @@ onUnmounted(() => document.removeEventListener('pointerdown', handleOutsidePoint
           :aria-label="`选择搜索引擎，当前为${defaultEngineName}`"
           aria-haspopup="listbox"
           :aria-expanded="enginePickerOpen"
+          :disabled="!settingsReady"
           @click="enginePickerOpen ? closeEnginePicker() : openEnginePicker()"
           @keydown.esc.prevent="closeEnginePicker(true)"
         >
@@ -258,7 +266,6 @@ onUnmounted(() => document.removeEventListener('pointerdown', handleOutsidePoint
           <button
             v-for="(engine, index) in enabledEngines"
             :key="engine.id"
-            ref="engineOptions"
             type="button"
             class="engine-option"
             role="option"
