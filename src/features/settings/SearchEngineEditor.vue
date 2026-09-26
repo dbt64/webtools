@@ -16,12 +16,16 @@ const template = ref('')
 watch(() => props.settings.searchEngines, (value) => { engines.value = value.map((engine) => ({ ...engine })).sort((a, b) => a.order - b.order) }, { immediate: true, deep: true })
 
 async function persist(next: SearchEngine[], defaultId = props.settings.defaultSearchEngineId): Promise<void> {
+  if (saving.value) return
   saving.value = true
   error.value = ''
-  const result = await window.desktop.updateSettings({ searchEngines: next, defaultSearchEngineId: defaultId })
-  saving.value = false
-  if (!result.ok) { error.value = result.error.message; return }
-  emit('saved', result.data)
+  try {
+    const result = await window.desktop.updateSettings({ searchEngines: next, defaultSearchEngineId: defaultId })
+    if (!result.ok) { error.value = result.error.message; return }
+    emit('saved', result.data)
+  } catch {
+    error.value = '无法保存网页搜索设置，请检查本机数据后重试。'
+  } finally { saving.value = false }
 }
 
 function openEditor(engine?: SearchEngine): void {
@@ -71,24 +75,24 @@ async function remove(engine: SearchEngine): Promise<void> {
     <article v-for="(engine, index) in engines" :key="engine.id" class="engine-row" :class="{ disabled: !engine.enabled }">
       <span class="engine-logo">{{ [...engine.name][0]?.toLocaleUpperCase() ?? '?' }}</span>
       <span class="engine-copy"><strong>{{ engine.name }}<small v-if="engine.builtIn">内置</small></strong><code>{{ engine.template }}</code></span>
-      <button v-if="engine.enabled" class="engine-default" :class="{ selected: settings.defaultSearchEngineId === engine.id }" @click="setDefault(engine.id)">{{ settings.defaultSearchEngineId === engine.id ? '默认' : '设为默认' }}<Check v-if="settings.defaultSearchEngineId === engine.id" :size="12" /></button>
+      <button v-if="engine.enabled" class="engine-default" :class="{ selected: settings.defaultSearchEngineId === engine.id }" :disabled="saving" @click="setDefault(engine.id)">{{ settings.defaultSearchEngineId === engine.id ? '默认' : '设为默认' }}<Check v-if="settings.defaultSearchEngineId === engine.id" :size="12" /></button>
       <span v-else class="engine-disabled-label">已停用</span>
       <div class="engine-actions">
         <button class="icon-button" :disabled="index === 0 || saving" aria-label="上移" @click="move(index, -1)"><ChevronUp :size="15" /></button>
         <button class="icon-button" :disabled="index === engines.length - 1 || saving" aria-label="下移" @click="move(index, 1)"><ChevronDown :size="15" /></button>
-        <button class="icon-button" :aria-label="engine.enabled ? '停用搜索引擎' : '启用搜索引擎'" @click="toggle(engine)"><Eye v-if="engine.enabled" :size="14" /><EyeOff v-else :size="14" /></button>
-        <button v-if="!engine.builtIn" class="icon-button" aria-label="编辑搜索引擎" @click="openEditor(engine)"><Pencil :size="14" /></button>
-        <button v-if="!engine.builtIn" class="icon-button danger" aria-label="删除搜索引擎" @click="remove(engine)"><Trash2 :size="14" /></button>
+        <button class="icon-button" :disabled="saving" :aria-label="engine.enabled ? '停用搜索引擎' : '启用搜索引擎'" @click="toggle(engine)"><Eye v-if="engine.enabled" :size="14" /><EyeOff v-else :size="14" /></button>
+        <button v-if="!engine.builtIn" class="icon-button" :disabled="saving" aria-label="编辑搜索引擎" @click="openEditor(engine)"><Pencil :size="14" /></button>
+        <button v-if="!engine.builtIn" class="icon-button danger" :disabled="saving" aria-label="删除搜索引擎" @click="remove(engine)"><Trash2 :size="14" /></button>
       </div>
     </article>
-    <button class="secondary-button engine-add" @click="openEditor()"><Plus :size="15" /> 添加自定义搜索引擎</button>
+    <button class="secondary-button engine-add" :disabled="saving" @click="openEditor()"><Plus :size="15" /> 添加自定义搜索引擎</button>
     <p v-if="error" class="inline-error">{{ error }}</p>
-    <div v-if="editing" class="dialog-backdrop" @click.self="editing = false">
+    <div v-if="editing" class="dialog-backdrop" @click.self="!saving && (editing = false)">
       <form class="editor-dialog" @submit.prevent="saveEditor">
-        <div class="dialog-heading"><div><p class="eyebrow">搜索方式</p><h2>{{ editingId ? '编辑' : '添加' }}搜索引擎</h2></div><button type="button" class="icon-button" @click="editing = false">×</button></div>
-        <label class="field-label">名称<input v-model="name" autofocus placeholder="例如：DuckDuckGo" /></label>
-        <label class="field-label">搜索网址<small>使用 %s 代替搜索词，例如 https://example.com/search?q=%s</small><input v-model="template" placeholder="https://example.com/search?q=%s" /></label>
-        <div class="dialog-actions"><button type="button" class="secondary-button" @click="editing = false">取消</button><button class="primary-button" :disabled="saving">保存</button></div>
+        <div class="dialog-heading"><div><p class="eyebrow">搜索方式</p><h2>{{ editingId ? '编辑' : '添加' }}搜索引擎</h2></div><button type="button" class="icon-button" :disabled="saving" @click="editing = false">×</button></div>
+        <label class="field-label">名称<input v-model="name" autofocus placeholder="例如：DuckDuckGo" :disabled="saving" /></label>
+        <label class="field-label">搜索网址<small>使用 %s 代替搜索词，例如 https://example.com/search?q=%s</small><input v-model="template" placeholder="https://example.com/search?q=%s" :disabled="saving" /></label>
+        <div class="dialog-actions"><button type="button" class="secondary-button" :disabled="saving" @click="editing = false">取消</button><button class="primary-button" :disabled="saving">保存</button></div>
       </form>
     </div>
   </section>

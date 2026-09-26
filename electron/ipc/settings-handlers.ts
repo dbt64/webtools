@@ -26,17 +26,27 @@ export function registerSettingsIpcHandlers(deps: {
     if (settings.websiteLayout !== undefined && !['grid', 'list'].includes(String(settings.websiteLayout))) return fail('INVALID_SETTINGS', '网址排布模式无效。')
     if (settings.everythingEnabled !== undefined && typeof settings.everythingEnabled !== 'boolean') return fail('INVALID_SETTINGS', 'Everything 启用状态无效。')
     if (settings.everythingEsPath !== undefined && (typeof settings.everythingEsPath !== 'string' || settings.everythingEsPath.length > 1000 || (settings.everythingEsPath && (!isAbsolute(settings.everythingEsPath) || basename(settings.everythingEsPath).toLocaleLowerCase() !== 'es.exe')))) return fail('INVALID_SETTINGS', 'ES 路径必须指向绝对路径下的 es.exe。')
-    let searchEngines = dataStore.snapshot().settings.searchEngines
+    const currentSettings = dataStore.snapshot().settings
+    let searchEngines = currentSettings.searchEngines
     if (settings.searchEngines !== undefined) {
       try { searchEngines = normalizeSearchEngines(settings.searchEngines) } catch (error) { return fail('INVALID_SEARCH_ENGINES', error instanceof Error ? error.message : '搜索引擎配置无效。') }
     }
-    const requestedEngineId = typeof settings.defaultSearchEngineId === 'string' ? settings.defaultSearchEngineId : dataStore.snapshot().settings.defaultSearchEngineId
+    const requestedEngineId = typeof settings.defaultSearchEngineId === 'string' ? settings.defaultSearchEngineId : currentSettings.defaultSearchEngineId
     const defaultSearchEngineId = searchEngines.some((engine) => engine.id === requestedEngineId && engine.enabled) ? requestedEngineId : searchEngines.find((engine) => engine.enabled)!.id
-    const currentShortcut = dataStore.snapshot().settings.quickSearchShortcut
+    const currentShortcut = currentSettings.quickSearchShortcut
     const nextShortcut = typeof settings.quickSearchShortcut === 'string' ? settings.quickSearchShortcut : currentShortcut
     if (nextShortcut !== currentShortcut) {
       const registration = hotkeyService?.replace(nextShortcut)
       if (!registration?.ok) return registration ?? fail('SHORTCUT_NOT_INITIALIZED', '快捷键服务尚未初始化。')
+    }
+    const nextLaunchOnStartup = typeof settings.launchOnStartup === 'boolean' ? settings.launchOnStartup : currentSettings.launchOnStartup
+    const startupChanged = nextLaunchOnStartup !== currentSettings.launchOnStartup
+    if (startupChanged) {
+      try { deps.setOpenAtLogin(nextLaunchOnStartup) }
+      catch (error) {
+        if (nextShortcut !== currentShortcut) hotkeyService?.replace(currentShortcut)
+        return fail('UPDATE_STARTUP_FAILED', error instanceof Error ? error.message : '无法更新 Windows 登录启动设置。')
+      }
     }
     let next
     try {
@@ -44,7 +54,7 @@ export function registerSettingsIpcHandlers(deps: {
         ...data,
         settings: {
           ...data.settings, searchEngines, defaultSearchEngineId, quickSearchShortcut: nextShortcut,
-          launchOnStartup: typeof settings.launchOnStartup === 'boolean' ? settings.launchOnStartup : data.settings.launchOnStartup,
+          launchOnStartup: nextLaunchOnStartup,
           websiteLayout: settings.websiteLayout === 'list' ? 'list' : settings.websiteLayout === 'grid' ? 'grid' : data.settings.websiteLayout,
           everythingEnabled: typeof settings.everythingEnabled === 'boolean' ? settings.everythingEnabled : data.settings.everythingEnabled,
           everythingEsPath: typeof settings.everythingEsPath === 'string' ? settings.everythingEsPath : data.settings.everythingEsPath,
@@ -54,9 +64,12 @@ export function registerSettingsIpcHandlers(deps: {
       }))
     } catch (error) {
       if (nextShortcut !== currentShortcut) hotkeyService?.replace(currentShortcut)
+      if (startupChanged) {
+        try { deps.setOpenAtLogin(currentSettings.launchOnStartup) }
+        catch (rollbackError) { console.warn('[settings:update] failed to restore Windows login startup setting', rollbackError) }
+      }
       return fail('SAVE_SETTINGS_FAILED', error instanceof Error ? error.message : '无法保存设置。')
     }
-    deps.setOpenAtLogin(next.settings.launchOnStartup)
     return { ok: true, data: next.settings }
   })
   ipcMain.handle('search:open-web', async (_event, query: unknown): Promise<IpcResult<void>> => {
