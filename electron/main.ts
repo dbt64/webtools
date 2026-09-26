@@ -106,17 +106,24 @@ function createLauncherWindow(): BrowserWindow {
 
 function showLauncher(): void {
   const window = createLauncherWindow()
+  const launcherDisplayMode = dataStore.snapshot().settings.launcherDisplayMode
   if (!launcherPositioned) {
     const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
     const bounds = display.workArea
     window.setBounds({ x: Math.round(bounds.x + (bounds.width - 850) / 2), y: Math.round(bounds.y + bounds.height * 0.18), width: 850, height: 128 })
     launcherPositioned = true
   }
-  resizeLauncher(false)
-  window.show()
-  window.focus()
-  if (window.webContents.isLoading()) window.webContents.once('did-finish-load', () => void window.webContents.executeJavaScript("window.dispatchEvent(new Event('webtools-launcher-show'))"))
-  else void window.webContents.executeJavaScript("window.dispatchEvent(new Event('webtools-launcher-show'))")
+  resizeLauncher(launcherDisplayMode === 'expanded')
+  const showAfterRendererReset = () => {
+    const detail = JSON.stringify({ launcherDisplayMode })
+    void window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('webtools-launcher-show', { detail: ${detail} }))`).catch(() => undefined).then(() => {
+      if (window.isDestroyed()) return
+      window.show()
+      window.focus()
+    })
+  }
+  if (window.webContents.isLoading()) window.webContents.once('did-finish-load', showAfterRendererReset)
+  else showAfterRendererReset()
 }
 
 function resizeLauncher(expanded: boolean, expandedSections = 0, hasSearchResults = false): void {

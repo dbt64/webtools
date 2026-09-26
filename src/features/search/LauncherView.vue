@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { ArrowDown, ArrowUp, ArrowUpRight, BookmarkPlus, Command, CornerDownLeft, File, Folder, Globe, Languages, Search } from '@lucide/vue'
-import type { AppSearchEntry, BookmarkFolder, WebsiteEntry, EverythingResult } from '@/shared/domain'
+import type { AppSearchEntry, BookmarkFolder, WebsiteEntry, EverythingResult, LauncherDisplayMode } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry } from '@/shared/search'
 import { parseSearchCommand } from '@/shared/search-command'
+import { applyTheme } from '@/shared/theme'
 import BookmarkDialog from '../bookmarks/BookmarkDialog.vue'
 import Favicon from '../bookmarks/Favicon.vue'
 
@@ -271,12 +272,19 @@ watch(query, (value) => {
   } else if (command.mode === 'files') fileStatus.value = '输入关键词搜索文件和文件夹。'
 })
 
-function handleLauncherShow(): void {
+function handleLauncherShow(event: Event): void {
+  const detail = event instanceof CustomEvent
+    ? event.detail as { launcherDisplayMode?: unknown } | undefined
+    : undefined
+  const launcherDisplayMode: LauncherDisplayMode = detail?.launcherDisplayMode === 'expanded' ? 'expanded' : 'compact'
   query.value = ''
-  expanded.value = false
+  expanded.value = launcherDisplayMode === 'expanded'
   websitesExpanded.value = false
   applicationsExpanded.value = false
   error.value = ''
+  void window.desktop.getSettings().then((settings) => applyTheme(settings.theme)).catch(() => {
+    // Keep the last applied theme if settings cannot be read during invocation.
+  })
   void load()
   syncWindowSize()
   void focus()
