@@ -7,7 +7,8 @@ export type IpcResult<T> =
 export interface DesktopApi {
   showLauncher(): Promise<void>
   hideLauncher(): Promise<void>
-  setLauncherExpanded(expanded: boolean): Promise<void>
+  setLauncherExpanded(expanded: boolean, expandedSections?: number, hasSearchResults?: boolean): Promise<void>
+  moveLauncherBy(deltaX: number, deltaY: number): void
   showManager(): Promise<void>
   getVersion(): Promise<string>
   getApps(): Promise<AppSearchEntry[]>
@@ -41,6 +42,7 @@ export const IPC_CHANNELS = {
   showLauncher: 'window:show-launcher',
   hideLauncher: 'window:hide-launcher',
   setLauncherExpanded: 'window:set-launcher-expanded',
+  moveLauncherBy: 'window:move-launcher-by',
   showManager: 'window:show-manager',
   getVersion: 'app:get-version',
   getApps: 'apps:list',
