@@ -20,7 +20,17 @@ async function persist(next: SearchEngine[], defaultId = props.settings.defaultS
   saving.value = true
   error.value = ''
   try {
-    const result = await window.desktop.updateSettings({ searchEngines: next, defaultSearchEngineId: defaultId })
+    // `engines` and its items are Vue proxies. Copy their scalar fields into
+    // plain objects before sending them through Electron IPC.
+    const searchEngines = next.map((engine) => ({
+      id: engine.id,
+      name: engine.name,
+      template: engine.template,
+      builtIn: engine.builtIn,
+      enabled: engine.enabled,
+      order: engine.order,
+    }))
+    const result = await window.desktop.updateSettings({ searchEngines, defaultSearchEngineId: defaultId })
     if (!result.ok) { error.value = result.error.message; return }
     emit('saved', result.data)
   } catch {
