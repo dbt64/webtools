@@ -1,0 +1,8 @@
+node_modules/
+out/
+dist/
+release/
+.superpowers/sdd/*
+!.superpowers/sdd/.gitignore
+*.log
+.DS_Store
