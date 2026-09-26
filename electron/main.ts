@@ -109,4 +109,72 @@ function resizeLauncher(expanded: boolean): void {
   if (!launcherWindow || launcherWindow.isDestroyed()) return
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   const bounds = display.workArea
-  const height 
+  const height = expanded ? 440 : 88
+  launcherWindow.setBounds({ x: Math.round(bounds.x + (bounds.width - 850) / 2), y: Math.round(bounds.y + bounds.height * 0.22), width: 850, height })
+}
+
+function createTray(): void {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect x="1" y="1" width="30" height="30" rx="8" fill="#9fdfc3"/><path d="M11 10h10M11 16h10M11 22h10" stroke="#15261f" stroke-width="2" stroke-linecap="round"/></svg>'
+  const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
+  tray = new Tray(image)
+  tray.setToolTip('WebTools')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '打开 WebTools', click: showManager },
+    { label: '退出', click: () => { quitting = true; hotkeyService?.dispose(); app.quit() } },
+  ]))
+  tray.on('double-click', showManager)
+}
+
+ipcMain.handle('app:get-version', () => app.getVersion())
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) app.quit()
+else app.on('second-instance', () => showManager())
+
+app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return
+  app.setAppUserModelId('dev.nook.launcher')
+  dataStore = new DataStore(join(app.getPath('userData'), 'nook-data.json'))
+  secretStore = new SecretStore(join(app.getPath('userData'), 'secrets.json'))
+  try { await dataStore.load() } catch (error) {
+    dialog.showErrorBox('WebTools 本地数据无法读取', error instanceof Error ? error.message : '请检查本机数据文件和权限。')
+    app.quit()
+    return
+  }
+  const recoveryMessage = dataStore.getRecoveryMessage()
+  if (recoveryMessage) await dialog.showMessageBox({ type: 'info', title: 'WebTools 本地数据', message: '本机数据已完成升级或恢复。', detail: recoveryMessage, buttons: ['确定'] })
+  const aiTranslationService = new AiTranslationService(dataStore, secretStore)
+  const appCatalog = new AppCatalogService()
+  const appLauncher = new AppLauncher(appCatalog)
+  const bookmarkService = new BookmarkService(dataStore)
+  const websiteService = new WebsiteService(dataStore)
+  const websiteMetadata = new WebsiteMetadataService()
+  const everything = new EverythingClient(() => dataStore.snapshot().settings.everythingEsPath)
+  await appCatalog.refresh()
+  hotkeyService = new GlobalHotkeyService()
+  const shortcutResult = hotkeyService.register(dataStore.snapshot().settings.quickSearchShortcut, showLauncher)
+  if (!shortcutResult.ok) console.warn(shortcutResult.error.message)
+  app.setLoginItemSettings({ openAtLogin: dataStore.snapshot().settings.launchOnStartup })
+  createTray()
+  registerWindowIpcHandlers({ showLauncher, hideLauncher: () => launcherWindow?.hide(), setLauncherExpanded: resizeLauncher, showManager })
+  registerAppIpcHandlers({ appCatalog, appLauncher })
+  registerWebsiteIpcHandlers({ websiteService, websiteMetadata, bookmarkService })
+  registerSettingsIpcHandlers({ dataStore, hotkeyService, setOpenAtLogin: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled }), openExternal: openExternalUrl })
+  registerTranslationIpcHandlers({ aiTranslationService, secretStore, openExternal: openExternalUrl })
+  registerEverythingIpcHandlers({ everything, dataStore, getManagerWindow: () => managerWindow })
+  createWindow()
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+app.on('window-all-closed', () => {
+  // The app remains resident in the Windows tray.
+})
+
+app.on('before-quit', () => {
+  quitting = true
+  hotkeyService?.dispose()
+  tray?.destroy()
+  tray = null
+})

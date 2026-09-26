@@ -108,4 +108,56 @@ async function testConnection(): Promise<void> {
   try {
     if (!await saveAiSettings()) return
     const result = await window.desktop.testAiConnection()
-    testMessage.value 
+    testMessage.value = result.ok ? `已连接 · ${result.data.model}` : result.error.message
+  } catch {
+    testMessage.value = '无法连接 AI 服务，请检查网络和设置。'
+  } finally {
+    testing.value = false
+  }
+}
+
+async function clearKey(): Promise<void> {
+  if (!window.confirm('删除已保存的 API Key？')) return
+  const result = await window.desktop.clearAiApiKey()
+  if (!result.ok) errorMessage.value = result.error.message
+  else { hasSavedKey.value = false; errorMessage.value = ''; testMessage.value = '已删除 API Key。' }
+}
+
+onMounted(async () => {
+  try {
+    settings.value = await window.desktop.getSettings()
+    hasSavedKey.value = await window.desktop.hasAiApiKey()
+    await refreshEverything()
+  } catch {
+    errorMessage.value = '无法读取本机设置。'
+  }
+})
+</script>
+
+<template>
+  <section class="content-page settings-page">
+    <div class="page-heading"><div><p class="eyebrow">偏好与连接</p><h1>设置</h1><p class="page-description">调整 WebTools 的搜索方式与服务连接。</p></div></div>
+    <SearchEngineEditor :settings="settings" @saved="handleEnginesSaved" />
+    <div class="settings-group shortcut-settings">
+      <div class="settings-group-heading"><span class="settings-group-icon"><Keyboard :size="17" /></span><div><strong>快速搜索快捷键</strong><p>在其他应用中按下快捷键显示 WebTools 搜索框</p></div></div>
+      <div class="shortcut-row"><div><strong>唤起搜索框</strong><small>快捷键会在后台全局生效</small></div><button class="shortcut-recorder" :class="{ recording: recordingShortcut }" :disabled="savingShortcut" @click="recordingShortcut = true" @keydown="handleShortcutKeydown">{{ recordingShortcut ? '按下组合键…（Esc 取消）' : settings.quickSearchShortcut.replace('Control', 'Ctrl').replace('Super', 'Win') }}<span v-if="!recordingShortcut">⌨</span></button></div>
+      <div class="shortcut-row"><div><strong>登录 Windows 时启动</strong><small>启动到托盘，随时可用全局快捷键</small></div><button class="toggle-switch" :class="{ enabled: settings.launchOnStartup }" role="switch" :aria-checked="settings.launchOnStartup" @click="toggleStartup"><span /></button></div>
+    </div>
+    <div class="settings-group everything-settings">
+      <div class="settings-group-heading"><span class="settings-group-icon"><FolderSearch :size="17" /></span><div><strong>Everything 文件搜索</strong><p>使用 file:关键词 在本机 Everything 索引中搜索</p></div></div>
+      <div class="shortcut-row"><div><strong>启用文件搜索</strong><small>需要单独安装并运行 Everything；WebTools 不会捆绑它</small></div><button class="toggle-switch" :class="{ enabled: settings.everythingEnabled }" role="switch" :aria-checked="settings.everythingEnabled" @click="toggleEverything"><span /></button></div>
+      <div class="everything-path-row"><div><strong>ES 命令行工具</strong><small>{{ everythingStatus?.running ? `Everything 正在运行${everythingStatus.version ? ` · ES ${everythingStatus.version}` : ''}` : everythingStatus?.executablePath ? '已找到 ES，但 Everything 尚未运行' : '尚未找到 es.exe' }}</small><code v-if="settings.everythingEsPath">{{ settings.everythingEsPath }}</code></div><div><button class="secondary-button" :disabled="checkingEverything" @click="autoDetectEverything">{{ checkingEverything ? '检测中…' : '自动检测' }}</button><button class="secondary-button" @click="browseEverything">浏览</button></div></div>
+      <p class="settings-note">在搜索框输入 <kbd>file:</kbd> 再输入关键词，例如 <kbd>file:meeting notes</kbd>。文件搜索结果只显示文件名和所在文件夹名称。</p>
+    </div>
+    <div class="settings-group ai-settings">
+      <div class="settings-group-heading"><span class="settings-group-icon"><KeyRound :size="17" /></span><div><strong>AI 翻译服务</strong><p>OpenAI 兼容接口 · 支持 OpenAI、DeepSeek</p></div></div>
+      <label class="field-label">服务地址<input v-model="settings.aiBaseUrl" placeholder="https://api.openai.com/v1 或 https://api.deepseek.com" /></label>
+      <label class="field-label">模型名称<input v-model="settings.aiModel" placeholder="例如：gpt-4o-mini 或 deepseek-chat" /></label>
+      <label class="field-label">API Key<input v-model="apiKey" type="password" autocomplete="new-password" :placeholder="hasSavedKey ? '已安全保存；输入新值可替换' : '输入 API Key'" /></label>
+      <p class="secret-note">API Key 使用 Windows 安全存储加密，不会写入普通设置文件。连接测试会发送一次简短请求。</p>
+      <div class="ai-settings-actions"><button class="primary-button" @click="saveAiSettings">保存设置</button><button class="secondary-button" :disabled="testing" @click="testConnection">{{ testing ? '正在连接…' : '测试连接' }}</button><button v-if="hasSavedKey" class="text-button remove-key" @click="clearKey">移除已保存的 Key</button></div>
+      <p v-if="testMessage" class="settings-result">{{ testMessage }}</p>
+    </div>
+    <p v-if="saved" class="save-indicator"><Check :size="14" /> 已保存</p><p v-if="errorMessage" class="inline-error">{{ errorMessage }}</p>
+  </section>
+</template>

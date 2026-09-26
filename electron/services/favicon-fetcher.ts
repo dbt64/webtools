@@ -121,4 +121,68 @@ function findDeclaredIcons(html: string, pageUrl: URL): URL[] {
     const attributes = parseAttributes(match[0])
     const rel = (attributes.rel ?? '').toLowerCase().split(/\s+/)
     if (!rel.some((value) => value.includes('icon')) || !attributes.href) continue
-    try { links.push(safeHttpUrl(new U
+    try { links.push(safeHttpUrl(new URL(attributes.href, pageUrl))) } catch { /* Ignore unsafe icon links. */ }
+  }
+  return links
+}
+
+function mimeForIcon(contentType: string, url: URL): string | null {
+  const allowed = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/x-icon', 'image/vnd.microsoft.icon'])
+  if (allowed.has(contentType)) return contentType
+  if (contentType === 'application/octet-stream' && url.pathname.toLowerCase().endsWith('.ico')) return 'image/x-icon'
+  return null
+}
+
+function toDataUrl(bytes: Uint8Array, mime: string): string {
+  return `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`
+}
+
+function getFallbackInitial(siteUrl: URL): string {
+  const hostname = siteUrl.hostname.replace(/^www\./i, '')
+  return [...hostname].find((character) => /[\p{L}\p{N}]/u.test(character))?.toLocaleUpperCase() ?? '?'
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (whole, entity: string) => {
+    const named: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
+    if (entity[0] !== '#') return named[entity.toLowerCase()] ?? whole
+    const point = entity[1]?.toLowerCase() === 'x' ? Number.parseInt(entity.slice(2), 16) : Number.parseInt(entity.slice(1), 10)
+    return Number.isFinite(point) && point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : whole
+  }).trim().replace(/\s+/g, ' ')
+}
+
+export async function fetchWebsiteMetadata(siteUrl: URL): Promise<{ title?: string; favicon?: string }> {
+  const pageUrl = safeHttpUrl(siteUrl)
+  let title: string | undefined
+  const candidates: URL[] = []
+
+  try {
+    const page = await fetchBounded(pageUrl, MAX_PAGE_BYTES)
+    if (page.contentType.includes('html')) {
+      const html = new TextDecoder().decode(page.bytes)
+      const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html)
+      title = titleMatch ? decodeHtmlEntities(titleMatch[1].replace(/<[^>]*>/g, '').slice(0, 300)) || undefined : undefined
+      candidates.push(...findDeclaredIcons(html, page.finalUrl).slice(0, 3))
+    }
+  } catch {
+    // The root favicon can still work when the document itself is unavailable.
+  }
+
+  const siteOrigin = new URL('/', pageUrl)
+  candidates.push(new URL('/favicon.ico', siteOrigin))
+  for (const candidate of candidates) {
+    try {
+      const image = await fetchBounded(candidate, MAX_ICON_BYTES)
+      const mime = mimeForIcon(image.contentType, image.finalUrl)
+      if (mime && image.bytes.byteLength > 0) return { title, favicon: toDataUrl(image.bytes, mime) }
+    } catch {
+      // Continue to the next candidate; favicon failures never block saving a bookmark.
+    }
+  }
+  return { title }
+}
+
+export async function fetchFavicon(siteUrl: URL): Promise<{ dataUrl?: string; fallbackInitial: string }> {
+  const result = await fetchWebsiteMetadata(siteUrl)
+  return { dataUrl: result.favicon, fallbackInitial: getFallbackInitial(siteUrl) }
+}

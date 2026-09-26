@@ -68,4 +68,65 @@ export function migrateV1ToV2(input: unknown): AppData {
 }
 
 export class DataStore {
-  private data: AppData = crea
+  private data: AppData = createDefaultAppData()
+  private pendingWrite: Promise<void> = Promise.resolve()
+  private recoveryMessage: string | null = null
+  constructor(private readonly filePath: string) {}
+
+  async load(): Promise<AppData> {
+    let bytes: Buffer
+    try { bytes = await readFile(this.filePath) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      this.data = createDefaultAppData()
+      await this.persist(this.data)
+      return this.snapshot()
+    }
+    let parsed: unknown
+    try { parsed = JSON.parse(bytes.toString('utf8')) } catch { return this.recoverCorrupt() }
+    if (validV2(parsed)) { this.data = parsed; return this.snapshot() }
+    if (validV1(parsed)) {
+      const backupPath = `${this.filePath}.v1.bak`
+      try {
+        await mkdir(dirname(this.filePath), { recursive: true })
+        try {
+          const existingBackup = await readFile(backupPath)
+          if (!existingBackup.equals(bytes)) throw new Error('旧版数据备份已存在且与当前数据不一致；为避免覆盖备份，迁移已停止。')
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          await writeFile(backupPath, bytes, { flag: 'wx' })
+        }
+        this.data = migrateV1ToV2(parsed)
+        await this.persist(this.data)
+        this.recoveryMessage = `旧版数据已迁移；原始数据备份位于 ${backupPath}`
+        return this.snapshot()
+      } catch (error) {
+        this.recoveryMessage = `数据迁移失败，原始文件已保留：${error instanceof Error ? error.message : '未知错误'}`
+        throw new Error(this.recoveryMessage)
+      }
+    }
+    return this.recoverCorrupt()
+  }
+
+  getRecoveryMessage(): string | null { return this.recoveryMessage }
+  snapshot(): AppData { return structuredClone(this.data) }
+  async update(mutator: (current: AppData) => AppData): Promise<AppData> {
+    const operation = this.pendingWrite.then(async () => { const next = mutator(this.snapshot()); await this.persist(next); this.data = next; return structuredClone(next) })
+    this.pendingWrite = operation.then(() => undefined, () => undefined)
+    try { return await operation } catch { throw new Error('无法保存本机数据，请检查磁盘空间和文件权限。') }
+  }
+  private async recoverCorrupt(): Promise<AppData> {
+    const backupPath = `${this.filePath}.corrupt-${Date.now()}`
+    try { await copyFile(this.filePath, backupPath) } catch { /* preserve original when copying is unavailable */ }
+    this.recoveryMessage = `本地数据格式损坏，已尝试保留原文件副本：${backupPath}`
+    this.data = createDefaultAppData()
+    // Do not overwrite the only recoverable source when a backup could not be made.
+    try { await readFile(backupPath); await this.persist(this.data) } catch { throw new Error(this.recoveryMessage) }
+    return this.snapshot()
+  }
+  private async persist(data: AppData): Promise<void> {
+    await mkdir(dirname(this.filePath), { recursive: true })
+    const tempPath = `${this.filePath}.tmp`
+    await writeFile(tempPath, JSON.stringify(data, null, 2), 'utf8')
+    await rename(tempPath, this.filePath)
+  }
+}

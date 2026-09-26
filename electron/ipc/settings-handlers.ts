@@ -58,4 +58,33 @@ export function registerSettingsIpcHandlers(deps: {
           ...data.settings, searchEngines, defaultSearchEngineId, quickSearchShortcut: nextShortcut,
           launchOnStartup: nextLaunchOnStartup,
           websiteLayout: settings.websiteLayout === 'list' ? 'list' : settings.websiteLayout === 'grid' ? 'grid' : data.settings.websiteLayout,
-          everythingEnabled: typeof settings.everythingEnabled === 'boolean' ? settings.everythingEnabled : data.settings.everythingEnabl
+          everythingEnabled: typeof settings.everythingEnabled === 'boolean' ? settings.everythingEnabled : data.settings.everythingEnabled,
+          everythingEsPath: typeof settings.everythingEsPath === 'string' ? settings.everythingEsPath : data.settings.everythingEsPath,
+          aiBaseUrl: typeof settings.aiBaseUrl === 'string' ? settings.aiBaseUrl : data.settings.aiBaseUrl,
+          aiModel: typeof settings.aiModel === 'string' ? settings.aiModel : data.settings.aiModel,
+        },
+      }))
+    } catch (error) {
+      if (nextShortcut !== currentShortcut) hotkeyService?.replace(currentShortcut)
+      if (startupChanged) {
+        try { deps.setOpenAtLogin(currentSettings.launchOnStartup) }
+        catch (rollbackError) { console.warn('[settings:update] failed to restore Windows login startup setting', rollbackError) }
+      }
+      return fail('SAVE_SETTINGS_FAILED', error instanceof Error ? error.message : '无法保存设置。')
+    }
+    return { ok: true, data: next.settings }
+    })
+    pendingSettingsUpdate = operation.then(() => undefined, () => undefined)
+    return operation
+  })
+  ipcMain.handle('search:open-web', async (_event, query: unknown): Promise<IpcResult<void>> => {
+    if (typeof query !== 'string' || !query.trim()) return fail('EMPTY_QUERY', '请输入要搜索的内容。')
+    try {
+      const settings = dataStore.snapshot().settings
+      const engine = settings.searchEngines.find((item) => item.id === settings.defaultSearchEngineId && item.enabled)
+      if (!engine) throw new Error('没有可用的网页搜索引擎，请前往设置添加。')
+      await deps.openExternal(buildSearchUrl(engine, query).toString())
+      return { ok: true, data: undefined }
+    } catch (error) { return fail('WEB_SEARCH_FAILED', error instanceof Error ? error.message : '无法打开搜索页面。') }
+  })
+}

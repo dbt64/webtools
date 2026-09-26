@@ -35,4 +35,33 @@ Because website and search-engine changes share `DataStore`, diagnose the actual
 
 ### Launcher presentation and focus shortcut
 
-Scope the launcher's document sizing to launcher mode so its 88px compact window does not inherit the manager's 560px minimum body height.
+Scope the launcher's document sizing to launcher mode so its 88px compact window does not inherit the manager's 560px minimum body height. Keep the result area inside the expanded launcher's available height and prevent document-level overflow from drawing a scrollbar outside the window. Remove the launcher bar and result-panel outer shadows while keeping existing borders and focus-visible indication. Remove the manager's Ctrl/Cmd+K listener and hint; retain `Ctrl+Alt+Space` and the configurable global shortcut for showing the separate launcher.
+
+## Interfaces and Data Flow
+
+- `electron/main.ts` constructs shared services once and supplies them to `register*IpcHandlers(...)` functions.
+- The renderer website editor calls `saveWebsite` once with the complete mutation; main validates and persists it atomically through `WebsiteService` and `DataStore`.
+- The search engine editor continues using `updateSettings`; the settings result is the source of truth for the selected default and engine list.
+- The launcher UI's dimensions are constrained by its own window/renderer mode; manager layout rules remain unchanged.
+
+No data migration or new dependency is required.
+
+## Error Handling
+
+- Invalid website data returns a specific validation error before writing.
+- A website persistence failure returns a stable user-facing message and an operation code; unexpected failures retain diagnostic context in main-process logs.
+- Search engine validation remains distinct from persistence errors so invalid templates are not reported as disk failures.
+- A failed settings write leaves the UI showing the last successfully returned settings.
+- Metadata fetch failure remains non-fatal; the user may enter a name and save the URL manually.
+
+## Verification
+
+- Run `npm run typecheck` and `npm run build` after changes.
+- Manually check the launcher at compact and expanded sizes for document scrollbar and shadows, manager search behavior without Ctrl+K, website create/edit/folder/icon persistence, each built-in default selection, custom engine save/default selection and `?` URL routing, and error visibility when persistence rejects.
+- Follow the existing project constraint: do not add or run automated tests for this task.
+
+## Scope Limits
+
+- No new search providers, engine discovery, test-search button, schema migration, translation changes, or new desktop features.
+- No silent install or modification of the user's installed application as part of implementing this maintenance work.
+
