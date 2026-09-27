@@ -2,6 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { ArrowDown, ArrowUp, ArrowUpRight, BookmarkPlus, Command, CornerDownLeft, File, Folder, Globe, Languages, Search } from '@lucide/vue'
 import type { AppSearchEntry, BookmarkFolder, WebsiteEntry, EverythingResult, LauncherDisplayMode, ThemePreference } from '@/shared/domain'
+import logoDark from '@/assets/brand/logo-dark.svg'
+import logoLight from '@/assets/brand/logo-light.svg'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry } from '@/shared/search'
 import { parseSearchCommand } from '@/shared/search-command'
@@ -88,10 +90,10 @@ async function openWebsite(website: WebsiteEntry): Promise<void> {
 function syncWindowSize(): void {
   const hasSearchResults = Boolean(query.value.trim())
   const isExpanded = expanded.value || hasSearchResults
-  const expandedSections = expanded.value
-    ? Number(websitesExpanded.value) + Number(applicationsExpanded.value)
+  const expandedSectionExtraHeight = expanded.value
+    ? (websitesExpanded.value ? 180 : 0) + (applicationsExpanded.value ? 120 : 0)
     : 0
-  void window.desktop.setLauncherExpanded(isExpanded, expandedSections, hasSearchResults)
+  void window.desktop.setLauncherExpanded(isExpanded, expandedSectionExtraHeight, hasSearchResults)
 }
 
 function toggleExpanded(): void {
@@ -314,7 +316,8 @@ onBeforeUnmount(() => {
         <Search class="launcher-search-icon" :size="20" />
         <input ref="input" v-model="query" placeholder="搜索应用，输入 ? 搜索网页" autocomplete="off" spellcheck="false" @keydown="keydown" />
         <button class="launcher-brand" aria-label="打开 WebTools 管理界面" title="打开 WebTools" @mousedown.prevent @click="openManager">
-          <Command :size="19" :stroke-width="2.4" />
+          <img class="launcher-brand-logo launcher-brand-logo-dark" :src="logoDark" alt="" />
+          <img class="launcher-brand-logo launcher-brand-logo-light" :src="logoLight" alt="" />
         </button>
       </div>
       <div v-if="expanded && !query.trim()" class="launcher-content">
@@ -327,7 +330,7 @@ onBeforeUnmount(() => {
               <ArrowDown v-else :size="12" />
             </button>
           </header>
-          <div ref="websiteShortcutList" class="launcher-shortcut-list launcher-scrollable" :class="{ expanded: websitesExpanded }">
+          <div ref="websiteShortcutList" class="launcher-shortcut-list website-shortcut-list launcher-scrollable" :class="{ expanded: websitesExpanded }">
             <button v-for="website in websites" :key="website.id" class="launcher-shortcut" :title="website.url" @mousedown.prevent @click="openWebsite(website)">
               <Favicon :url="website.url" :favicon="website.favicon" />
               <span>{{ website.name }}</span>

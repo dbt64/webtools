@@ -57,7 +57,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .launcher-search-icon { flex: 0 0 auto; color: var(--muted); }
 .launcher-bar input { min-width: 0; flex: 1; border: 0; outline: 0; color: var(--text); background: transparent; cursor: move; font-size: 19px; }
 .launcher-bar input::placeholder { color: var(--quiet); }
-.launcher-brand { display: grid; width: 40px; height: 40px; flex: 0 0 auto; place-items: center; border: 1px solid var(--accent); border-radius: 11px; color: var(--accent-ink); background: var(--accent); cursor: pointer; transition: filter .15s ease, transform .15s ease; }
+.launcher-brand { display: grid; width: 40px; height: 40px; flex: 0 0 auto; place-items: center; border: 1px solid #000; border-radius: 11px; color: #fff; background: #000; cursor: pointer; transition: filter .15s ease, transform .15s ease; }
 .launcher-brand:hover { filter: brightness(1.08); transform: translateY(-1px); }
 .launcher-content { display: flex; min-height: 0; flex: 0 0 auto; flex-direction: column; gap: 10px; overflow: hidden; padding: 9px 13px 12px; border-top: 1px solid var(--line); background: var(--surface); }
 .launcher-section { display: flex; min-height: 0; flex: 0 0 auto; flex-direction: column; gap: 5px; }
@@ -67,8 +67,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .launcher-section-toggle:hover { color: var(--accent); background: var(--hover); }
 .launcher-section-toggle:disabled { color: #73777b; cursor: default; opacity: .55; }
 .launcher-section-toggle:disabled:hover { color: #73777b; background: transparent; }
-.launcher-shortcut-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); grid-auto-rows: 54px; gap: 6px; max-height: 60px; overflow-x: hidden; overflow-y: auto; padding: 1px 2px 2px 0; }
-.launcher-shortcut-list.expanded { max-height: 180px; }
+.launcher-shortcut-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); grid-auto-rows: 54px; gap: 6px; max-height: 60px; overflow-x: hidden; overflow-y: hidden; padding: 1px 2px 2px 0; }
+.launcher-shortcut-list.expanded { max-height: 180px; overflow-y: auto; }
+.launcher-shortcut-list.website-shortcut-list.expanded { max-height: 240px; }
 .launcher-shortcut { display: flex; min-width: 0; align-items: center; gap: 9px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--surface); text-align: left; cursor: pointer; }
 .launcher-shortcut:hover { border-color: var(--accent); background: var(--hover); }
 .launcher-shortcut .favicon-image, .launcher-shortcut .favicon-fallback, .launcher-app-icon { width: 30px; height: 30px; flex: 0 0 auto; border-radius: 8px; }
@@ -197,7 +198,15 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .app-frame { display: flex; min-height: 100vh; background: var(--canvas); }
 .sidebar { position: relative; display: flex; flex: 0 0 226px; flex-direction: column; padding: 26px 15px 13px; background: var(--sidebar); border-right: 1px solid #222b35; }
 .brand-lockup { display: flex; align-items: center; gap: 11px; padding: 0 9px; margin-bottom: 42px; }
-.brand-mark { display: grid; width: 35px; height: 35px; place-items: center; border-radius: 11px; color: #12241c; background: var(--accent); box-shadow: 0 5px 18px color-mix(in srgb, var(--accent) 14%, transparent); }
+.brand-mark { display: grid; width: 35px; height: 35px; place-items: center; border-radius: 11px; color: #fff; background: #000; box-shadow: 0 5px 18px color-mix(in srgb, var(--accent) 14%, transparent); }
+.brand-logo { width: 23px; height: 23px; object-fit: contain; }
+.brand-logo-light, .launcher-brand-logo-light { display: none; }
+.brand-logo-dark, .launcher-brand-logo-dark { display: block; }
+.launcher-brand-logo { width: 25px; height: 25px; object-fit: contain; }
+:root[data-theme='light'] .brand-logo-dark,
+:root[data-theme='light'] .launcher-brand-logo-dark { display: none; }
+:root[data-theme='light'] .brand-logo-light,
+:root[data-theme='light'] .launcher-brand-logo-light { display: block; }
 .brand-name { font-size: 16px; font-weight: 700; letter-spacing: .01em; }
 .brand-caption { margin-top: 2px; color: var(--quiet); font-size: 11px; }
 .sidebar-label { padding: 0 11px; margin-bottom: 10px; color: #647180; font-size: 10px; font-weight: 600; letter-spacing: .08em; }
@@ -426,7 +435,7 @@ select.field-label { appearance: none; }
 .icon-button, .search-icon, .search-feedback { color: var(--muted); }
 .nav-item.is-active svg, .text-button:hover, .icon-button:hover,
 .result-enter, .launcher-result-match, .launcher-hint svg { color: var(--accent); }
-.brand-mark, .primary-button, .selected-check { color: var(--accent-ink); background-color: var(--accent); }
+.primary-button, .selected-check { color: var(--accent-ink); background-color: var(--accent); }
 .secondary-button { color: var(--text); border-color: var(--line); background-color: var(--surface-raised); }
 .launcher-toggle { color: var(--accent); border-color: var(--line); background-color: var(--surface-raised); }
 .launcher-toggle:hover { color: var(--text); border-color: var(--accent); background-color: var(--hover); }

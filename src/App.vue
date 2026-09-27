@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import {
-  CircleHelp, Command, Compass, Languages, Search, Settings2, SlidersHorizontal,
+  CircleHelp, Compass, Languages, Search, Settings2, SlidersHorizontal,
 } from '@lucide/vue'
+import logoDark from '@/assets/brand/logo-dark.svg'
+import logoLight from '@/assets/brand/logo-light.svg'
 import SearchView from './features/search/SearchView.vue'
 import EntriesView from './features/entries/EntriesView.vue'
 import SettingsView from './features/settings/SettingsView.vue'
@@ -35,7 +37,10 @@ function navigateFromSearch(section: Exclude<Section, 'search'>): void {
   <div class="app-frame">
     <aside class="sidebar">
       <div class="brand-lockup">
-        <div class="brand-mark"><Command :size="19" :stroke-width="2.4" /></div>
+        <div class="brand-mark" aria-hidden="true">
+          <img class="brand-logo brand-logo-dark" :src="logoDark" alt="" />
+          <img class="brand-logo brand-logo-light" :src="logoLight" alt="" />
+        </div>
         <div>
           <div class="brand-name">WebTools</div>
           <div class="brand-caption">个人效率空间</div>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1280" viewBox="0 0 1280 1280">
+<title>W logo — equal top spacing and slimmer feet</title>
+<desc>Top caps 156 units each; top gaps 148 units each. Visible bottom edges 170 units each, reduced from 210. Left outer and right inner long edges share dx/dy 0.4.</desc>
+<defs><mask id="cut"><rect width="1280" height="1280" fill="white"/><path d="M80 920 L1108 260" stroke="black" stroke-width="22" stroke-linecap="square"/></mask></defs>
+
+<polygon points="80,920 344,260 500,260 310,750 648,260 804,260 776,700 952,260 1108,260 840,920 670,920 640,500 270.360528,920" fill="#fff" mask="url(#cut)"/>
+</svg>
