@@ -83,7 +83,10 @@ function createWindow(): void {
     }
   })
   window.on('close', (event) => {
-    if (!quitting) { event.preventDefault(); window.hide() }
+    if (!quitting) {
+      event.preventDefault()
+      window.destroy()
+    }
   })
 
   window.once('ready-to-show', () => window.show())
