@@ -7,8 +7,11 @@ import logoDark from '@/assets/brand/logo-dark.svg'
 import logoLight from '@/assets/brand/logo-light.svg'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry, type SearchResult } from '@/shared/search'
+import { promoteRememberedAppResult } from '@/shared/app-search-memory'
 import { parseSearchCommand } from '@/shared/search-command'
 import { appendTranslationAction, type SearchMatch, type TranslationAction } from './launcher-results'
+import { useAppResultIcons } from './use-app-result-icons'
+import SearchResultName from './SearchResultName.vue'
 import { applyTheme } from '@/shared/theme'
 import BookmarkDialog from '../bookmarks/BookmarkDialog.vue'
 import Favicon from '../bookmarks/Favicon.vue'
@@ -27,7 +30,7 @@ const applications = ref<LauncherApplication[]>([{ id: 'translate', name: '翻�
 const query = ref('')
 const apps = ref<AppSearchEntry[]>([])
 const websites = ref<WebsiteEntry[]>([])
-const appIcons = ref<Record<string, string>>({})
+const rememberedAppId = ref<string | null>(null)
 const folders = ref<BookmarkFolder[]>([])
 const selectedIndex = ref(0)
 const input = ref<HTMLInputElement>()
@@ -59,6 +62,7 @@ const applicationsExpanded = ref(false)
 const parsed = computed(() => parseSearchCommand(query.value))
 const isWeb = computed(() => parsed.value.mode === 'web')
 const isFiles = computed(() => parsed.value.mode === 'files')
+let appMemoryLookupGeneration = 0
 const websiteEntries = computed<LauncherEntry[]>(() => websites.value.map((site) => ({
   id: site.id,
   name: site.name,
@@ -92,8 +96,20 @@ function toLauncherAction(result: SearchResult<LauncherEntry>): Exclude<Launcher
 const searchRows = computed<SearchAction[]>(() => {
   if (isWeb.value || isFiles.value) return []
   const candidates = parsed.value.mode === 'saved-websites' ? websiteEntries.value : entries.value
-  return searchEntries(parsed.value.query, candidates, index.value).slice(0, 8).map(toLauncherAction)
+  const matches = searchEntries(parsed.value.query, candidates, index.value)
+  const ranked = parsed.value.mode === 'local' ? promoteRememberedAppResult(matches, rememberedAppId.value) : matches
+  return ranked.slice(0, 8).map(toLauncherAction)
 })
+watch(parsed, (command) => {
+  const generation = ++appMemoryLookupGeneration
+  rememberedAppId.value = null
+  if (command.mode !== 'local' || !command.query) return
+  const requestedQuery = command.query
+  void window.desktop.getRememberedAppSearchAppId(requestedQuery).then((appId) => {
+    if (generation !== appMemoryLookupGeneration || parsed.value.mode !== 'local' || parsed.value.query !== requestedQuery) return
+    rememberedAppId.value = appId
+  }).catch(() => undefined)
+}, { immediate: true })
 const launcherActions = computed(() => appendTranslationAction(searchRows.value, query.value, parsed.value.mode))
 const visibleFileActions = computed<Extract<LauncherAction, { kind: 'file' }>[]>(() => fileResults.value.slice(0, 8).map((file) => ({
   kind: 'file', id: file.id, name: file.name, locationLabel: file.locationLabel, fileKind: file.kind,
@@ -101,20 +117,7 @@ const visibleFileActions = computed<Extract<LauncherAction, { kind: 'file' }>[]>
 const selectableActions = computed<LauncherAction[]>(() => isFiles.value ? visibleFileActions.value : isWeb.value ? [] : launcherActions.value)
 const selectableCount = computed(() => selectableActions.value.length)
 const visibleAppIds = computed(() => launcherActions.value.flatMap((action) => action.kind === 'application' ? [action.id] : []))
-let iconRequestGeneration = 0
-
-watch(visibleAppIds, (ids) => {
-  const generation = ++iconRequestGeneration
-  const currentIds = new Set(ids)
-  for (const id of Object.keys(appIcons.value)) if (!currentIds.has(id)) delete appIcons.value[id]
-  for (const id of ids) {
-    if (appIcons.value[id]) continue
-    void window.desktop.getAppIcon(id).then((result) => {
-      if (generation !== iconRequestGeneration || !visibleAppIds.value.includes(id)) return
-      if (result.ok && result.data.dataUrl) appIcons.value[id] = result.data.dataUrl
-    }).catch(() => undefined)
-  }
-}, { immediate: true })
+const appIcons = useAppResultIcons(visibleAppIds)
 
 watch(selectableActions, () => { selectedIndex.value = 0 })
 
@@ -277,6 +280,7 @@ async function submit(): Promise<void> {
 }
 
 async function dispatchAction(action: LauncherAction): Promise<void> {
+  const searchQuery = action.kind === 'application' && parsed.value.mode === 'local' ? parsed.value.query : ''
   let result: IpcResult<void>
   switch (action.kind) {
     case 'application': result = await window.desktop.launchApp(action.id); break
@@ -286,6 +290,9 @@ async function dispatchAction(action: LauncherAction): Promise<void> {
     default: return assertNever(action)
   }
   if (!result.ok) { error.value = result.error.message; return }
+  if (action.kind === 'application' && searchQuery) {
+    try { await window.desktop.rememberAppSearchResult(searchQuery, action.id) } catch { /* Launch succeeded; remembering the query must not change its outcome. */ }
+  }
   await hide()
 }
 
@@ -440,7 +447,7 @@ onBeforeUnmount(() => {
                 <Languages v-else-if="result.kind === 'translation'" :size="17" />
                 <Command v-else :size="17" />
               </span>
-              <span class="launcher-result-copy"><strong>{{ result.name }}</strong><small>{{ result.subtitle }}</small></span>
+              <span class="launcher-result-copy"><SearchResultName :name="result.name" :query="parsed.query" /><small>{{ result.subtitle }}</small></span>
               <span v-if="(result.kind === 'application' || result.kind === 'website') && result.match !== 'name'" class="launcher-result-match">{{ result.match === 'pinyin' ? '拼音' : result.match === 'alias' ? '别名' : '首字母' }}</span>
               <CornerDownLeft v-if="selectedIndex === idx" :size="15" class="launcher-enter-icon" />
             </button>

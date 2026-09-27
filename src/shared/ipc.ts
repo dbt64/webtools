@@ -20,6 +20,8 @@ export interface DesktopApi {
   refreshApps(): Promise<AppSearchEntry[]>
   getAppIcon(id: string): Promise<IpcResult<{ dataUrl: string | null }>>
   launchApp(id: string): Promise<IpcResult<void>>
+  getRememberedAppSearchAppId(query: string): Promise<string | null>
+  rememberAppSearchResult(query: string, appId: string): Promise<IpcResult<void>>
   openWebsite(id: string): Promise<IpcResult<void>>
   getSettings(): Promise<AppSettings>
   updateSettings(settings: Partial<AppSettings>): Promise<IpcResult<AppSettings>>
@@ -60,6 +62,8 @@ export const IPC_CHANNELS = {
   refreshApps: 'apps:refresh',
   getAppIcon: 'apps:get-icon',
   launchApp: 'apps:launch',
+  getRememberedAppSearchAppId: 'apps:get-remembered-search-result',
+  rememberAppSearchResult: 'apps:remember-search-result',
   openWebsite: 'websites:open',
   getSettings: 'settings:get',
   updateSettings: 'settings:update',

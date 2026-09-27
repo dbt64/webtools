@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { app, shell } from 'electron'
 import { execFile } from 'node:child_process'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { WindowsAppSource, type CatalogRecord } from './windows-app-source'
+import { resolveShortcutIcon } from './shortcut-icon'
 import type { AppSearchEntry } from '../../src/shared/domain'
 
 const execFileAsync = promisify(execFile)
@@ -61,17 +62,12 @@ export class AppCatalogService {
   private async resolveIcon(record: IndexedCatalogRecord): Promise<string | null> {
     const target = record.launchTarget
     if (target.kind === 'shortcut') {
-      const shortcutIcon = await this.readIcon(target.shortcutPath)
-      if (shortcutIcon) return shortcutIcon
+      let declaredIcon: string | undefined
       try {
-        const declared = shell.readShortcutLink(target.shortcutPath).icon?.trim()
-        if (declared) {
-          const iconPath = isAbsolute(declared) ? declared : resolve(target.cwd || dirname(target.shortcutPath), declared)
-          const declaredIcon = await this.readIcon(iconPath)
-          if (declaredIcon) return declaredIcon
-        }
+        const details = shell.readShortcutLink(target.shortcutPath)
+        if ((details.iconIndex ?? 0) === 0) declaredIcon = details.icon?.trim() || undefined
       } catch { /* A malformed shortcut can still have a valid target icon. */ }
-      return this.readIcon(target.targetPath)
+      return resolveShortcutIcon(target, declaredIcon, (path) => this.readIcon(path))
     }
     if (target.kind === 'executable') return this.readIcon(target.path)
     if (target.kind === 'aumid') return null

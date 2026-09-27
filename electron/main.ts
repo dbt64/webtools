@@ -343,7 +343,7 @@ app.whenReady().then(async () => {
   setOpenAtLogin(dataStore.snapshot().settings.launchOnStartup)
   createTray()
   registerWindowIpcHandlers({ showLauncher, hideLauncher, setLauncherExpanded: resizeLauncher, moveLauncherBy, markLauncherRendererReady, showManager, openTranslation, markManagerRendererReady, acknowledgeTranslationPrefill })
-  registerAppIpcHandlers({ appCatalog, appLauncher })
+  registerAppIpcHandlers({ appCatalog, appLauncher, dataStore })
   registerWebsiteIpcHandlers({ websiteService, websiteMetadata, bookmarkService })
   registerSettingsIpcHandlers({ dataStore, hotkeyService, setOpenAtLogin, openExternal: openExternalUrl })
   registerTranslationIpcHandlers({ aiTranslationService, secretStore, openExternal: openExternalUrl })
