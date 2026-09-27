@@ -1,10 +1,13 @@
 import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type AppSettings, type BookmarkFolder, type WebsiteEntry } from '../../src/shared/domain'
-import { sanitizeAppSearchMemory } from '../../src/shared/app-search-memory'
+import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type AppSettings, type BookmarkFolder, type WebsiteEntry } from '../../src/shared/domain.ts'
+import { sanitizeAppSearchMemory } from '../../src/shared/app-search-memory.ts'
+import { normalizeSharedAISettings } from '../../src/shared/ai-config.ts'
+import { normalizeTranslationSettings } from '../../src/shared/translation-contracts.ts'
 
 type LegacyV2AppData = Omit<AppData, 'settings' | 'appSearchMemory'> & { appSearchMemory?: unknown } & {
-  settings: Omit<AppSettings, 'theme' | 'launcherDisplayMode'> & Partial<Pick<AppSettings, 'theme' | 'launcherDisplayMode'>>
+  settings: Omit<AppSettings, 'theme' | 'launcherDisplayMode' | 'sharedAI' | 'translation'>
+    & Partial<Pick<AppSettings, 'theme' | 'launcherDisplayMode' | 'sharedAI' | 'translation'>>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
@@ -42,6 +45,8 @@ function normalizeV2(input: LegacyV2AppData): AppData {
       ...input.settings,
       theme: input.settings.theme ?? 'dark',
       launcherDisplayMode: input.settings.launcherDisplayMode ?? 'compact',
+      sharedAI: normalizeSharedAISettings(input.settings.sharedAI, input.settings.aiBaseUrl, input.settings.aiModel),
+      translation: normalizeTranslationSettings(input.settings.translation),
     },
   }
 }
@@ -87,10 +92,11 @@ export function migrateV1ToV2(input: unknown): AppData {
 }
 
 export class DataStore {
+  private readonly filePath: string
   private data: AppData = createDefaultAppData()
   private pendingWrite: Promise<void> = Promise.resolve()
   private recoveryMessage: string | null = null
-  constructor(private readonly filePath: string) {}
+  constructor(filePath: string) { this.filePath = filePath }
 
   async load(): Promise<AppData> {
     let bytes: Buffer

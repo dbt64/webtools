@@ -4,11 +4,17 @@ import { join } from 'node:path'
 import { IPC_CHANNELS, type IpcResult } from '../src/shared/ipc'
 import { DataStore } from './services/data-store'
 import { SecretStore } from './services/secret-store'
+import { AIProviderCredentialStore } from './services/ai-credentials'
+import { OpenAICompatibleAdapter } from './services/openai-compatible-adapter'
+import { AnthropicMessagesAdapter } from './services/anthropic-messages-adapter'
+import { MyMemoryAdapter } from './services/mymemory-adapter'
+import { QwenMtAdapter } from './services/qwen-mt-adapter'
+import { SharedAIService } from './services/shared-ai-service'
+import { TranslationService } from './services/translation-service'
 import { AppCatalogService } from './services/app-catalog'
 import { AppLauncher } from './services/app-launcher'
 import { openExternalUrl } from './services/external-opener'
 import { BookmarkService } from './services/bookmark-service'
-import { AiTranslationService } from './services/ai-translation'
 import { GlobalHotkeyService } from './services/global-hotkey'
 import { WebsiteService } from './services/website-service'
 import { WebsiteMetadataService } from './services/website-metadata'
@@ -20,6 +26,7 @@ import { registerWebsiteIpcHandlers } from './ipc/website-handlers'
 import { registerSettingsIpcHandlers } from './ipc/settings-handlers'
 import { registerTranslationIpcHandlers } from './ipc/translation-handlers'
 import { registerEverythingIpcHandlers } from './ipc/everything-handlers'
+import { isCurrentAppMainFrame, isCurrentWindowMainFrame } from './ipc/window-security'
 
 const isDevelopment = !app.isPackaged
 if (isDevelopment) app.setName('webtools-desktop-dev')
@@ -28,6 +35,8 @@ app.setPath('userData', join(app.getPath('appData'), isDevelopment ? 'WebTools-D
 let dataStore: DataStore
 let secretStore: SecretStore
 let managerWindow: BrowserWindow | null = null
+let translationService: TranslationService | null = null
+let cancelAIConnectionTests: () => void = () => undefined
 const translationPrefillQueue = new TranslationPrefillQueue()
 let launcherWindow: BrowserWindow | null = null
 let launcherPositioned = false
@@ -42,6 +51,11 @@ let launcherToggleRequest: LauncherToggleRequest | null = null
 let tray: Tray | null = null
 let quitting = false
 let hotkeyService: GlobalHotkeyService | null = null
+
+function cancelActiveAIRequests(): void {
+  translationService?.cancelAll()
+  cancelAIConnectionTests()
+}
 
 function brandResourcePath(fileName: string): string {
   return app.isPackaged
@@ -74,11 +88,15 @@ function createWindow(): void {
     if (!url.startsWith('file:') && !url.startsWith('http://localhost:')) event.preventDefault()
   })
   window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
-    if (isMainFrame && !isInPlace) translationPrefillQueue.resetReadiness()
+    if (isMainFrame && !isInPlace) {
+      translationPrefillQueue.resetReadiness()
+      cancelActiveAIRequests()
+    }
   })
   window.on('closed', () => {
     if (managerWindow === window) {
       translationPrefillQueue.resetReadiness()
+      cancelActiveAIRequests()
       managerWindow = null
     }
   })
@@ -123,8 +141,8 @@ function acknowledgeTranslationPrefill(sender: WebContents, id: unknown): void {
   translationPrefillQueue.acknowledge(id)
 }
 
-function openTranslation(sender: WebContents, text: unknown): IpcResult<void> {
-  if (!launcherWindow || launcherWindow.isDestroyed() || sender !== launcherWindow.webContents) {
+function openTranslation(context: { sender: object; senderFrame: object | null }, text: unknown): IpcResult<void> {
+  if (!isCurrentWindowMainFrame(context, launcherWindow)) {
     return { ok: false, error: { code: 'INVALID_SENDER', message: '无法从当前窗口发起翻译。' } }
   }
   if (!isValidTranslationText(text)) {
@@ -332,7 +350,20 @@ app.whenReady().then(async () => {
   }
   const recoveryMessage = dataStore.getRecoveryMessage()
   if (recoveryMessage) await dialog.showMessageBox({ type: 'info', title: 'WebTools 本地数据', message: '本机数据已完成升级或恢复。', detail: recoveryMessage, buttons: ['确定'] })
-  const aiTranslationService = new AiTranslationService(dataStore, secretStore)
+  const aiCredentials = new AIProviderCredentialStore(secretStore)
+  const sharedAIService = new SharedAIService({
+    dataStore,
+    credentials: aiCredentials,
+    openAICompatibleAdapter: new OpenAICompatibleAdapter(),
+    anthropicAdapter: new AnthropicMessagesAdapter(),
+  })
+  translationService = new TranslationService({
+    dataStore,
+    sharedAI: sharedAIService,
+    aiCredentials,
+    myMemoryAdapter: new MyMemoryAdapter(),
+    qwenMtAdapter: new QwenMtAdapter(),
+  })
   const appCatalog = new AppCatalogService()
   const appLauncher = new AppLauncher(appCatalog)
   const bookmarkService = new BookmarkService(dataStore)
@@ -348,8 +379,22 @@ app.whenReady().then(async () => {
   registerWindowIpcHandlers({ showLauncher, hideLauncher, setLauncherExpanded: resizeLauncher, moveLauncherBy, markLauncherRendererReady, showManager, openTranslation, markManagerRendererReady, acknowledgeTranslationPrefill })
   registerAppIpcHandlers({ appCatalog, appLauncher, dataStore })
   registerWebsiteIpcHandlers({ websiteService, websiteMetadata, bookmarkService })
-  registerSettingsIpcHandlers({ dataStore, hotkeyService, setOpenAtLogin, openExternal: openExternalUrl })
-  registerTranslationIpcHandlers({ aiTranslationService, secretStore, openExternal: openExternalUrl })
+  registerSettingsIpcHandlers({
+    dataStore,
+    hotkeyService,
+    setOpenAtLogin,
+    openExternal: openExternalUrl,
+    isManagerMainFrame: (context) => isCurrentWindowMainFrame(context, managerWindow),
+    isAppMainFrame: (context) => isCurrentAppMainFrame(context, [managerWindow, launcherWindow]),
+    cancelTranslations: cancelActiveAIRequests,
+  })
+  cancelAIConnectionTests = registerTranslationIpcHandlers({
+    translationService,
+    sharedAIService,
+    aiCredentials,
+    openExternal: openExternalUrl,
+    isManagerMainFrame: (context) => isCurrentWindowMainFrame(context, managerWindow),
+  })
   registerEverythingIpcHandlers({ everything, dataStore, getManagerWindow: () => managerWindow })
   createLauncherWindow()
   if (!startedHidden) createWindow()

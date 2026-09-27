@@ -1,23 +1,54 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { Check, FolderSearch, Keyboard, KeyRound } from '@lucide/vue'
+import { computed, onMounted, ref } from 'vue'
+import { Check, FolderSearch, Keyboard, KeyRound, Languages } from '@lucide/vue'
 import { createDefaultAppData, type AppSettings, type LauncherDisplayMode, type ThemePreference } from '@/shared/domain'
+import { cloneSharedAISettings, QWEN_REGIONS, type AIProviderId, type QwenRegion, type SharedAISettings } from '@/shared/ai-config'
+import type { TranslationEngineId } from '@/shared/translation-contracts'
+import type { AIProviderDescriptor, AIProviderStatus } from '@/shared/ipc'
 import { applyTheme } from '@/shared/theme'
 import SearchEngineEditor from './SearchEngineEditor.vue'
 
 const settings = ref<AppSettings>(createDefaultAppData().settings)
 const saved = ref(false)
 const errorMessage = ref('')
-const apiKey = ref('')
-const hasSavedKey = ref(false)
+const aiDraft = ref<SharedAISettings>(cloneSharedAISettings(settings.value.sharedAI))
+const aiProviders = ref<AIProviderDescriptor[]>([])
+const aiProviderStatuses = ref<Partial<Record<AIProviderId, AIProviderStatus>>>({})
+const aiProviderStatusError = ref('')
+const apiKeysDraft = ref<Partial<Record<AIProviderId, string>>>({})
+const apiKey = computed({
+  get: () => apiKeysDraft.value[selectedProvider.value] ?? '',
+  set: (value: string) => { apiKeysDraft.value = { ...apiKeysDraft.value, [selectedProvider.value]: value } },
+})
 const testing = ref(false)
 const testMessage = ref('')
+const savingAI = ref(false)
+const translationProviderInfo = ref<{ providerName: string; model?: string; configured: boolean }>()
+const savingTranslation = ref(false)
+const qwenRegionLabels: Record<QwenRegion, string> = {
+  'cn-beijing': '中国（北京）', 'ap-southeast-1': '新加坡', 'eu-central-1': '德国（法兰克福）',
+  'ap-northeast-1': '日本（东京）', 'cn-hongkong': '中国香港', 'us-east-1': '美国（弗吉尼亚）',
+}
+const translationEngineOptions = [
+  { id: 'mymemory', label: 'MyMemory 免费翻译', description: '无需 API Key；适合短文本翻译。' },
+  { id: 'ai', label: 'WebTools AI', description: '使用 AI 设置中的默认提供方和模型。' },
+  { id: 'qwen-mt', label: 'Qwen-MT', description: '使用 AI 区域中的 Qwen Key、地区和工作空间。' },
+] as const
 const recordingShortcut = ref(false)
 const savingShortcut = ref(false)
 const savingTheme = ref(false)
 const savingLauncherMode = ref(false)
 const everythingStatus = ref<{ executablePath?: string; running: boolean; version?: string }>()
 const checkingEverything = ref(false)
+
+const selectedProvider = computed(() => aiDraft.value.defaultProviderId)
+const selectedProviderDescriptor = computed(() => aiProviders.value.find((provider) => provider.id === selectedProvider.value))
+const selectedProviderStatus = computed(() => aiProviderStatuses.value[selectedProvider.value])
+const selectedProviderConfig = computed(() => {
+  const saved = aiDraft.value.providers[selectedProvider.value]
+  return { ...saved, model: saved?.model || selectedProviderDescriptor.value?.defaultModel || '' }
+})
+const translationEngineLabel = computed(() => ({ mymemory: 'MyMemory 免费翻译', ai: 'WebTools AI', 'qwen-mt': 'Qwen-MT' })[settings.value.translation.engine])
 
 function markSaved(): void { saved.value = true; window.setTimeout(() => { saved.value = false }, 1800) }
 
@@ -122,47 +153,108 @@ async function autoDetectEverything(): Promise<void> {
   }
 }
 
-async function saveAiSettings(): Promise<boolean> {
-  const result = await window.desktop.updateSettings({ aiBaseUrl: settings.value.aiBaseUrl.trim(), aiModel: settings.value.aiModel.trim() })
-  if (!result.ok) { errorMessage.value = result.error.message; return false }
-  settings.value = result.data
-  if (apiKey.value.trim()) {
-    const keyResult = await window.desktop.saveAiApiKey(apiKey.value.trim())
-    if (!keyResult.ok) { errorMessage.value = keyResult.error.message; return false }
-    hasSavedKey.value = true
-    apiKey.value = ''
-  }
-  saved.value = true
-  errorMessage.value = ''
-  window.setTimeout(() => { saved.value = false }, 1800)
-  return true
+function updateSelectedProviderConfig(patch: { model?: string; baseUrl?: string; region?: QwenRegion; workspaceId?: string }): void {
+  const providerId = selectedProvider.value
+  const previous = aiDraft.value.providers[providerId] ?? { model: selectedProviderDescriptor.value?.defaultModel ?? '' }
+  aiDraft.value = { ...aiDraft.value, providers: { ...aiDraft.value.providers, [providerId]: { ...previous, ...patch } } }
 }
+
+async function refreshAIProviderStatuses(): Promise<void> {
+  const statuses = await Promise.all(aiProviders.value.map(async (provider) => {
+    const result = await window.desktop.getAIProviderStatus(provider.id)
+    return result.ok ? { id: provider.id, status: result.data } : { id: provider.id, error: result.error.message }
+  }))
+  aiProviderStatuses.value = Object.fromEntries(statuses.flatMap((item) => 'status' in item ? [[item.id, item.status] as const] : []))
+  aiProviderStatusError.value = statuses.find((item) => 'error' in item)?.error ?? ''
+}
+
+async function changeAIProvider(providerId: AIProviderId): Promise<void> {
+  if (providerId === aiDraft.value.defaultProviderId || savingAI.value) return
+  await persistAISettings(providerId, false)
+}
+
+async function persistAISettings(defaultProviderId = aiDraft.value.defaultProviderId, saveKey = true): Promise<boolean> {
+  savingAI.value = true
+  errorMessage.value = ''
+  try {
+    const credentialProviderId = aiDraft.value.defaultProviderId
+    const nextSharedAI = cloneSharedAISettings({ ...aiDraft.value, defaultProviderId })
+    const result = await window.desktop.updateSettings({ sharedAI: nextSharedAI })
+    if (!result.ok) { errorMessage.value = result.error.message; return false }
+    settings.value = result.data
+    aiDraft.value = cloneSharedAISettings(result.data.sharedAI)
+    if (saveKey && apiKey.value.trim()) {
+      const keyResult = await window.desktop.saveAIProviderKey(credentialProviderId, apiKey.value.trim())
+      if (!keyResult.ok) {
+        const providerName = aiProviders.value.find((provider) => provider.id === credentialProviderId)?.name ?? '当前提供方'
+        errorMessage.value = `AI 设置已保存，但 ${providerName} API Key 保存失败：${keyResult.error.message}`
+        return false
+      }
+      apiKey.value = ''
+    }
+    await refreshAIProviderStatuses()
+    if (settings.value.translation.engine === 'ai') {
+      const info = await window.desktop.getTranslationProviderInfo()
+      if (info.ok) translationProviderInfo.value = info.data
+    }
+    markSaved()
+    return true
+  } catch {
+    errorMessage.value = '保存 AI 设置失败，请重试。'
+    return false
+  } finally { savingAI.value = false }
+}
+
+async function saveAISettings(): Promise<void> { await persistAISettings() }
 
 async function testConnection(): Promise<void> {
   testing.value = true
   testMessage.value = ''
   try {
-    if (!await saveAiSettings()) return
-    const result = await window.desktop.testAiConnection()
-    testMessage.value = result.ok ? `已连接 · ${result.data.model}` : result.error.message
-  } catch {
-    testMessage.value = '无法连接 AI 服务，请检查网络和设置。'
-  } finally {
-    testing.value = false
-  }
+    if (!await persistAISettings()) return
+    const testedProvider = selectedProvider.value
+    const testedSettings = JSON.stringify(aiDraft.value)
+    const result = await window.desktop.testAIConnection()
+    if (testedProvider !== selectedProvider.value || testedSettings !== JSON.stringify(aiDraft.value)) return
+    testMessage.value = result.ok ? `已连接 · ${result.data.providerName} · ${result.data.model}` : result.error.message
+  } catch { testMessage.value = '无法连接 AI 服务，请检查网络和设置。' }
+  finally { testing.value = false }
 }
 
-async function clearKey(): Promise<void> {
-  if (!window.confirm('删除已保存的 API Key？')) return
-  const result = await window.desktop.clearAiApiKey()
+async function clearAIKey(): Promise<void> {
+  if (!window.confirm(`删除已保存的 ${selectedProviderDescriptor.value?.name ?? '当前'} API Key？`)) return
+  const result = await window.desktop.clearAIProviderKey(selectedProvider.value)
   if (!result.ok) errorMessage.value = result.error.message
-  else { hasSavedKey.value = false; errorMessage.value = ''; testMessage.value = '已删除 API Key。' }
+  else { errorMessage.value = ''; testMessage.value = '已删除 API Key。'; await refreshAIProviderStatuses() }
+}
+
+async function chooseTranslationEngine(engine: TranslationEngineId): Promise<void> {
+  if (engine === settings.value.translation.engine || savingTranslation.value) return
+  savingTranslation.value = true
+  try {
+    const result = await window.desktop.updateSettings({ translation: { ...settings.value.translation, engine } })
+    if (!result.ok) { errorMessage.value = result.error.message; return }
+    settings.value = result.data
+    errorMessage.value = ''
+    const info = await window.desktop.getTranslationProviderInfo()
+    if (info.ok) translationProviderInfo.value = info.data
+    markSaved()
+  } catch { errorMessage.value = '无法保存翻译引擎设置，请重试。' }
+  finally { savingTranslation.value = false }
 }
 
 onMounted(async () => {
   try {
     settings.value = await window.desktop.getSettings()
-    hasSavedKey.value = await window.desktop.hasAiApiKey()
+    aiDraft.value = cloneSharedAISettings(settings.value.sharedAI)
+    const [providers, translationInfo] = await Promise.all([
+      window.desktop.getAIProviderDescriptors(),
+      window.desktop.getTranslationProviderInfo(),
+    ])
+    if (!providers.ok) throw new Error(providers.error.message)
+    aiProviders.value = providers.data
+    if (translationInfo.ok) translationProviderInfo.value = translationInfo.data
+    await refreshAIProviderStatuses()
     await refreshEverything()
   } catch {
     errorMessage.value = '无法读取本机设置。'
@@ -205,13 +297,32 @@ onMounted(async () => {
       <p class="settings-note">在搜索框输入 <kbd>file:</kbd> 再输入关键词，例如 <kbd>file:meeting notes</kbd>。文件搜索结果只显示文件名和所在文件夹名称。</p>
     </div>
     <div class="settings-group ai-settings">
-      <div class="settings-group-heading"><span class="settings-group-icon"><KeyRound :size="17" /></span><div><strong>AI 翻译服务</strong><p>OpenAI 兼容接口 · 支持 OpenAI、DeepSeek</p></div></div>
-      <label class="field-label">服务地址<input v-model="settings.aiBaseUrl" placeholder="https://api.openai.com/v1 或 https://api.deepseek.com" /></label>
-      <label class="field-label">模型名称<input v-model="settings.aiModel" placeholder="例如：gpt-4o-mini 或 deepseek-chat" /></label>
-      <label class="field-label">API Key<input v-model="apiKey" type="password" autocomplete="new-password" :placeholder="hasSavedKey ? '已安全保存；输入新值可替换' : '输入 API Key'" /></label>
-      <p class="secret-note">API Key 使用 Windows 安全存储加密，不会写入普通设置文件。连接测试会发送一次简短请求。</p>
-      <div class="ai-settings-actions"><button class="primary-button" @click="saveAiSettings">保存设置</button><button class="secondary-button" :disabled="testing" @click="testConnection">{{ testing ? '正在连接…' : '测试连接' }}</button><button v-if="hasSavedKey" class="text-button remove-key" @click="clearKey">移除已保存的 Key</button></div>
+      <div class="settings-group-heading"><span class="settings-group-icon"><KeyRound :size="17" /></span><div><strong>WebTools AI</strong><p>AI 配置由 WebTools 共用；当前翻译模块是它的消费者。</p></div></div>
+      <label class="field-label">默认 AI 提供方<select :value="selectedProvider" :disabled="savingAI" @change="changeAIProvider(($event.target as HTMLSelectElement).value as AIProviderId)"><option v-for="provider in aiProviders" :key="provider.id" :value="provider.id">{{ provider.name }}</option></select></label>
+      <label class="field-label">模型名称<input :value="selectedProviderConfig.model" :placeholder="selectedProviderDescriptor?.modelHint" @input="updateSelectedProviderConfig({ model: ($event.target as HTMLInputElement).value })" /></label>
+      <label v-if="selectedProvider === 'custom'" class="field-label">OpenAI 兼容服务地址<input :value="selectedProviderConfig.baseUrl ?? ''" placeholder="https://example.com/v1" @input="updateSelectedProviderConfig({ baseUrl: ($event.target as HTMLInputElement).value })" /></label>
+      <template v-if="selectedProvider === 'qwen'">
+        <label class="field-label">Qwen 服务地区<select :value="selectedProviderConfig.region ?? ''" @change="updateSelectedProviderConfig({ region: ($event.target as HTMLSelectElement).value as QwenRegion })"><option value="" disabled>请选择地区</option><option v-for="region in QWEN_REGIONS" :key="region" :value="region">{{ qwenRegionLabels[region] }}</option></select></label>
+        <label class="field-label">工作空间 ID<input :value="selectedProviderConfig.workspaceId ?? ''" placeholder="DashScope 工作空间 ID" @input="updateSelectedProviderConfig({ workspaceId: ($event.target as HTMLInputElement).value })" /></label>
+      </template>
+      <label class="field-label">{{ selectedProviderDescriptor?.name ?? 'AI' }} API Key<input v-model="apiKey" type="password" autocomplete="new-password" :placeholder="selectedProviderStatus?.hasApiKey ? '已安全保存；输入新值可替换' : '输入 API Key'" /></label>
+      <p class="secret-note">各提供方的 Key 独立保存于 Windows 安全存储，不会写入普通设置文件。切换提供方不会删除其他 Key。连接测试会发送一条简短测试请求。</p>
+      <p v-if="aiProviderStatusError" class="inline-error">{{ aiProviderStatusError }}</p>
+      <p v-if="selectedProviderDescriptor" class="settings-note">{{ selectedProviderDescriptor.name }} 官方文档：<code>{{ selectedProviderDescriptor.documentationUrl }}</code><span v-if="selectedProviderStatus"> · {{ selectedProviderStatus.configured ? '配置完整' : '仍需补充模型、地区、地址或 Key' }}</span></p>
+      <div class="ai-settings-actions"><button class="primary-button" :disabled="savingAI" @click="saveAISettings">{{ savingAI ? '保存中…' : '保存 AI 设置' }}</button><button class="secondary-button" :disabled="testing || savingAI" @click="testConnection">{{ testing ? '正在连接…' : '测试连接' }}</button><button v-if="selectedProviderStatus?.hasApiKey" class="text-button remove-key" @click="clearAIKey">移除当前 Key</button></div>
       <p v-if="testMessage" class="settings-result">{{ testMessage }}</p>
+    </div>
+    <div class="settings-group translation-settings">
+      <div class="settings-group-heading"><span class="settings-group-icon"><Languages :size="17" /></span><div><strong>翻译引擎</strong><p>选择翻译实际使用的服务；切换不会自动发送文本。</p></div></div>
+      <div class="preference-options translation-engine-options" role="group" aria-label="翻译引擎">
+        <button v-for="engine in translationEngineOptions" :key="engine.id" class="preference-option preference-option-described" :class="{ selected: settings.translation.engine === engine.id }" :aria-pressed="settings.translation.engine === engine.id" :disabled="savingTranslation" @click="chooseTranslationEngine(engine.id)">
+          <span><span class="preference-option-title">{{ engine.label }}</span><small>{{ engine.description }}</small></span><Check v-if="settings.translation.engine === engine.id" :size="14" />
+        </button>
+      </div>
+      <p v-if="translationProviderInfo" class="settings-note">当前：{{ translationProviderInfo.providerName }}<template v-if="translationProviderInfo.model"> · {{ translationProviderInfo.model }}</template> · {{ translationProviderInfo.configured ? '已配置' : '尚未配置' }}</p>
+      <p class="settings-note">MyMemory 无需 Key；公共免费额度为每日 5,000 字符，单次最多 500 UTF-8 字节。点击翻译后，原文会发送给 MyMemory；需要更长文本时可配置 AI Key 并切换至 WebTools AI。</p>
+      <p class="settings-note">Google Translate 网页仍是单独的手动打开入口，不会作为 API 自动回退。</p>
+      <p class="settings-note">当前默认翻译引擎：{{ translationEngineLabel }}</p>
     </div>
     <p v-if="saved" class="save-indicator"><Check :size="14" /> 已保存</p><p v-if="errorMessage" class="inline-error">{{ errorMessage }}</p>
   </section>

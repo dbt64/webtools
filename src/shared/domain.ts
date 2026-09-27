@@ -1,3 +1,6 @@
+import { createDefaultSharedAISettings, type SharedAISettings } from './ai-config.ts'
+import { createDefaultTranslationSettings, type TranslationSettings } from './translation-contracts.ts'
+
 export interface BookmarkFolder { id: string; name: string; createdAt: number }
 
 export interface WebsiteEntry {
@@ -47,6 +50,8 @@ export interface AppSettings {
   everythingEsPath: string
   aiBaseUrl: string
   aiModel: string
+  sharedAI: SharedAISettings
+  translation: TranslationSettings
   theme: ThemePreference
   launcherDisplayMode: LauncherDisplayMode
 }
@@ -80,6 +85,8 @@ export const DEFAULT_APP_DATA: AppData = {
     everythingEsPath: '',
     aiBaseUrl: '',
     aiModel: '',
+    sharedAI: createDefaultSharedAISettings(),
+    translation: createDefaultTranslationSettings(),
     theme: 'dark',
     launcherDisplayMode: 'compact',
   },

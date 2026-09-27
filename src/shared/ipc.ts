@@ -1,8 +1,29 @@
-import type { AppSearchEntry, AppSettings, BookmarkFolder, WebsiteEntry, WebsiteSaveInput, EverythingResult, TranslationPrefillRequest } from './domain'
+import type { AppSearchEntry, AppSettings, BookmarkFolder, WebsiteEntry, WebsiteSaveInput, EverythingResult, TranslationPrefillRequest, ThemePreference } from './domain'
+import type { AIProviderId } from './ai-config.ts'
+import type { TranslationProviderInfo, TranslationRequest, TranslationResult } from './translation-contracts.ts'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: { code: string; message: string } }
+
+export interface AIProviderDescriptor {
+  id: AIProviderId
+  name: string
+  defaultModel: string
+  documentationUrl: string
+  modelHint: string
+  requiresQwenWorkspace: boolean
+}
+
+export interface AIProviderStatus {
+  providerId: AIProviderId
+  providerName: string
+  model: string
+  hasApiKey: boolean
+  configured: boolean
+  documentationUrl: string
+  requiresQwenWorkspace: boolean
+}
 
 export interface DesktopApi {
   showLauncher(): Promise<void>
@@ -24,16 +45,21 @@ export interface DesktopApi {
   rememberAppSearchResult(query: string, appId: string): Promise<IpcResult<void>>
   openWebsite(id: string): Promise<IpcResult<void>>
   getSettings(): Promise<AppSettings>
+  getThemePreference(): Promise<ThemePreference>
   updateSettings(settings: Partial<AppSettings>): Promise<IpcResult<AppSettings>>
   openSearch(query: string): Promise<IpcResult<void>>
   listBookmarkFolders(): Promise<BookmarkFolder[]>
   saveBookmarkFolder(input: { id?: string; name: string }): Promise<IpcResult<BookmarkFolder>>
   deleteBookmarkFolder(folderId: string): Promise<IpcResult<void>>
-  hasAiApiKey(): Promise<boolean>
-  saveAiApiKey(apiKey: string): Promise<IpcResult<void>>
-  clearAiApiKey(): Promise<IpcResult<void>>
-  translateWithAi(input: { text: string; targetLanguage: string }): Promise<IpcResult<{ translation: string }>>
-  testAiConnection(): Promise<IpcResult<{ model: string }>>
+  getAIProviderDescriptors(): Promise<IpcResult<AIProviderDescriptor[]>>
+  getAIProviderStatus(providerId: AIProviderId): Promise<IpcResult<AIProviderStatus>>
+  saveAIProviderKey(providerId: AIProviderId, apiKey: string): Promise<IpcResult<void>>
+  clearAIProviderKey(providerId: AIProviderId): Promise<IpcResult<void>>
+  getQwenRegions(): Promise<IpcResult<Array<{ id: string; label: string }>>>
+  getTranslationProviderInfo(): Promise<IpcResult<TranslationProviderInfo>>
+  translate(request: TranslationRequest): Promise<IpcResult<TranslationResult>>
+  cancelTranslation(requestId: string): Promise<IpcResult<{ cancelled: boolean }>>
+  testAIConnection(): Promise<IpcResult<{ providerName: string; model: string }>>
   openGoogleTranslate(input: { text: string; targetLanguage: string }): Promise<IpcResult<void>>
   listWebsites(folderId?: string): Promise<WebsiteEntry[]>
   saveWebsite(input: WebsiteSaveInput): Promise<IpcResult<WebsiteEntry>>
@@ -66,16 +92,21 @@ export const IPC_CHANNELS = {
   rememberAppSearchResult: 'apps:remember-search-result',
   openWebsite: 'websites:open',
   getSettings: 'settings:get',
+  getThemePreference: 'settings:get-theme',
   updateSettings: 'settings:update',
   openSearch: 'search:open-web',
   listBookmarkFolders: 'bookmarks:list-folders',
   saveBookmarkFolder: 'bookmarks:save-folder',
   deleteBookmarkFolder: 'bookmarks:delete-folder',
-  hasAiApiKey: 'ai:has-key',
-  saveAiApiKey: 'ai:save-key',
-  clearAiApiKey: 'ai:clear-key',
-  translateWithAi: 'ai:translate',
-  testAiConnection: 'ai:test-connection',
+  getAIProviderDescriptors: 'ai:list-providers',
+  getAIProviderStatus: 'ai:provider-status',
+  saveAIProviderKey: 'ai:save-provider-key',
+  clearAIProviderKey: 'ai:clear-provider-key',
+  getQwenRegions: 'ai:qwen-regions',
+  getTranslationProviderInfo: 'translate:provider-info',
+  translate: 'translate:run',
+  cancelTranslation: 'translate:cancel',
+  testAIConnection: 'ai:test-connection',
   openGoogleTranslate: 'translate:open-google',
   listWebsites: 'websites:list',
   saveWebsite: 'websites:save',
