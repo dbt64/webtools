@@ -1,21 +1,22 @@
 import { readdir, stat } from 'node:fs/promises'
-import { join, parse, resolve, basename } from 'node:path'
+import { join, parse, resolve, basename, dirname, isAbsolute } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { shell } from 'electron'
+import { app, shell } from 'electron'
 
 const execFileAsync = promisify(execFile)
 
 export type LaunchTarget =
-  | { kind: 'shortcut'; shortcutPath: string; targetPath: string }
+  | { kind: 'shortcut'; shortcutPath: string; targetPath: string; args: string; cwd: string }
   | { kind: 'executable'; path: string }
   | { kind: 'aumid'; appId: string }
+  | { kind: 'system'; app: 'file-explorer' | 'control-panel' | 'device-manager' }
 
 export interface CatalogRecord {
   id?: string
   name: string
   aliases: string[]
-  source: 'desktop' | 'packaged'
+  source: 'desktop' | 'packaged' | 'system'
   icon?: string
   launchTarget: LaunchTarget
 }
@@ -27,25 +28,46 @@ export class WindowsAppSource {
   async list(): Promise<CatalogRecord[]> {
     if (process.platform !== 'win32') return []
     const records: CatalogRecord[] = []
+    let userDesktop: string | undefined
+    try { userDesktop = app.getPath('desktop') } catch { /* The Desktop may be unavailable. */ }
     const roots = [
       process.env.APPDATA && join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
       process.env.ProgramData && join(process.env.ProgramData, 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
+      userDesktop,
+      process.env.PUBLIC && join(process.env.PUBLIC, 'Desktop'),
     ].filter((path): path is string => Boolean(path))
+    const seenRoots = new Set<string>()
     for (const root of roots) {
-      for (const shortcut of await this.findShortcuts(root)) {
+      const rootKey = resolve(root).toLocaleLowerCase()
+      if (seenRoots.has(rootKey)) continue
+      seenRoots.add(rootKey)
+      let shortcuts: string[]
+      try { shortcuts = await this.findShortcuts(root) } catch { continue }
+      for (const shortcut of shortcuts) {
         try {
           const details = shell.readShortcutLink(shortcut)
           if (!details.target) continue
-          const targetPath = resolve(details.target)
+          const cwd = details.cwd?.trim()
+            ? resolve(dirname(shortcut), details.cwd.trim())
+            : ''
+          const targetPath = isAbsolute(details.target)
+            ? resolve(details.target)
+            : resolve(cwd || dirname(shortcut), details.target)
           if (!(await stat(targetPath).catch(() => null))?.isFile()) continue
           const name = parse(shortcut).name.trim()
+          if (!name) continue
           const aliases = [details.description, basename(targetPath).replace(/\.exe$/i, '')].filter((x): x is string => Boolean(x?.trim()))
-          records.push({ name, aliases: [...new Set(aliases)], source: 'desktop', launchTarget: { kind: 'shortcut', shortcutPath: shortcut, targetPath } })
+          records.push({ name, aliases: [...new Set(aliases)], source: 'desktop', launchTarget: { kind: 'shortcut', shortcutPath: shortcut, targetPath, args: details.args?.trim() || '', cwd } })
         } catch { /* Ignore malformed shortcuts individually. */ }
       }
     }
     records.push(...await this.startApps())
     records.push(...await this.appPaths())
+    records.push(
+      { name: '文件资源管理器', aliases: ['File Explorer', 'Explorer', 'explorer.exe'], source: 'system', launchTarget: { kind: 'system', app: 'file-explorer' } },
+      { name: '控制面板', aliases: ['Control Panel', 'control.exe'], source: 'system', launchTarget: { kind: 'system', app: 'control-panel' } },
+      { name: '设备管理器', aliases: ['Device Manager', 'devmgmt.msc'], source: 'system', launchTarget: { kind: 'system', app: 'device-manager' } },
+    )
     return records
   }
 

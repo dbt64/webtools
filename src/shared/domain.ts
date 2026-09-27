@@ -28,7 +28,7 @@ export interface SearchEngine {
   order: number
 }
 
-export interface AppSearchEntry { id: string; name: string; aliases: string[]; source: 'desktop' | 'packaged'; icon?: string }
+export interface AppSearchEntry { id: string; name: string; aliases: string[]; source: 'desktop' | 'packaged' | 'system'; icon?: string }
 export interface EverythingResult { id: string; name: string; locationLabel: string; kind: 'file' | 'folder' }
 
 export type ThemePreference = 'light' | 'dark' | 'system'
