@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, screen, dialog, type WebContents } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, screen, dialog, type Rectangle, type WebContents } from 'electron'
 import { join } from 'node:path'
 import { DataStore } from './services/data-store'
 import { SecretStore } from './services/secret-store'
@@ -27,6 +27,10 @@ let secretStore: SecretStore
 let managerWindow: BrowserWindow | null = null
 let launcherWindow: BrowserWindow | null = null
 let launcherPositioned = false
+let launcherShown = false
+let launcherLastBounds: Rectangle | null = null
+// Windows fades transparent windows on show/hide, so keep this one visible off-screen.
+const parkedLauncherPosition = { x: -32000, y: -32000 }
 interface LauncherReadiness { ready: boolean; promise: Promise<void>; resolve: () => void }
 const launcherReadiness = new WeakMap<BrowserWindow, LauncherReadiness>()
 interface LauncherToggleRequest { shouldShow: boolean }
@@ -34,6 +38,12 @@ let launcherToggleRequest: LauncherToggleRequest | null = null
 let tray: Tray | null = null
 let quitting = false
 let hotkeyService: GlobalHotkeyService | null = null
+
+function brandResourcePath(fileName: string): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'brand-assets', fileName)
+    : join(__dirname, '../../resources', fileName)
+}
 
 function createWindow(): void {
   if (managerWindow && !managerWindow.isDestroyed()) { managerWindow.show(); managerWindow.focus(); return }
@@ -44,6 +54,7 @@ function createWindow(): void {
     minHeight: 600,
     backgroundColor: '#10151c',
     title: 'WebTools',
+    icon: brandResourcePath('app.ico'),
     show: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -99,9 +110,12 @@ async function waitForLauncherRenderer(window: BrowserWindow): Promise<boolean> 
 function createLauncherWindow(): BrowserWindow {
   if (launcherWindow && !launcherWindow.isDestroyed()) return launcherWindow
   const window = new BrowserWindow({
+    ...parkedLauncherPosition,
     width: 850,
     height: 128,
     frame: false,
+    thickFrame: false,
+    type: 'toolbar',
     resizable: false,
     show: false,
     transparent: true,
@@ -109,7 +123,8 @@ function createLauncherWindow(): BrowserWindow {
     skipTaskbar: true,
     backgroundColor: '#00000000',
     title: 'WebTools 快速搜索',
-    webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    icon: brandResourcePath('app.ico'),
+    webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   })
   launcherWindow = window
   launcherReadiness.set(window, createLauncherReadiness())
@@ -123,14 +138,26 @@ function createLauncherWindow(): BrowserWindow {
     if (launcherWindow === window) {
       launcherWindow = null
       launcherPositioned = false
+      launcherShown = false
+      launcherLastBounds = null
     }
   })
   window.on('blur', () => {
-    if (window.isVisible()) window.hide()
+    if (launcherShown) hideLauncher()
   })
   if (isDevelopment && process.env.ELECTRON_RENDERER_URL) void window.loadURL(`${process.env.ELECTRON_RENDERER_URL}/launcher.html`)
   else void window.loadFile(join(__dirname, '../renderer/launcher.html'))
+  window.setPosition(parkedLauncherPosition.x, parkedLauncherPosition.y)
+  window.showInactive()
   return window
+}
+
+function hideLauncher(): void {
+  if (!launcherWindow || launcherWindow.isDestroyed() || !launcherShown) return
+  launcherShown = false
+  launcherLastBounds = launcherWindow.getBounds()
+  launcherWindow.setPosition(parkedLauncherPosition.x, parkedLauncherPosition.y)
+  launcherWindow.blur()
 }
 
 function markLauncherRendererReady(sender: WebContents): void {
@@ -149,30 +176,35 @@ async function showLauncher(toggleRequest?: LauncherToggleRequest): Promise<void
     const bounds = display.workArea
     window.setBounds({ x: Math.round(bounds.x + (bounds.width - 850) / 2), y: Math.round(bounds.y + bounds.height * 0.18), width: 850, height: 128 })
     launcherPositioned = true
-  }
+  } else if (launcherLastBounds) window.setBounds(launcherLastBounds)
+  launcherShown = true
   resizeLauncher(launcherDisplayMode === 'expanded')
-  if (!await waitForLauncherRenderer(window)) return
-  if (toggleRequest && !toggleRequest.shouldShow) return
   const detail = JSON.stringify({ launcherDisplayMode, theme })
-  await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('webtools-launcher-show', { detail: ${detail} }))`).catch(() => undefined)
-  if (window.isDestroyed() || launcherWindow !== window || (toggleRequest && !toggleRequest.shouldShow)) return
-  window.show()
+  const dispatchShowState = async (): Promise<void> => {
+    if (!await waitForLauncherRenderer(window) || window.isDestroyed() || launcherWindow !== window || (toggleRequest && !toggleRequest.shouldShow)) return
+    await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('webtools-launcher-show', { detail: ${detail} }))`).catch(() => undefined)
+  }
+  const showState = dispatchShowState()
   window.focus()
+  await showState
 }
 
-function resizeLauncher(expanded: boolean, expandedSections = 0, hasSearchResults = false): void {
+function resizeLauncher(expanded: boolean, expandedSectionExtraHeight = 0, hasSearchResults = false): void {
   if (!launcherWindow || launcherWindow.isDestroyed()) return
-  const current = launcherWindow.getBounds()
+  const current = launcherShown ? launcherWindow.getBounds() : launcherLastBounds
+  if (!current) return
   const display = screen.getDisplayMatching(current)
   const bounds = display.workArea
-  const height = !expanded ? 128 : hasSearchResults ? 466 : 326 + Math.min(2, expandedSections) * 120
+  const height = !expanded ? 128 : hasSearchResults ? 466 : 326 + Math.min(300, expandedSectionExtraHeight)
   const x = Math.max(bounds.x, Math.min(current.x, bounds.x + bounds.width - current.width))
   const y = Math.max(bounds.y, Math.min(current.y, bounds.y + bounds.height - height))
-  launcherWindow.setBounds({ x, y, width: current.width, height })
+  const nextBounds = { x, y, width: current.width, height }
+  if (launcherShown) launcherWindow.setBounds(nextBounds)
+  else launcherLastBounds = nextBounds
 }
 
 function moveLauncherBy(sender: WebContents, deltaX: number, deltaY: number): void {
-  if (!launcherWindow || launcherWindow.isDestroyed() || !launcherWindow.isVisible() || sender !== launcherWindow.webContents) return
+  if (!launcherWindow || launcherWindow.isDestroyed() || !launcherShown || sender !== launcherWindow.webContents) return
   const current = launcherWindow.getBounds()
   const workArea = screen.getDisplayMatching(current).workArea
   const x = Math.max(workArea.x, Math.min(current.x + Math.round(deltaX), workArea.x + workArea.width - current.width))
@@ -181,13 +213,21 @@ function moveLauncherBy(sender: WebContents, deltaX: number, deltaY: number): vo
 }
 
 function toggleLauncher(): void {
-  if (launcherWindow && !launcherWindow.isDestroyed() && launcherWindow.isVisible()) {
-    if (launcherToggleRequest) launcherToggleRequest.shouldShow = false
-    launcherWindow.hide()
-    return
-  }
   if (launcherToggleRequest) {
     launcherToggleRequest.shouldShow = !launcherToggleRequest.shouldShow
+    if (launcherToggleRequest.shouldShow) {
+      const window = launcherWindow
+      if (!window || window.isDestroyed()) return
+      if (launcherLastBounds) window.setBounds(launcherLastBounds)
+      launcherShown = true
+      window.focus()
+    } else {
+      hideLauncher()
+    }
+    return
+  }
+  if (launcherShown) {
+    hideLauncher()
     return
   }
   const request: LauncherToggleRequest = { shouldShow: true }
@@ -198,8 +238,7 @@ function toggleLauncher(): void {
 }
 
 function createTray(): void {
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect x="1" y="1" width="30" height="30" rx="8" fill="#9fdfc3"/><path d="M11 10h10M11 16h10M11 22h10" stroke="#15261f" stroke-width="2" stroke-linecap="round"/></svg>'
-  const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
+  const image = nativeImage.createFromPath(brandResourcePath('tray-32.png'))
   tray = new Tray(image)
   tray.setToolTip('WebTools')
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -209,11 +248,21 @@ function createTray(): void {
   tray.on('double-click', showManager)
 }
 
+function setOpenAtLogin(enabled: boolean): void {
+  // Windows does not expose wasOpenedAtLogin, so tag the startup shortcut and
+  // use that argument to distinguish silent login launches from manual starts.
+  app.setLoginItemSettings({ openAtLogin: enabled, args: enabled ? ['--hidden'] : [] })
+}
+
+const startedHidden = process.argv.includes('--hidden')
+
 ipcMain.handle('app:get-version', () => app.getVersion())
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) app.quit()
-else app.on('second-instance', () => showManager())
+else app.on('second-instance', (_event, commandLine) => {
+  if (!commandLine.includes('--hidden')) showManager()
+})
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return
@@ -238,15 +287,16 @@ app.whenReady().then(async () => {
   hotkeyService = new GlobalHotkeyService()
   const shortcutResult = hotkeyService.register(dataStore.snapshot().settings.quickSearchShortcut, toggleLauncher)
   if (!shortcutResult.ok) console.warn(shortcutResult.error.message)
-  app.setLoginItemSettings({ openAtLogin: dataStore.snapshot().settings.launchOnStartup })
+  setOpenAtLogin(dataStore.snapshot().settings.launchOnStartup)
   createTray()
-  registerWindowIpcHandlers({ showLauncher, hideLauncher: () => launcherWindow?.hide(), setLauncherExpanded: resizeLauncher, moveLauncherBy, markLauncherRendererReady, showManager })
+  registerWindowIpcHandlers({ showLauncher, hideLauncher, setLauncherExpanded: resizeLauncher, moveLauncherBy, markLauncherRendererReady, showManager })
   registerAppIpcHandlers({ appCatalog, appLauncher })
   registerWebsiteIpcHandlers({ websiteService, websiteMetadata, bookmarkService })
-  registerSettingsIpcHandlers({ dataStore, hotkeyService, setOpenAtLogin: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled }), openExternal: openExternalUrl })
+  registerSettingsIpcHandlers({ dataStore, hotkeyService, setOpenAtLogin, openExternal: openExternalUrl })
   registerTranslationIpcHandlers({ aiTranslationService, secretStore, openExternal: openExternalUrl })
   registerEverythingIpcHandlers({ everything, dataStore, getManagerWindow: () => managerWindow })
-  createWindow()
+  createLauncherWindow()
+  if (!startedHidden) createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

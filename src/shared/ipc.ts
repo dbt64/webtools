@@ -8,7 +8,7 @@ export interface DesktopApi {
   showLauncher(): Promise<void>
   launcherReady(): void
   hideLauncher(): Promise<void>
-  setLauncherExpanded(expanded: boolean, expandedSections?: number, hasSearchResults?: boolean): Promise<void>
+  setLauncherExpanded(expanded: boolean, expandedSectionExtraHeight?: number, hasSearchResults?: boolean): Promise<void>
   moveLauncherBy(deltaX: number, deltaY: number): void
   showManager(): Promise<void>
   getVersion(): Promise<string>

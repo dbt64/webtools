@@ -37,6 +37,16 @@
       "out/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "resources/app.ico",
+        "to": "brand-assets/app.ico"
+      },
+      {
+        "from": "resources/tray-32.png",
+        "to": "brand-assets/tray-32.png"
+      }
+    ],
     "win": {
       "icon": "resources/app.ico",
       "target": ["nsis"],
