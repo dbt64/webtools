@@ -1,0 +1,98 @@
+{
+  "applications": [
+    {
+      "id": "a111111111111111",
+      "name": "Orchid Browser",
+      "aliases": ["OB", "Orchid Web"],
+      "source": "desktop"
+    },
+    {
+      "id": "b222222222222222",
+      "name": "Orbit Editor",
+      "aliases": ["Orbit Tools"],
+      "source": "desktop"
+    },
+    {
+      "id": "c333333333333333",
+      "name": "星河编辑器",
+      "aliases": ["Milkyway Editor"],
+      "source": "desktop"
+    },
+    {
+      "id": "d444444444444444",
+      "name": "Terminal Setup",
+      "aliases": ["Nova Console"],
+      "source": "desktop"
+    },
+    {
+      "id": "e555555555555555",
+      "name": "Aurora Notes",
+      "aliases": ["AN"],
+      "source": "desktop"
+    },
+    {
+      "id": "f666666666666666",
+      "name": "Integration Helper",
+      "aliases": ["IH"],
+      "source": "desktop"
+    },
+    {
+      "id": "0777777777777777",
+      "name": "Café Scheduler",
+      "aliases": ["CS"],
+      "source": "desktop"
+    }
+  ],
+  "websites": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "name": "Orbit Docs",
+      "url": "https://docs.orbit.example/handbook/index",
+      "description": "internal knowledge base",
+      "folderIds": ["00000000-0000-4000-8000-000000000010"],
+      "createdAt": 1700000000001
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "name": "Northstar Portal",
+      "url": "https://portal.northstar.example/start",
+      "description": "product documentation",
+      "folderIds": ["00000000-0000-4000-8000-000000000010"],
+      "createdAt": 1700000000002
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "name": "Orchid Guide",
+      "url": "https://guide.orchid.example/start",
+      "description": "browser help",
+      "folderIds": [],
+      "createdAt": 1700000000003
+    }
+  ],
+  "limitWebsites": [
+    {
+      "id": "00000000-0000-4000-8000-000000000004",
+      "name": "Parity 00 Guide",
+      "url": "https://parity.example/guide",
+      "folderIds": [],
+      "createdAt": 1700000000004
+    }
+  ],
+  "limitApplications": [
+    { "id": "1000000000000001", "name": "Parity App 01", "aliases": [], "source": "desktop" },
+    { "id": "1000000000000002", "name": "Parity App 02", "aliases": [], "source": "desktop" },
+    { "id": "1000000000000003", "name": "Parity App 03", "aliases": [], "source": "desktop" },
+    { "id": "1000000000000004", "name": "Parity App 04", "aliases": [], "source": "desktop" },
+    { "id": "1000000000000005", "name": "Parity App 05", "aliases": [], "source": "desktop" },
+    { "id": "1000000000000006", "name": "Parity App 06", "aliases": [], "source": "desktop" },
+    { "id": "1000000000000007", "name": "Parity App 07", "aliases": [], "source": "desktop" },
+    { "id": "1000000000000008", "name": "Parity App 08", "aliases": [], "source": "desktop" },
+    { "id": "1000000000000009", "name": "Parity App 09", "aliases": [], "source": "desktop" }
+  ],
+  "memory": {
+    "orbit": {
+      "appId": "b222222222222222",
+      "lastUsedAt": 1700000001000
+    }
+  }
+}

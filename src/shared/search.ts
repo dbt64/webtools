@@ -1,5 +1,5 @@
-import type { SearchIndex } from './pinyin-index'
-import { normalizeSearchText } from './search-normalization'
+import type { SearchIndex } from './pinyin-index.ts'
+import { normalizeSearchText } from './search-normalization.ts'
 
 export interface SearchableEntry {
   id: string

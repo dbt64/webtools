@@ -1,5 +1,5 @@
-import type { AppSearchMemory, AppSearchMemoryEntry } from './domain'
-import { normalizeSearchText } from './search-normalization'
+import type { AppSearchMemory, AppSearchMemoryEntry } from './domain.ts'
+import { normalizeSearchText } from './search-normalization.ts'
 
 export const MAX_APP_SEARCH_QUERY_LENGTH = 128
 export const MAX_APP_SEARCH_MEMORY_ENTRIES = 100

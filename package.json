@@ -9,6 +9,7 @@
     "electron:dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "test": "node --experimental-strip-types --test",
     "preview": "electron-vite preview",
     "package:win": "npm run typecheck && npm run build && electron-builder --win nsis"
   },

@@ -1,7 +1,7 @@
 import { pinyin } from 'pinyin-pro'
-import { normalizeSearchText } from './search-normalization'
+import { normalizeSearchText } from './search-normalization.ts'
 
-export { normalizeSearchText } from './search-normalization'
+export { normalizeSearchText } from './search-normalization.ts'
 
 export interface PinyinEntry {
   normalizedName: string
