@@ -6,24 +6,25 @@ import type { IpcResult } from '@/shared/ipc'
 import logoDark from '@/assets/brand/logo-dark.svg'
 import logoLight from '@/assets/brand/logo-light.svg'
 import { buildSearchIndex } from '@/shared/pinyin-index'
-import { searchEntries, type SearchableEntry, type SearchResult } from '@/shared/search'
-import { promoteRememberedAppResult } from '@/shared/app-search-memory'
 import { parseSearchCommand } from '@/shared/search-command'
-import { appendTranslationAction, type SearchMatch, type TranslationAction } from './launcher-results'
+import {
+  appendTranslationAction,
+  searchLauncherEntries,
+  toLauncherAction,
+  toLauncherAppEntry,
+  toLauncherFileAction,
+  toLauncherWebsiteEntry,
+  type LauncherAction,
+  type LauncherEntry,
+  type SearchAction,
+  type WebsiteAction,
+} from './launcher-results'
 import { useAppResultIcons } from './use-app-result-icons'
 import SearchResultName from './SearchResultName.vue'
 import { applyTheme } from '@/shared/theme'
 import BookmarkDialog from '../bookmarks/BookmarkDialog.vue'
 import Favicon from '../bookmarks/Favicon.vue'
 
-interface LauncherEntry extends Omit<SearchableEntry, 'kind'> { kind: 'app' | 'website'; favicon?: string; url?: string }
-type LauncherAction =
-  | { kind: 'application'; id: string; name: string; subtitle: string; match: SearchMatch }
-  | { kind: 'website'; id: string; name: string; subtitle: string; url: string; favicon?: string; folderIds: string[]; match: SearchMatch }
-  | { kind: 'file'; id: string; name: string; locationLabel: string; fileKind: EverythingResult['kind'] }
-  | TranslationAction
-type SearchAction = Exclude<LauncherAction, { kind: 'file' }>
-type WebsiteAction = Extract<LauncherAction, { kind: 'website' }>
 type BookmarkTarget = Pick<WebsiteAction, 'id' | 'name' | 'folderIds'>
 interface LauncherApplication { id: string; name: string; icon: Component }
 const applications = ref<LauncherApplication[]>([{ id: 'translate', name: '翻译', icon: Languages }])
@@ -63,42 +64,21 @@ const parsed = computed(() => parseSearchCommand(query.value))
 const isWeb = computed(() => parsed.value.mode === 'web')
 const isFiles = computed(() => parsed.value.mode === 'files')
 let appMemoryLookupGeneration = 0
-const websiteEntries = computed<LauncherEntry[]>(() => websites.value.map((site) => ({
-  id: site.id,
-  name: site.name,
-  aliases: [site.url],
-  kind: 'website',
-  subtitle: site.url,
-  url: site.url,
-  favicon: site.favicon,
-  folderIds: site.folderIds,
-  searchText: site.description ?? '',
-})))
-const entries = computed<LauncherEntry[]>(() => [
-  ...apps.value.map((app) => ({ id: app.id, name: app.name, aliases: app.aliases, kind: 'app' as const, subtitle: '本地应用' })),
-  ...websiteEntries.value,
-])
+const appEntries = computed<LauncherEntry[]>(() => apps.value.map(toLauncherAppEntry))
+const websiteEntries = computed<LauncherEntry[]>(() => websites.value.map(toLauncherWebsiteEntry))
+const entries = computed<LauncherEntry[]>(() => [...appEntries.value, ...websiteEntries.value])
 const index = computed(() => buildSearchIndex(entries.value))
 function assertNever(value: never): never { throw new Error(`Unsupported launcher action: ${String(value)}`) }
 
-function toLauncherAction(result: SearchResult<LauncherEntry>): Exclude<LauncherAction, { kind: 'file' } | TranslationAction> {
-  const { entry, match } = result
-  switch (entry.kind) {
-    case 'app': return { kind: 'application', id: entry.id, name: entry.name, subtitle: entry.subtitle, match }
-    case 'website': return {
-      kind: 'website', id: entry.id, name: entry.name, subtitle: entry.subtitle,
-      url: entry.url ?? '', favicon: entry.favicon, folderIds: entry.folderIds ?? [], match,
-    }
-    default: return assertNever(entry.kind)
-  }
-}
-
 const searchRows = computed<SearchAction[]>(() => {
-  if (isWeb.value || isFiles.value) return []
-  const candidates = parsed.value.mode === 'saved-websites' ? websiteEntries.value : entries.value
-  const matches = searchEntries(parsed.value.query, candidates, index.value)
-  const ranked = parsed.value.mode === 'local' ? promoteRememberedAppResult(matches, rememberedAppId.value) : matches
-  return ranked.slice(0, 8).map(toLauncherAction)
+  return searchLauncherEntries(
+    parsed.value.query,
+    parsed.value.mode,
+    appEntries.value,
+    websiteEntries.value,
+    index.value,
+    rememberedAppId.value,
+  ).map(toLauncherAction)
 })
 watch(parsed, (command) => {
   const generation = ++appMemoryLookupGeneration
@@ -111,9 +91,7 @@ watch(parsed, (command) => {
   }).catch(() => undefined)
 }, { immediate: true })
 const launcherActions = computed(() => appendTranslationAction(searchRows.value, query.value, parsed.value.mode))
-const visibleFileActions = computed<Extract<LauncherAction, { kind: 'file' }>[]>(() => fileResults.value.slice(0, 8).map((file) => ({
-  kind: 'file', id: file.id, name: file.name, locationLabel: file.locationLabel, fileKind: file.kind,
-})))
+const visibleFileActions = computed<Extract<LauncherAction, { kind: 'file' }>[]>(() => fileResults.value.slice(0, 8).map(toLauncherFileAction))
 const selectableActions = computed<LauncherAction[]>(() => isFiles.value ? visibleFileActions.value : isWeb.value ? [] : launcherActions.value)
 const selectableCount = computed(() => selectableActions.value.length)
 const visibleAppIds = computed(() => launcherActions.value.flatMap((action) => action.kind === 'application' ? [action.id] : []))
