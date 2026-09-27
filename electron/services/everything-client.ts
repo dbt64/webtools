@@ -5,6 +5,7 @@ import { access, stat } from 'node:fs/promises'
 import { delimiter, basename, dirname, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
 import type { EverythingResult } from '../../src/shared/domain'
+import { buildEverythingSearchArgs, openEverythingPath } from './everything-command'
 
 const execFileAsync = promisify(execFile)
 const COMMAND_TIMEOUT_MS = 1500
@@ -92,9 +93,8 @@ export class EverythingClient {
     if (!status.running) throw new Error('Everything 没有运行。请先启动 Everything，再搜索文件。')
     const maximum = Math.min(MAX_RESULTS, Math.max(1, Math.floor(limit)))
     const supportsJson = Boolean(status.version && compareVersion(status.version, '1.1.0.37') >= 0)
-    const args = supportsJson
-      ? ['-json', '-full-path-and-name', '-n', String(maximum), '-timeout', '1000', '--', normalized]
-      : ['-csv', '-no-header', '-full-path-and-name', '-n', String(maximum), '-timeout', '1000', '--', normalized]
+    const supportsUtf8Output = Boolean(status.version && compareVersion(status.version, '1.1.0.27') >= 0)
+    const args = buildEverythingSearchArgs(normalized, maximum, { supportsJson, supportsUtf8Output })
     let stdout: string
     try {
       ({ stdout } = await execFileAsync(status.executablePath, args, { windowsHide: true, timeout: COMMAND_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, encoding: 'utf8' }))
@@ -136,13 +136,7 @@ export class EverythingClient {
     if (!path) throw new Error('这个搜索结果已过期，请重新搜索。')
     const info = await stat(path).catch(() => null)
     if (!info) throw new Error('文件或文件夹已不存在。')
-    if (info.isDirectory()) {
-      try { await execFileAsync('explorer.exe', [path], { windowsHide: true, timeout: 5000 }) }
-      catch (error) { throw new Error(error instanceof Error ? error.message : '无法打开文件夹。') }
-      return
-    }
-    const message = await shell.openPath(path)
-    if (message) throw new Error(message)
+    await openEverythingPath(path, shell.openPath)
   }
 
   private async findExecutable(configuredPath: string): Promise<string | undefined> {
