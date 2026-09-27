@@ -2,8 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { Check, FolderSearch, Keyboard, KeyRound, Languages } from '@lucide/vue'
 import { createDefaultAppData, type AppSettings, type LauncherDisplayMode, type ThemePreference } from '@/shared/domain'
-import { QWEN_REGIONS, type AIProviderId, type QwenRegion, type SharedAISettings } from '@/shared/ai-config'
-import { TRANSLATION_ENGINES, TRANSLATION_LANGUAGES, type TranslationEngineId } from '@/shared/translation-contracts'
+import { cloneSharedAISettings, QWEN_REGIONS, type AIProviderId, type QwenRegion, type SharedAISettings } from '@/shared/ai-config'
+import type { TranslationEngineId } from '@/shared/translation-contracts'
 import type { AIProviderDescriptor, AIProviderStatus } from '@/shared/ipc'
 import { applyTheme } from '@/shared/theme'
 import SearchEngineEditor from './SearchEngineEditor.vue'
@@ -11,7 +11,7 @@ import SearchEngineEditor from './SearchEngineEditor.vue'
 const settings = ref<AppSettings>(createDefaultAppData().settings)
 const saved = ref(false)
 const errorMessage = ref('')
-const aiDraft = ref<SharedAISettings>(structuredClone(settings.value.sharedAI))
+const aiDraft = ref<SharedAISettings>(cloneSharedAISettings(settings.value.sharedAI))
 const aiProviders = ref<AIProviderDescriptor[]>([])
 const aiProviderStatuses = ref<Partial<Record<AIProviderId, AIProviderStatus>>>({})
 const aiProviderStatusError = ref('')
@@ -23,9 +23,6 @@ const apiKey = computed({
 const testing = ref(false)
 const testMessage = ref('')
 const savingAI = ref(false)
-const cloudApiKey = ref('')
-const cloudKeyConfigured = ref(false)
-const savingCloudKey = ref(false)
 const translationProviderInfo = ref<{ providerName: string; model?: string; configured: boolean }>()
 const savingTranslation = ref(false)
 const qwenRegionLabels: Record<QwenRegion, string> = {
@@ -33,8 +30,8 @@ const qwenRegionLabels: Record<QwenRegion, string> = {
   'ap-northeast-1': '日本（东京）', 'cn-hongkong': '中国香港', 'us-east-1': '美国（弗吉尼亚）',
 }
 const translationEngineOptions = [
+  { id: 'mymemory', label: 'MyMemory 免费翻译', description: '无需 API Key；适合短文本翻译。' },
   { id: 'ai', label: 'WebTools AI', description: '使用 AI 设置中的默认提供方和模型。' },
-  { id: 'google-cloud-basic', label: 'Google Cloud Translation Basic', description: '使用单独配置的 Google Cloud Translation API Key。' },
   { id: 'qwen-mt', label: 'Qwen-MT', description: '使用 AI 区域中的 Qwen Key、地区和工作空间。' },
 ] as const
 const recordingShortcut = ref(false)
@@ -51,7 +48,7 @@ const selectedProviderConfig = computed(() => {
   const saved = aiDraft.value.providers[selectedProvider.value]
   return { ...saved, model: saved?.model || selectedProviderDescriptor.value?.defaultModel || '' }
 })
-const translationEngineLabel = computed(() => ({ ai: 'WebTools AI', 'google-cloud-basic': 'Google Cloud Translation Basic', 'qwen-mt': 'Qwen-MT' })[settings.value.translation.engine])
+const translationEngineLabel = computed(() => ({ mymemory: 'MyMemory 免费翻译', ai: 'WebTools AI', 'qwen-mt': 'Qwen-MT' })[settings.value.translation.engine])
 
 function markSaved(): void { saved.value = true; window.setTimeout(() => { saved.value = false }, 1800) }
 
@@ -181,11 +178,11 @@ async function persistAISettings(defaultProviderId = aiDraft.value.defaultProvid
   errorMessage.value = ''
   try {
     const credentialProviderId = aiDraft.value.defaultProviderId
-    const nextSharedAI = { ...aiDraft.value, defaultProviderId }
+    const nextSharedAI = cloneSharedAISettings({ ...aiDraft.value, defaultProviderId })
     const result = await window.desktop.updateSettings({ sharedAI: nextSharedAI })
     if (!result.ok) { errorMessage.value = result.error.message; return false }
     settings.value = result.data
-    aiDraft.value = structuredClone(result.data.sharedAI)
+    aiDraft.value = cloneSharedAISettings(result.data.sharedAI)
     if (saveKey && apiKey.value.trim()) {
       const keyResult = await window.desktop.saveAIProviderKey(credentialProviderId, apiKey.value.trim())
       if (!keyResult.ok) {
@@ -196,6 +193,10 @@ async function persistAISettings(defaultProviderId = aiDraft.value.defaultProvid
       apiKey.value = ''
     }
     await refreshAIProviderStatuses()
+    if (settings.value.translation.engine === 'ai') {
+      const info = await window.desktop.getTranslationProviderInfo()
+      if (info.ok) translationProviderInfo.value = info.data
+    }
     markSaved()
     return true
   } catch {
@@ -242,40 +243,16 @@ async function chooseTranslationEngine(engine: TranslationEngineId): Promise<voi
   finally { savingTranslation.value = false }
 }
 
-async function saveCloudApiKey(): Promise<void> {
-  if (!cloudApiKey.value.trim()) { errorMessage.value = '请输入 Google Cloud Translation API Key。'; return }
-  savingCloudKey.value = true
-  try {
-    const result = await window.desktop.saveGoogleCloudApiKey(cloudApiKey.value.trim())
-    if (!result.ok) { errorMessage.value = result.error.message; return }
-    cloudApiKey.value = ''
-    cloudKeyConfigured.value = true
-    errorMessage.value = ''
-    markSaved()
-  } catch { errorMessage.value = 'Google Cloud API Key 保存失败，请重试。' }
-  finally { savingCloudKey.value = false }
-}
-
-async function clearCloudApiKey(): Promise<void> {
-  if (!window.confirm('删除已保存的 Google Cloud Translation API Key？')) return
-  const result = await window.desktop.clearGoogleCloudApiKey()
-  if (!result.ok) errorMessage.value = result.error.message
-  else { cloudKeyConfigured.value = false; errorMessage.value = ''; markSaved() }
-}
-
 onMounted(async () => {
   try {
     settings.value = await window.desktop.getSettings()
-    aiDraft.value = structuredClone(settings.value.sharedAI)
-    const [providers, cloudKey, translationInfo] = await Promise.all([
+    aiDraft.value = cloneSharedAISettings(settings.value.sharedAI)
+    const [providers, translationInfo] = await Promise.all([
       window.desktop.getAIProviderDescriptors(),
-      window.desktop.getGoogleCloudApiKeyStatus(),
       window.desktop.getTranslationProviderInfo(),
     ])
     if (!providers.ok) throw new Error(providers.error.message)
     aiProviders.value = providers.data
-    if (cloudKey.ok) cloudKeyConfigured.value = cloudKey.data.configured
-    else errorMessage.value = cloudKey.error.message
     if (translationInfo.ok) translationProviderInfo.value = translationInfo.data
     await refreshAIProviderStatuses()
     await refreshEverything()
@@ -343,9 +320,7 @@ onMounted(async () => {
         </button>
       </div>
       <p v-if="translationProviderInfo" class="settings-note">当前：{{ translationProviderInfo.providerName }}<template v-if="translationProviderInfo.model"> · {{ translationProviderInfo.model }}</template> · {{ translationProviderInfo.configured ? '已配置' : '尚未配置' }}</p>
-      <label class="field-label">Google Cloud Translation API Key<input v-model="cloudApiKey" type="password" autocomplete="new-password" :placeholder="cloudKeyConfigured ? '已安全保存；输入新值可替换' : '单独输入 Google Cloud API Key'" /></label>
-      <p class="secret-note">Cloud Translation 需要 Google Cloud 项目启用 Translation API，并按 Google Cloud 规则配置计费和权限。此 Key 与 Shared AI Key 分开存储。官方说明：https://cloud.google.com/translate/docs/setup</p>
-      <div class="ai-settings-actions"><button class="primary-button" :disabled="savingCloudKey || !cloudApiKey.trim()" @click="saveCloudApiKey">{{ savingCloudKey ? '保存中…' : '保存 Google Cloud Key' }}</button><button v-if="cloudKeyConfigured" class="text-button remove-key" @click="clearCloudApiKey">移除 Google Cloud Key</button></div>
+      <p class="settings-note">MyMemory 无需 Key；公共免费额度为每日 5,000 字符，单次最多 500 UTF-8 字节。点击翻译后，原文会发送给 MyMemory；需要更长文本时可配置 AI Key 并切换至 WebTools AI。</p>
       <p class="settings-note">Google Translate 网页仍是单独的手动打开入口，不会作为 API 自动回退。</p>
       <p class="settings-note">当前默认翻译引擎：{{ translationEngineLabel }}</p>
     </div>

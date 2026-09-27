@@ -28,7 +28,7 @@ test('normalizes legacy v2 AI settings to Custom without losing the original fie
     assert.equal(loaded.settings.aiBaseUrl, 'https://legacy.example/v1')
     assert.equal(loaded.settings.aiModel, 'legacy-model')
     assert.deepEqual(loaded.settings.translation, {
-      engine: 'ai',
+      engine: 'mymemory',
       sourceLanguage: 'auto',
       targetLanguage: 'zh-CN',
       qwenMtModel: 'qwen-mt-flash',
@@ -54,7 +54,22 @@ test('normalizes pre-2.0 v2 data without AI fields into deterministic defaults',
     const loaded = await new DataStore(filePath).load()
     assert.equal(loaded.settings.sharedAI.defaultProviderId, 'openai')
     assert.deepEqual(loaded.settings.sharedAI.providers, {})
-    assert.equal(loaded.settings.translation.engine, 'ai')
+    assert.equal(loaded.settings.translation.engine, 'mymemory')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('migrates an existing Google Cloud selection to the keyless default', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'webtools-data-'))
+  const filePath = join(directory, 'data.json')
+  const existing = createDefaultAppData()
+  existing.settings.translation.engine = 'google-cloud-basic'
+  await writeFile(filePath, JSON.stringify(existing), 'utf8')
+
+  try {
+    const loaded = await new DataStore(filePath).load()
+    assert.equal(loaded.settings.translation.engine, 'mymemory')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

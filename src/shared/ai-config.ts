@@ -28,6 +28,15 @@ export function createDefaultSharedAISettings(): SharedAISettings {
   return { defaultProviderId: 'openai', providers: {} }
 }
 
+export function cloneSharedAISettings(value: SharedAISettings): SharedAISettings {
+  const providers: SharedAISettings['providers'] = {}
+  for (const providerId of AI_PROVIDER_IDS) {
+    const config = value.providers[providerId]
+    if (config) providers[providerId] = { ...config }
+  }
+  return { defaultProviderId: value.defaultProviderId, providers }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -88,13 +97,11 @@ export function isValidSharedAISettings(value: unknown): value is SharedAISettin
           } catch { return false }
         }
       }
-    } else if ('baseUrl' in rawConfig) return false
-    if (providerId === 'qwen') {
+    } else if (providerId === 'qwen') {
       if (Object.keys(rawConfig).some((key) => !['model', 'region', 'workspaceId'].includes(key))) return false
       if (rawConfig.region !== undefined && !isQwenRegion(rawConfig.region)) return false
       if (rawConfig.workspaceId !== undefined && (typeof rawConfig.workspaceId !== 'string' || rawConfig.workspaceId.length > 100 || !/^[a-zA-Z0-9_-]*$/.test(rawConfig.workspaceId))) return false
-    } else if ('region' in rawConfig || 'workspaceId' in rawConfig) return false
-    else if (Object.keys(rawConfig).some((key) => key !== 'model')) return false
+    } else if (Object.keys(rawConfig).some((key) => key !== 'model')) return false
   }
   return true
 }

@@ -2,24 +2,18 @@ import type { AIProviderId, SharedAISettings } from '../../src/shared/ai-config.
 import { isTranslationLanguage, type TranslationProviderInfo, type TranslationRequest, type TranslationResult, type TranslationSettings } from '../../src/shared/translation-contracts.ts'
 import { resolveAIProviderEndpoint } from './ai-provider-registry.ts'
 import type { AIProviderCredentialStore } from './ai-credentials.ts'
-import type { GoogleCloudBasicAdapter } from './google-cloud-basic-adapter.ts'
+import type { MyMemoryAdapter } from './mymemory-adapter.ts'
 import type { QwenMtAdapter } from './qwen-mt-adapter.ts'
 import type { SharedAICompletion, SharedAIService } from './shared-ai-service.ts'
 import { buildTranslationMessages } from './translation-prompt.ts'
 import { ServiceError } from './service-error.ts'
 
-const GOOGLE_CLOUD_SECRET_KEY = 'translation-google-cloud-basic'
 const MAX_TRANSLATION_LENGTH = 20_000
 const MAX_TRANSLATION_OUTPUT_LENGTH = 100_000
 const DEFAULT_TIMEOUT_MS = 45_000
 
 interface TranslationDataStore {
   snapshot(): { settings: { sharedAI: SharedAISettings; translation: TranslationSettings } }
-}
-
-interface SecretStorePort {
-  getSecret(key: string): Promise<string | null>
-  hasSecret(key: string): Promise<boolean>
 }
 
 interface SharedAITranslationPort {
@@ -46,8 +40,7 @@ export class TranslationService {
   private readonly dataStore: TranslationDataStore
   private readonly sharedAI: SharedAITranslationPort
   private readonly aiCredentials: Pick<AIProviderCredentialStore, 'get'>
-  private readonly secretStore: SecretStorePort
-  private readonly googleCloudAdapter: Pick<GoogleCloudBasicAdapter, 'translate'>
+  private readonly myMemoryAdapter: Pick<MyMemoryAdapter, 'translate'>
   private readonly qwenMtAdapter: Pick<QwenMtAdapter, 'translate'>
   private readonly timeoutMs: number
   private readonly active = new Map<string, ActiveRequest>()
@@ -56,16 +49,14 @@ export class TranslationService {
     dataStore: TranslationDataStore
     sharedAI: SharedAITranslationPort
     aiCredentials: Pick<AIProviderCredentialStore, 'get'>
-    secretStore: SecretStorePort
-    googleCloudAdapter: Pick<GoogleCloudBasicAdapter, 'translate'>
+    myMemoryAdapter: Pick<MyMemoryAdapter, 'translate'>
     qwenMtAdapter: Pick<QwenMtAdapter, 'translate'>
     timeoutMs?: number
   }) {
     this.dataStore = deps.dataStore
     this.sharedAI = deps.sharedAI
     this.aiCredentials = deps.aiCredentials
-    this.secretStore = deps.secretStore
-    this.googleCloudAdapter = deps.googleCloudAdapter
+    this.myMemoryAdapter = deps.myMemoryAdapter
     this.qwenMtAdapter = deps.qwenMtAdapter
     this.timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS
   }
@@ -126,10 +117,8 @@ export class TranslationService {
         const info = await this.sharedAI.getDefaultProviderInfo()
         return { engine: 'ai', providerId: info.providerId, providerName: info.providerName, model: info.model, configured: info.configured }
       }
-      case 'google-cloud-basic': {
-        const configured = await this.secretStore.hasSecret(GOOGLE_CLOUD_SECRET_KEY)
-        return { engine: 'google-cloud-basic', providerName: 'Google Cloud Translation Basic', configured }
-      }
+      case 'mymemory':
+        return { engine: 'mymemory', providerName: 'MyMemory 免费翻译', configured: true }
       case 'qwen-mt': {
         const qwen = settings.sharedAI.providers.qwen
         let endpointConfigured = false
@@ -153,11 +142,9 @@ export class TranslationService {
         const result = await this.sharedAI.complete(messages, signal, 4096)
         return { translation: result.text, provider: this.aiResultInfo(result) }
       }
-      case 'google-cloud-basic': {
-        const apiKey = await this.secretStore.getSecret(GOOGLE_CLOUD_SECRET_KEY)
-        if (!apiKey) throw new ServiceError('TRANSLATION_NOT_CONFIGURED', '请在设置的“翻译”区域保存 Google Cloud Translation API Key。')
-        const text = await this.googleCloudAdapter.translate({ apiKey, text: request.text, sourceLanguage: request.sourceLanguage, targetLanguage: request.targetLanguage, signal })
-        return { translation: text, provider: { engine: 'google-cloud-basic', providerName: 'Google Cloud Translation Basic', configured: true } }
+      case 'mymemory': {
+        const text = await this.myMemoryAdapter.translate({ text: request.text, sourceLanguage: request.sourceLanguage, targetLanguage: request.targetLanguage, signal })
+        return { translation: text, provider: { engine: 'mymemory', providerName: 'MyMemory 免费翻译', configured: true } }
       }
       case 'qwen-mt': {
         const apiKey = await this.aiCredentials.get('qwen')

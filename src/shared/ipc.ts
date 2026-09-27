@@ -57,9 +57,6 @@ export interface DesktopApi {
   clearAIProviderKey(providerId: AIProviderId): Promise<IpcResult<void>>
   getQwenRegions(): Promise<IpcResult<Array<{ id: string; label: string }>>>
   getTranslationProviderInfo(): Promise<IpcResult<TranslationProviderInfo>>
-  getGoogleCloudApiKeyStatus(): Promise<IpcResult<{ configured: boolean }>>
-  saveGoogleCloudApiKey(apiKey: string): Promise<IpcResult<void>>
-  clearGoogleCloudApiKey(): Promise<IpcResult<void>>
   translate(request: TranslationRequest): Promise<IpcResult<TranslationResult>>
   cancelTranslation(requestId: string): Promise<IpcResult<{ cancelled: boolean }>>
   testAIConnection(): Promise<IpcResult<{ providerName: string; model: string }>>
@@ -107,9 +104,6 @@ export const IPC_CHANNELS = {
   clearAIProviderKey: 'ai:clear-provider-key',
   getQwenRegions: 'ai:qwen-regions',
   getTranslationProviderInfo: 'translate:provider-info',
-  getGoogleCloudApiKeyStatus: 'translate:google-cloud-key-status',
-  saveGoogleCloudApiKey: 'translate:google-cloud-save-key',
-  clearGoogleCloudApiKey: 'translate:google-cloud-clear-key',
   translate: 'translate:run',
   cancelTranslation: 'translate:cancel',
   testAIConnection: 'ai:test-connection',

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { TranslationService, validateTranslationRequest } from './translation-service.ts'
+import { ServiceError } from './service-error.ts'
 
 const requestId = '123e4567-e89b-12d3-a456-426614174000'
 const baseRequest = { requestId, text: 'source text', sourceLanguage: 'auto', targetLanguage: 'zh-CN' }
@@ -12,7 +13,7 @@ function setup(engine, overrides = {}) {
       translation: { engine, sourceLanguage: 'auto', targetLanguage: 'zh-CN', qwenMtModel: 'qwen-mt-flash' },
     },
   }
-  const calls = { ai: [], cloud: [], qwen: [], secrets: [] }
+  const calls = { ai: [], free: [], qwen: [], secrets: [] }
   const service = new TranslationService({
     dataStore: { snapshot: () => structuredClone(state) },
     sharedAI: {
@@ -20,11 +21,7 @@ function setup(engine, overrides = {}) {
       getDefaultProviderInfo: async () => ({ providerId: 'openai', providerName: 'OpenAI', model: 'gpt-4.1-mini', hasApiKey: true, configured: true, documentationUrl: '', requiresQwenWorkspace: false }),
     },
     aiCredentials: { get: async (provider) => { calls.secrets.push(`ai:${provider}`); return provider === 'qwen' ? 'qwen-key' : null } },
-    secretStore: {
-      getSecret: async (key) => { calls.secrets.push(key); return key === 'translation-google-cloud-basic' ? 'cloud-key' : null },
-      hasSecret: async (key) => { calls.secrets.push(`has:${key}`); return key === 'translation-google-cloud-basic' },
-    },
-    googleCloudAdapter: { translate: async (input) => { calls.cloud.push(input); return 'Cloud output' } },
+    myMemoryAdapter: { translate: async (input) => { calls.free.push(input); return 'Free output' } },
     qwenMtAdapter: { translate: async (input) => { calls.qwen.push(input); return 'Qwen output' } },
     timeoutMs: 1000,
     ...overrides,
@@ -38,17 +35,19 @@ test('AI engine uses the Shared AI service and keeps source text separate from s
   assert.equal(result.translation, 'AI output')
   assert.equal(result.provider.providerId, 'openai')
   assert.equal(calls.ai.length, 1)
-  assert.equal(calls.cloud.length, 0)
+  assert.equal(calls.free.length, 0)
   assert.equal(calls.qwen.length, 0)
   assert.equal(calls.ai[0].messages[1].content.endsWith('source text'), true)
 })
 
-test('Google Cloud Translation Basic uses its own credential and does not call Shared AI', async () => {
-  const { service, calls } = setup('google-cloud-basic')
+test('MyMemory is configured without a key and translates without calling Shared AI', async () => {
+  const { service, calls } = setup('mymemory')
+  const provider = await service.getProviderInfo()
   const result = await service.translate(baseRequest)
-  assert.equal(result.translation, 'Cloud output')
-  assert.equal(result.provider.engine, 'google-cloud-basic')
-  assert.deepEqual(calls.secrets, ['translation-google-cloud-basic'])
+  assert.deepEqual(provider, { engine: 'mymemory', providerName: 'MyMemory 免费翻译', configured: true })
+  assert.equal(result.translation, 'Free output')
+  assert.equal(result.provider.engine, 'mymemory')
+  assert.deepEqual(calls.secrets, [])
   assert.equal(calls.ai.length, 0)
 })
 
@@ -63,10 +62,18 @@ test('Qwen-MT uses Qwen Shared AI credentials and workspace without requiring th
 })
 
 test('reports not configured instead of silently falling back to another engine', async () => {
-  const { service } = setup('google-cloud-basic', {
-    secretStore: { getSecret: async () => null, hasSecret: async () => false },
+  const { service } = setup('qwen-mt', {
+    aiCredentials: { get: async () => null },
   })
   await assert.rejects(() => service.translate(baseRequest), (error) => error.code === 'TRANSLATION_NOT_CONFIGURED')
+})
+
+test('free provider errors do not silently trigger AI translation', async () => {
+  const { service, calls } = setup('mymemory', {
+    myMemoryAdapter: { translate: async () => { throw new ServiceError('FREE_TRANSLATION_QUOTA', '今日额度已用完。') } },
+  })
+  await assert.rejects(() => service.translate(baseRequest), (error) => error.code === 'FREE_TRANSLATION_QUOTA')
+  assert.equal(calls.ai.length, 0)
 })
 
 test('cancellation aborts the active provider request and Manager cleanup cancels all requests', async () => {

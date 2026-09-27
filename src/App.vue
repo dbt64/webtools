@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
-  CircleHelp, Compass, Languages, Search, Settings2, SlidersHorizontal,
+  ChevronDown, CircleHelp, Compass, Languages, LayoutGrid, Search, Settings2, SlidersHorizontal,
 } from '@lucide/vue'
 import logoDark from '@/assets/brand/logo-dark.svg'
 import logoLight from '@/assets/brand/logo-light.svg'
@@ -14,16 +14,18 @@ import type { TranslationPrefillRequest } from './shared/domain'
 type Section = 'search' | 'entries' | 'translate' | 'settings'
 
 const activeSection = ref<Section>('search')
+const appsExpanded = ref(false)
 const translationPrefill = ref<TranslationPrefillRequest | null>(null)
 let removeTranslationPrefillListener: (() => void) | undefined
 
 const navItems: { id: Section; label: string; icon: typeof Search }[] = [
   { id: 'search', label: '快速搜索', icon: Search },
   { id: 'entries', label: '网址', icon: Compass },
-  { id: 'translate', label: '翻译', icon: Languages },
 ]
 
-const sectionLabel = computed(() => navItems.find((item) => item.id === activeSection.value)?.label ?? '设置')
+const sectionLabel = computed(() => activeSection.value === 'translate'
+  ? '翻译'
+  : navItems.find((item) => item.id === activeSection.value)?.label ?? '设置')
 
 function focusSearch(): void {
   activeSection.value = 'search'
@@ -32,12 +34,14 @@ function focusSearch(): void {
 
 function navigateFromSearch(section: Exclude<Section, 'search'>): void {
   activeSection.value = section
+  if (section === 'translate') appsExpanded.value = true
 }
 
 onMounted(() => {
   removeTranslationPrefillListener = window.desktop.onTranslationPrefill((request) => {
     translationPrefill.value = request
     activeSection.value = 'translate'
+    appsExpanded.value = true
     void nextTick().then(() => {
       window.desktop.acknowledgeTranslationPrefill(request.id)
       if (translationPrefill.value?.id === request.id) translationPrefill.value = null
@@ -76,6 +80,17 @@ onBeforeUnmount(() => removeTranslationPrefillListener?.())
           <component :is="item.icon" :size="17" :stroke-width="1.8" />
           <span>{{ item.label }}</span>
           <span v-if="item.id === 'search'" class="nav-shortcut">Ctrl+Alt+Space</span>
+        </button>
+      </nav>
+      <button class="nav-item nav-apps-trigger" :class="{ 'is-active': activeSection === 'translate' }" :aria-expanded="appsExpanded" aria-controls="apps-submenu" @click="appsExpanded = !appsExpanded">
+        <LayoutGrid :size="17" :stroke-width="1.8" />
+        <span>应用</span>
+        <ChevronDown :size="14" class="nav-apps-chevron" :class="{ 'is-expanded': appsExpanded }" />
+      </button>
+      <nav id="apps-submenu" v-show="appsExpanded" class="nav-submenu" aria-label="应用">
+        <button class="nav-item nav-subitem" :class="{ 'is-active': activeSection === 'translate' }" @click="activeSection = 'translate'">
+          <Languages :size="15" :stroke-width="1.8" />
+          <span>翻译</span>
         </button>
       </nav>
 

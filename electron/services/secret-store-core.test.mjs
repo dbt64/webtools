@@ -28,11 +28,11 @@ test('serializes concurrent secret writes so independent credentials are not los
     await Promise.all([
       store.setSecret('ai-openai', 'openai-key'),
       store.setSecret('ai-deepseek', 'deepseek-key'),
-      store.setSecret('translation-google-cloud-basic', 'cloud-key'),
+      store.setSecret('ai-qwen', 'qwen-key'),
     ])
     assert.equal(await store.getSecret('ai-openai'), 'openai-key')
     assert.equal(await store.getSecret('ai-deepseek'), 'deepseek-key')
-    assert.equal(await store.getSecret('translation-google-cloud-basic'), 'cloud-key')
+    assert.equal(await store.getSecret('ai-qwen'), 'qwen-key')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

@@ -3,14 +3,13 @@ import { isAIProviderId } from '../../src/shared/ai-config.ts'
 import { isTranslationLanguage } from '../../src/shared/translation-contracts.ts'
 import type { IpcResult } from '../../src/shared/ipc'
 import { buildGoogleTranslateUrl } from '../services/google-translate'
-import type { AIProviderCredentialStore, SecretStorePort } from '../services/ai-credentials'
+import type { AIProviderCredentialStore } from '../services/ai-credentials'
 import type { SharedAIService } from '../services/shared-ai-service'
 import type { TranslationService } from '../services/translation-service'
 import { validateTranslationRequest } from '../services/translation-service'
 import { ServiceError } from '../services/service-error'
 import type { IpcSenderContext } from './window-security'
 
-const GOOGLE_CLOUD_SECRET_KEY = 'translation-google-cloud-basic'
 const MAX_API_KEY_LENGTH = 4096
 
 function fail<T>(code: string, message: string): IpcResult<T> { return { ok: false, error: { code, message } } }
@@ -28,7 +27,6 @@ export function registerTranslationIpcHandlers(deps: {
   translationService: TranslationService
   sharedAIService: SharedAIService
   aiCredentials: AIProviderCredentialStore
-  secretStore: SecretStorePort
   openExternal: (url: string) => Promise<void>
   isManagerMainFrame: (event: IpcSenderContext) => boolean
 }): () => void {
@@ -62,22 +60,6 @@ export function registerTranslationIpcHandlers(deps: {
     if (!deps.isManagerMainFrame(event)) return fail('UNAUTHORIZED', '当前窗口无权读取翻译服务状态。')
     try { return { ok: true, data: await deps.translationService.getProviderInfo() } }
     catch { return fail('TRANSLATION_STATUS_UNAVAILABLE', '无法读取翻译服务状态。') }
-  })
-  ipcMain.handle('translate:google-cloud-key-status', async (event): Promise<IpcResult<{ configured: boolean }>> => {
-    if (!deps.isManagerMainFrame(event)) return fail('UNAUTHORIZED', '当前窗口无权读取翻译凭证状态。')
-    try { return { ok: true, data: { configured: await deps.secretStore.hasSecret(GOOGLE_CLOUD_SECRET_KEY) } } }
-    catch { return fail('SECURE_STORAGE_UNAVAILABLE', 'Windows 安全存储不可用，无法读取 Google Cloud Key 状态。') }
-  })
-  ipcMain.handle('translate:google-cloud-save-key', async (event, apiKey: unknown): Promise<IpcResult<void>> => {
-    if (!deps.isManagerMainFrame(event)) return fail('UNAUTHORIZED', '当前窗口无权保存 Google Cloud API Key。')
-    if (typeof apiKey !== 'string' || !apiKey.trim() || apiKey.trim().length > MAX_API_KEY_LENGTH) return fail('INVALID_API_KEY', '请输入有效的 Google Cloud API Key。')
-    try { await deps.secretStore.setSecret(GOOGLE_CLOUD_SECRET_KEY, apiKey.trim()); return { ok: true, data: undefined } }
-    catch { return fail('SECURE_STORAGE_UNAVAILABLE', 'Windows 安全存储不可用，Google Cloud API Key 未保存。') }
-  })
-  ipcMain.handle('translate:google-cloud-clear-key', async (event): Promise<IpcResult<void>> => {
-    if (!deps.isManagerMainFrame(event)) return fail('UNAUTHORIZED', '当前窗口无权删除 Google Cloud API Key。')
-    try { await deps.secretStore.deleteSecret(GOOGLE_CLOUD_SECRET_KEY); return { ok: true, data: undefined } }
-    catch { return fail('SECURE_STORAGE_UNAVAILABLE', 'Windows 安全存储不可用，无法删除 Google Cloud API Key。') }
   })
   ipcMain.handle('translate:run', async (event, request: unknown): Promise<IpcResult<Awaited<ReturnType<TranslationService['translate']>>>> => {
     if (!deps.isManagerMainFrame(event)) return fail('UNAUTHORIZED', '当前窗口无权调用翻译服务。')

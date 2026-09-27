@@ -7,7 +7,7 @@ import { SecretStore } from './services/secret-store'
 import { AIProviderCredentialStore } from './services/ai-credentials'
 import { OpenAICompatibleAdapter } from './services/openai-compatible-adapter'
 import { AnthropicMessagesAdapter } from './services/anthropic-messages-adapter'
-import { GoogleCloudBasicAdapter } from './services/google-cloud-basic-adapter'
+import { MyMemoryAdapter } from './services/mymemory-adapter'
 import { QwenMtAdapter } from './services/qwen-mt-adapter'
 import { SharedAIService } from './services/shared-ai-service'
 import { TranslationService } from './services/translation-service'
@@ -361,8 +361,7 @@ app.whenReady().then(async () => {
     dataStore,
     sharedAI: sharedAIService,
     aiCredentials,
-    secretStore,
-    googleCloudAdapter: new GoogleCloudBasicAdapter(),
+    myMemoryAdapter: new MyMemoryAdapter(),
     qwenMtAdapter: new QwenMtAdapter(),
   })
   const appCatalog = new AppCatalogService()
@@ -393,7 +392,6 @@ app.whenReady().then(async () => {
     translationService,
     sharedAIService,
     aiCredentials,
-    secretStore,
     openExternal: openExternalUrl,
     isManagerMainFrame: (context) => isCurrentWindowMainFrame(context, managerWindow),
   })

@@ -1,5 +1,6 @@
-export const TRANSLATION_ENGINES = ['ai', 'google-cloud-basic', 'qwen-mt'] as const
+export const TRANSLATION_ENGINES = ['mymemory', 'ai', 'qwen-mt'] as const
 export type TranslationEngineId = typeof TRANSLATION_ENGINES[number]
+export const MYMEMORY_MAX_UTF8_BYTES = 500
 
 export const TRANSLATION_LANGUAGES = [
   { code: 'zh-CN', label: '简体中文', qwen: 'Chinese' },
@@ -65,7 +66,7 @@ export interface TranslationResult {
 }
 
 export function createDefaultTranslationSettings(): TranslationSettings {
-  return { engine: 'ai', sourceLanguage: 'auto', targetLanguage: 'zh-CN', qwenMtModel: 'qwen-mt-flash' }
+  return { engine: 'mymemory', sourceLanguage: 'auto', targetLanguage: 'zh-CN', qwenMtModel: 'qwen-mt-flash' }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -79,9 +80,11 @@ export function isTranslationLanguage(value: unknown): value is TranslationLangu
 export function normalizeTranslationSettings(value: unknown): TranslationSettings {
   const defaults = createDefaultTranslationSettings()
   if (!isRecord(value)) return defaults
-  const engine = (TRANSLATION_ENGINES as readonly unknown[]).includes(value.engine)
-    ? value.engine as TranslationEngineId
-    : defaults.engine
+  const engine = value.engine === 'google-cloud-basic'
+    ? 'mymemory'
+    : (TRANSLATION_ENGINES as readonly unknown[]).includes(value.engine)
+      ? value.engine as TranslationEngineId
+      : defaults.engine
   const sourceLanguage = value.sourceLanguage === 'auto' || isTranslationLanguage(value.sourceLanguage)
     ? value.sourceLanguage
     : defaults.sourceLanguage
