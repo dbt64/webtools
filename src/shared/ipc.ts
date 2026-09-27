@@ -14,6 +14,7 @@ export interface DesktopApi {
   getVersion(): Promise<string>
   getApps(): Promise<AppSearchEntry[]>
   refreshApps(): Promise<AppSearchEntry[]>
+  getAppIcon(id: string): Promise<IpcResult<{ dataUrl: string | null }>>
   launchApp(id: string): Promise<IpcResult<void>>
   openWebsite(id: string): Promise<IpcResult<void>>
   getSettings(): Promise<AppSettings>
@@ -49,6 +50,7 @@ export const IPC_CHANNELS = {
   getVersion: 'app:get-version',
   getApps: 'apps:list',
   refreshApps: 'apps:refresh',
+  getAppIcon: 'apps:get-icon',
   launchApp: 'apps:launch',
   openWebsite: 'websites:open',
   getSettings: 'settings:get',

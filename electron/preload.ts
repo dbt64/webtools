@@ -11,6 +11,7 @@ const desktopApi: DesktopApi = {
   getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.getVersion) as Promise<string>,
   getApps: () => ipcRenderer.invoke(IPC_CHANNELS.getApps) as Promise<Awaited<ReturnType<DesktopApi['getApps']>>>,
   refreshApps: () => ipcRenderer.invoke(IPC_CHANNELS.refreshApps) as Promise<Awaited<ReturnType<DesktopApi['refreshApps']>>>,
+  getAppIcon: (id) => ipcRenderer.invoke(IPC_CHANNELS.getAppIcon, id) as ReturnType<DesktopApi['getAppIcon']>,
   launchApp: (id) => ipcRenderer.invoke(IPC_CHANNELS.launchApp, id) as ReturnType<DesktopApi['launchApp']>,
   openWebsite: (id) => ipcRenderer.invoke(IPC_CHANNELS.openWebsite, id) as ReturnType<DesktopApi['openWebsite']>,
   getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getSettings) as ReturnType<DesktopApi['getSettings']>,
