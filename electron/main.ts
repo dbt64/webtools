@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, screen, dialog, type Rectangle, type WebContents } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import { IPC_CHANNELS, type IpcResult } from '../src/shared/ipc'
 import { DataStore } from './services/data-store'
 import { SecretStore } from './services/secret-store'
 import { AppCatalogService } from './services/app-catalog'
@@ -11,6 +13,7 @@ import { GlobalHotkeyService } from './services/global-hotkey'
 import { WebsiteService } from './services/website-service'
 import { WebsiteMetadataService } from './services/website-metadata'
 import { EverythingClient } from './services/everything-client'
+import { isValidTranslationText, TranslationPrefillQueue } from './services/translation-prefill'
 import { registerWindowIpcHandlers } from './ipc/window-handlers'
 import { registerAppIpcHandlers } from './ipc/app-handlers'
 import { registerWebsiteIpcHandlers } from './ipc/website-handlers'
@@ -25,6 +28,7 @@ app.setPath('userData', join(app.getPath('appData'), isDevelopment ? 'WebTools-D
 let dataStore: DataStore
 let secretStore: SecretStore
 let managerWindow: BrowserWindow | null = null
+const translationPrefillQueue = new TranslationPrefillQueue()
 let launcherWindow: BrowserWindow | null = null
 let launcherPositioned = false
 let launcherShown = false
@@ -47,6 +51,7 @@ function brandResourcePath(fileName: string): string {
 
 function createWindow(): void {
   if (managerWindow && !managerWindow.isDestroyed()) { managerWindow.show(); managerWindow.focus(); return }
+  translationPrefillQueue.resetReadiness()
   const window = new BrowserWindow({
     width: 1040,
     height: 720,
@@ -68,7 +73,15 @@ function createWindow(): void {
   window.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith('file:') && !url.startsWith('http://localhost:')) event.preventDefault()
   })
-  window.on('closed', () => { if (managerWindow === window) managerWindow = null })
+  window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) translationPrefillQueue.resetReadiness()
+  })
+  window.on('closed', () => {
+    if (managerWindow === window) {
+      translationPrefillQueue.resetReadiness()
+      managerWindow = null
+    }
+  })
   window.on('close', (event) => {
     if (!quitting) { event.preventDefault(); window.hide() }
   })
@@ -85,6 +98,46 @@ function createWindow(): void {
 function showManager(): void {
   if (!managerWindow || managerWindow.isDestroyed()) createWindow()
   else { managerWindow.show(); managerWindow.focus() }
+}
+
+function deliverTranslationPrefill(): void {
+  const window = managerWindow
+  const request = translationPrefillQueue.getReadyRequest()
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed() || !request) return
+  window.webContents.send(IPC_CHANNELS.translationPrefill, request)
+}
+
+function markManagerRendererReady(sender: WebContents): void {
+  const window = managerWindow
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed() || sender !== window.webContents) return
+  const request = translationPrefillQueue.markReady()
+  if (request) window.webContents.send(IPC_CHANNELS.translationPrefill, request)
+}
+
+function acknowledgeTranslationPrefill(sender: WebContents, id: unknown): void {
+  const window = managerWindow
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed() || sender !== window.webContents || typeof id !== 'string') return
+  translationPrefillQueue.acknowledge(id)
+}
+
+function openTranslation(sender: WebContents, text: unknown): IpcResult<void> {
+  if (!launcherWindow || launcherWindow.isDestroyed() || sender !== launcherWindow.webContents) {
+    return { ok: false, error: { code: 'INVALID_SENDER', message: '无法从当前窗口发起翻译。' } }
+  }
+  if (!isValidTranslationText(text)) {
+    return { ok: false, error: { code: 'INVALID_TRANSLATION_TEXT', message: '翻译内容不能为空且不能超过 20,000 个字符。' } }
+  }
+
+  const request = { id: randomUUID(), text }
+  translationPrefillQueue.enqueue(request)
+  try {
+    showManager()
+    deliverTranslationPrefill()
+    return { ok: true, data: undefined }
+  } catch {
+    translationPrefillQueue.discard(request.id)
+    return { ok: false, error: { code: 'MANAGER_UNAVAILABLE', message: '无法打开 WebTools 翻译窗口。' } }
+  }
 }
 
 function createLauncherReadiness(): LauncherReadiness {
@@ -289,7 +342,7 @@ app.whenReady().then(async () => {
   if (!shortcutResult.ok) console.warn(shortcutResult.error.message)
   setOpenAtLogin(dataStore.snapshot().settings.launchOnStartup)
   createTray()
-  registerWindowIpcHandlers({ showLauncher, hideLauncher, setLauncherExpanded: resizeLauncher, moveLauncherBy, markLauncherRendererReady, showManager })
+  registerWindowIpcHandlers({ showLauncher, hideLauncher, setLauncherExpanded: resizeLauncher, moveLauncherBy, markLauncherRendererReady, showManager, openTranslation, markManagerRendererReady, acknowledgeTranslationPrefill })
   registerAppIpcHandlers({ appCatalog, appLauncher })
   registerWebsiteIpcHandlers({ websiteService, websiteMetadata, bookmarkService })
   registerSettingsIpcHandlers({ dataStore, hotkeyService, setOpenAtLogin, openExternal: openExternalUrl })

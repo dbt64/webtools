@@ -30,6 +30,7 @@ export interface SearchEngine {
 
 export interface AppSearchEntry { id: string; name: string; aliases: string[]; source: 'desktop' | 'packaged' | 'system'; icon?: string }
 export interface EverythingResult { id: string; name: string; locationLabel: string; kind: 'file' | 'folder' }
+export interface TranslationPrefillRequest { id: string; text: string }
 
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type LauncherDisplayMode = 'compact' | 'expanded'
