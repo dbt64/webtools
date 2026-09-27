@@ -9,7 +9,7 @@ document.documentElement.classList.add('launcher-mode')
 async function startLauncher(): Promise<void> {
   let theme: ThemePreference = 'dark'
   try {
-    theme = (await window.desktop.getSettings()).theme
+    theme = await window.desktop.getThemePreference()
   } catch {
     // Keep the default palette if settings cannot be read during startup.
   }

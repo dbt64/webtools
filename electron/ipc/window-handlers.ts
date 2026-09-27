@@ -1,5 +1,6 @@
 import { ipcMain, type WebContents } from 'electron'
 import { IPC_CHANNELS, type IpcResult } from '../../src/shared/ipc'
+import type { IpcSenderContext } from './window-security'
 
 export function registerWindowIpcHandlers(deps: {
   showLauncher: () => void
@@ -8,14 +9,14 @@ export function registerWindowIpcHandlers(deps: {
   moveLauncherBy: (sender: WebContents, deltaX: number, deltaY: number) => void
   markLauncherRendererReady: (sender: WebContents) => void
   showManager: () => void
-  openTranslation: (sender: WebContents, text: unknown) => IpcResult<void>
+  openTranslation: (context: IpcSenderContext, text: unknown) => IpcResult<void>
   markManagerRendererReady: (sender: WebContents) => void
   acknowledgeTranslationPrefill: (sender: WebContents, id: unknown) => void
 }): void {
   ipcMain.handle('window:show-launcher', () => deps.showLauncher())
   ipcMain.handle('window:hide-launcher', () => deps.hideLauncher())
   ipcMain.on('window:launcher-ready', (event) => deps.markLauncherRendererReady(event.sender))
-  ipcMain.handle(IPC_CHANNELS.openTranslation, (event, text: unknown) => deps.openTranslation(event.sender, text))
+  ipcMain.handle(IPC_CHANNELS.openTranslation, (event, text: unknown) => deps.openTranslation(event, text))
   ipcMain.on(IPC_CHANNELS.managerReady, (event) => deps.markManagerRendererReady(event.sender))
   ipcMain.on(IPC_CHANNELS.acknowledgeTranslationPrefill, (event, id: unknown) => deps.acknowledgeTranslationPrefill(event.sender, id))
   ipcMain.handle('window:set-launcher-expanded', (_event, expanded: unknown, expandedSectionExtraHeight: unknown, hasSearchResults: unknown) => {
