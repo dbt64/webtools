@@ -1,4 +1,4 @@
-import type { AppSearchEntry, AppSettings, BookmarkFolder, WebsiteEntry, WebsiteSaveInput, EverythingResult } from './domain'
+import type { AppSearchEntry, AppSettings, BookmarkFolder, WebsiteEntry, WebsiteSaveInput, EverythingResult, TranslationPrefillRequest } from './domain'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -11,10 +11,17 @@ export interface DesktopApi {
   setLauncherExpanded(expanded: boolean, expandedSectionExtraHeight?: number, hasSearchResults?: boolean): Promise<void>
   moveLauncherBy(deltaX: number, deltaY: number): void
   showManager(): Promise<void>
+  openTranslation(text: string): Promise<IpcResult<void>>
+  managerReady(): void
+  onTranslationPrefill(handler: (request: TranslationPrefillRequest) => void): () => void
+  acknowledgeTranslationPrefill(id: string): void
   getVersion(): Promise<string>
   getApps(): Promise<AppSearchEntry[]>
   refreshApps(): Promise<AppSearchEntry[]>
+  getAppIcon(id: string): Promise<IpcResult<{ dataUrl: string | null }>>
   launchApp(id: string): Promise<IpcResult<void>>
+  getRememberedAppSearchAppId(query: string): Promise<string | null>
+  rememberAppSearchResult(query: string, appId: string): Promise<IpcResult<void>>
   openWebsite(id: string): Promise<IpcResult<void>>
   getSettings(): Promise<AppSettings>
   updateSettings(settings: Partial<AppSettings>): Promise<IpcResult<AppSettings>>
@@ -46,10 +53,17 @@ export const IPC_CHANNELS = {
   setLauncherExpanded: 'window:set-launcher-expanded',
   moveLauncherBy: 'window:move-launcher-by',
   showManager: 'window:show-manager',
+  openTranslation: 'window:open-translation',
+  managerReady: 'window:manager-ready',
+  translationPrefill: 'window:translation-prefill',
+  acknowledgeTranslationPrefill: 'window:acknowledge-translation-prefill',
   getVersion: 'app:get-version',
   getApps: 'apps:list',
   refreshApps: 'apps:refresh',
+  getAppIcon: 'apps:get-icon',
   launchApp: 'apps:launch',
+  getRememberedAppSearchAppId: 'apps:get-remembered-search-result',
+  rememberAppSearchResult: 'apps:remember-search-result',
   openWebsite: 'websites:open',
   getSettings: 'settings:get',
   updateSettings: 'settings:update',

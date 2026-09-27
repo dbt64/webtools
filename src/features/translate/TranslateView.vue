@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Check, Copy, ExternalLink, Languages, Sparkles } from '@lucide/vue'
+import type { TranslationPrefillRequest } from '@/shared/domain'
 
 const emit = defineEmits<{ settings: [] }>()
+const props = defineProps<{ prefill: TranslationPrefillRequest | null }>()
 const sourceText = ref('')
 const translation = ref('')
 const targetLanguage = ref('zh-CN')
@@ -10,6 +12,7 @@ const loading = ref(false)
 const errorMessage = ref('')
 const copied = ref(false)
 const canTranslate = computed(() => Boolean(sourceText.value.trim()) && !loading.value)
+let contentGeneration = 0
 const languages = [
   { value: 'zh-CN', label: '简体中文' },
   { value: 'zh-TW', label: '繁體中文' },
@@ -21,38 +24,56 @@ const languages = [
   { value: 'es', label: '西班牙语' },
 ]
 
+watch(() => props.prefill?.id, () => {
+  const prefill = props.prefill
+  if (!prefill) return
+  contentGeneration += 1
+  sourceText.value = prefill.text
+  translation.value = ''
+  errorMessage.value = ''
+  copied.value = false
+  loading.value = false
+}, { immediate: true })
+
 async function translate(): Promise<void> {
+  const generation = contentGeneration
+  const text = sourceText.value
   loading.value = true
   errorMessage.value = ''
   translation.value = ''
   try {
-    const result = await window.desktop.translateWithAi({ text: sourceText.value, targetLanguage: targetLanguage.value })
+    const result = await window.desktop.translateWithAi({ text, targetLanguage: targetLanguage.value })
+    if (generation !== contentGeneration) return
     if (result.ok) translation.value = result.data.translation
     else errorMessage.value = result.error.message
   } catch {
-    errorMessage.value = '翻译请求未能完成，请重试。'
+    if (generation === contentGeneration) errorMessage.value = '翻译请求未能完成，请重试。'
   } finally {
-    loading.value = false
+    if (generation === contentGeneration) loading.value = false
   }
 }
 
 async function openGoogle(): Promise<void> {
+  const generation = contentGeneration
   errorMessage.value = ''
   try {
     const result = await window.desktop.openGoogleTranslate({ text: sourceText.value, targetLanguage: targetLanguage.value })
+    if (generation !== contentGeneration) return
     if (!result.ok) errorMessage.value = result.error.message
   } catch {
-    errorMessage.value = '无法打开 Google Translate，请重试。'
+    if (generation === contentGeneration) errorMessage.value = '无法打开 Google Translate，请重试。'
   }
 }
 
 async function copyResult(): Promise<void> {
+  const generation = contentGeneration
   try {
     await navigator.clipboard.writeText(translation.value)
+    if (generation !== contentGeneration) return
     copied.value = true
-    window.setTimeout(() => { copied.value = false }, 1500)
+    window.setTimeout(() => { if (generation === contentGeneration) copied.value = false }, 1500)
   } catch {
-    errorMessage.value = '无法访问剪贴板，请手动复制译文。'
+    if (generation === contentGeneration) errorMessage.value = '无法访问剪贴板，请手动复制译文。'
   }
 }
 </script>

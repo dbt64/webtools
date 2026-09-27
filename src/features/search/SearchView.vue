@@ -6,8 +6,10 @@ import {
 import { createDefaultAppData, type AppSearchEntry, type AppSettings, type SearchEngine, type WebsiteEntry, type EverythingResult } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry, type SearchResult as SearchResultItem } from '@/shared/search'
-import { parseSearchCommand } from '@/shared/search-command'
+import { promoteRememberedAppResult } from '@/shared/app-search-memory'
+import { parseManagerSearchCommand } from '@/shared/search-command'
 import SearchResult from './SearchResult.vue'
+import { useAppResultIcons } from './use-app-result-icons'
 import BookmarkDialog from '../bookmarks/BookmarkDialog.vue'
 import type { BookmarkFolder } from '@/shared/domain'
 
@@ -34,8 +36,10 @@ const savingBookmark = ref(false)
 const refreshing = ref(false)
 const fileResults = ref<EverythingResult[]>([])
 const fileStatus = ref('')
+const rememberedAppId = ref<string | null>(null)
 let fileSearchSequence = 0
-const parsed = computed(() => parseSearchCommand(query.value))
+let appMemoryLookupGeneration = 0
+const parsed = computed(() => parseManagerSearchCommand(query.value))
 const isWebSearch = computed(() => parsed.value.mode === 'web')
 const isFileSearch = computed(() => parsed.value.mode === 'files')
 const enabledEngines = computed(() => settings.value.searchEngines.filter((engine) => engine.enabled).sort((a, b) => a.order - b.order))
@@ -105,12 +109,18 @@ const searchableEntries = computed<SearchableEntry[]>(() => [
   ...webEntries.value.map((entry) => ({ id: entry.id, name: entry.name, kind: 'website' as const, subtitle: entry.url, url: entry.url, folderIds: entry.folderIds, searchText: `${entry.url} ${entry.description ?? ''}` })),
 ])
 const index = computed(() => buildSearchIndex(searchableEntries.value))
-const results = computed(() => parsed.value.mode !== 'local' ? [] : searchEntries(parsed.value.query, searchableEntries.value, index.value))
+const results = computed(() => parsed.value.mode !== 'local' ? [] : promoteRememberedAppResult(
+  searchEntries(parsed.value.query, searchableEntries.value, index.value),
+  rememberedAppId.value,
+))
+const visibleAppIds = computed(() => results.value.flatMap((result) => result.entry.kind === 'app' ? [result.entry.id] : []))
+const appIcons = useAppResultIcons(visibleAppIds)
 const selectableCount = computed(() => isFileSearch.value ? fileResults.value.length : results.value.length)
 const resultGroups = computed(() => [
   { kind: 'app' as const, label: '应用', items: results.value.filter((result) => result.entry.kind === 'app') },
   { kind: 'website' as const, label: '网址', items: results.value.filter((result) => result.entry.kind === 'website') },
 ].filter((group) => group.items.length))
+watch(results, () => { selectedIndex.value = 0 })
 
 async function loadApps(refresh = false): Promise<void> {
   refreshing.value = refresh
@@ -154,10 +164,16 @@ async function launchSelected(): Promise<void> {
     return
   }
   if (!selected) return
+  const rememberedQuery = selected.entry.kind === 'app' && parsed.value.mode === 'local' && !query.value.startsWith('/')
+    ? parsed.value.query
+    : ''
   const result = selected.entry.kind === 'app'
     ? await window.desktop.launchApp(selected.entry.id)
     : await window.desktop.openWebsite(selected.entry.id)
   if (!result.ok) window.alert(result.error.message)
+  else if (selected.entry.kind === 'app' && rememberedQuery) {
+    try { await window.desktop.rememberAppSearchResult(rememberedQuery, selected.entry.id) } catch { /* Launch succeeded; remembering the query must not change its outcome. */ }
+  }
 }
 
 function handleKeydown(event: KeyboardEvent): void {
@@ -211,7 +227,16 @@ async function saveBookmark(input: { folderId?: string; newFolderName?: string }
 watch(query, (value) => {
   selectedIndex.value = 0
   const sequence = ++fileSearchSequence
-  const command = parseSearchCommand(value)
+  const command = parseManagerSearchCommand(value)
+  const memoryGeneration = ++appMemoryLookupGeneration
+  rememberedAppId.value = null
+  if (command.mode === 'local' && !value.startsWith('/') && command.query) {
+    const requestedQuery = command.query
+    void window.desktop.getRememberedAppSearchAppId(requestedQuery).then((appId) => {
+      if (memoryGeneration !== appMemoryLookupGeneration || parsed.value.mode !== 'local' || parsed.value.query !== requestedQuery || query.value.startsWith('/')) return
+      rememberedAppId.value = appId
+    }).catch(() => undefined)
+  }
   fileResults.value = []
   fileStatus.value = ''
   if (command.mode !== 'files') return
@@ -321,6 +346,8 @@ onUnmounted(() => document.removeEventListener('pointerdown', handleOutsidePoint
           :key="`${result.entry.kind}-${result.entry.id}`"
           :result="result"
           :selected="resultIndex(result) === selectedIndex"
+          :query="parsed.query"
+          :icon-url="result.entry.kind === 'app' ? appIcons[result.entry.id] : undefined"
           @select="launchSelected"
           @bookmark="addSearchResultBookmark(result)"
           @mouseenter="selectedIndex = resultIndex(result)"

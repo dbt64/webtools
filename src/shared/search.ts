@@ -1,4 +1,5 @@
-import { normalizeSearchText, type SearchIndex } from './pinyin-index'
+import type { SearchIndex } from './pinyin-index'
+import { normalizeSearchText } from './search-normalization'
 
 export interface SearchableEntry {
   id: string
@@ -15,6 +16,8 @@ export interface SearchResult<T extends SearchableEntry = SearchableEntry> {
   match: 'name' | 'alias' | 'pinyin' | 'initials'
 }
 
+export interface SearchHighlightPart { text: string; highlighted: boolean }
+
 function matchesWordInitials(queryTokens: string[], nameTokens: string[], queryIndex = 0, nameIndex = 0): boolean {
   if (queryIndex === queryTokens.length) return true
   if (nameIndex >= nameTokens.length) return false
@@ -26,6 +29,33 @@ function matchesWordInitials(queryTokens: string[], nameTokens: string[], queryI
     if (initials === queryToken && matchesWordInitials(queryTokens, nameTokens, queryIndex + 1, end + 1)) return true
   }
   return false
+}
+
+export function getSearchHighlightParts(name: string, query: string): SearchHighlightPart[] {
+  const normalizedQuery = normalizeSearchText(query)
+  if (!normalizedQuery) return [{ text: name, highlighted: false }]
+  const nameMatches = [...name.matchAll(/[\p{L}\p{N}]+/gu)]
+  const initials = nameMatches.flatMap((token) => {
+    const first = [...(token?.[0] ?? '')][0] ?? ''
+    if (!token || !first || !/[\p{Script=Latin}\p{N}]/u.test(first)) return []
+    const start = token.index ?? 0
+    const normalized = normalizeSearchText(first)
+    return normalized.length === 1 ? [{ normalized, start, end: start + first.length }] : []
+  })
+  const acronym = initials.map((initial) => initial.normalized).join('')
+  const matchedStart = acronym.indexOf(normalizedQuery)
+  if (matchedStart < 0) return [{ text: name, highlighted: false }]
+
+  const matchedInitials = initials.slice(matchedStart, matchedStart + normalizedQuery.length)
+  const parts: SearchHighlightPart[] = []
+  let position = 0
+  for (const initial of matchedInitials) {
+    if (initial.start > position) parts.push({ text: name.slice(position, initial.start), highlighted: false })
+    parts.push({ text: name.slice(initial.start, initial.end), highlighted: true })
+    position = initial.end
+  }
+  if (position < name.length) parts.push({ text: name.slice(position), highlighted: false })
+  return parts
 }
 
 export function searchEntries<T extends SearchableEntry>(query: string, entries: T[], index: SearchIndex): SearchResult<T>[] {

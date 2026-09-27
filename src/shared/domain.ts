@@ -28,8 +28,11 @@ export interface SearchEngine {
   order: number
 }
 
-export interface AppSearchEntry { id: string; name: string; aliases: string[]; source: 'desktop' | 'packaged'; icon?: string }
+export interface AppSearchEntry { id: string; name: string; aliases: string[]; source: 'desktop' | 'packaged' | 'system'; icon?: string }
 export interface EverythingResult { id: string; name: string; locationLabel: string; kind: 'file' | 'folder' }
+export interface TranslationPrefillRequest { id: string; text: string }
+export interface AppSearchMemoryEntry { appId: string; lastUsedAt: number }
+export type AppSearchMemory = Record<string, AppSearchMemoryEntry>
 
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type LauncherDisplayMode = 'compact' | 'expanded'
@@ -53,6 +56,7 @@ export interface AppData {
   webEntries: WebsiteEntry[]
   bookmarkFolders: BookmarkFolder[]
   settings: AppSettings
+  appSearchMemory: AppSearchMemory
 }
 
 export const DEFAULT_SEARCH_ENGINES: SearchEngine[] = [
@@ -65,6 +69,7 @@ export const DEFAULT_APP_DATA: AppData = {
   version: 2,
   webEntries: [],
   bookmarkFolders: [],
+  appSearchMemory: {},
   settings: {
     searchEngines: DEFAULT_SEARCH_ENGINES,
     defaultSearchEngineId: 'google',

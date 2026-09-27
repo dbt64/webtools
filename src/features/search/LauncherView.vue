@@ -2,21 +2,35 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { ArrowDown, ArrowUp, ArrowUpRight, BookmarkPlus, Command, CornerDownLeft, File, Folder, Globe, Languages, Search } from '@lucide/vue'
 import type { AppSearchEntry, BookmarkFolder, WebsiteEntry, EverythingResult, LauncherDisplayMode, ThemePreference } from '@/shared/domain'
+import type { IpcResult } from '@/shared/ipc'
 import logoDark from '@/assets/brand/logo-dark.svg'
 import logoLight from '@/assets/brand/logo-light.svg'
 import { buildSearchIndex } from '@/shared/pinyin-index'
-import { searchEntries, type SearchableEntry } from '@/shared/search'
+import { searchEntries, type SearchableEntry, type SearchResult } from '@/shared/search'
+import { promoteRememberedAppResult } from '@/shared/app-search-memory'
 import { parseSearchCommand } from '@/shared/search-command'
+import { appendTranslationAction, type SearchMatch, type TranslationAction } from './launcher-results'
+import { useAppResultIcons } from './use-app-result-icons'
+import SearchResultName from './SearchResultName.vue'
 import { applyTheme } from '@/shared/theme'
 import BookmarkDialog from '../bookmarks/BookmarkDialog.vue'
 import Favicon from '../bookmarks/Favicon.vue'
 
-interface LauncherEntry extends SearchableEntry { favicon?: string; url?: string }
+interface LauncherEntry extends Omit<SearchableEntry, 'kind'> { kind: 'app' | 'website'; favicon?: string; url?: string }
+type LauncherAction =
+  | { kind: 'application'; id: string; name: string; subtitle: string; match: SearchMatch }
+  | { kind: 'website'; id: string; name: string; subtitle: string; url: string; favicon?: string; folderIds: string[]; match: SearchMatch }
+  | { kind: 'file'; id: string; name: string; locationLabel: string; fileKind: EverythingResult['kind'] }
+  | TranslationAction
+type SearchAction = Exclude<LauncherAction, { kind: 'file' }>
+type WebsiteAction = Extract<LauncherAction, { kind: 'website' }>
+type BookmarkTarget = Pick<WebsiteAction, 'id' | 'name' | 'folderIds'>
 interface LauncherApplication { id: string; name: string; icon: Component }
 const applications = ref<LauncherApplication[]>([{ id: 'translate', name: '翻译', icon: Languages }])
 const query = ref('')
 const apps = ref<AppSearchEntry[]>([])
 const websites = ref<WebsiteEntry[]>([])
+const rememberedAppId = ref<string | null>(null)
 const folders = ref<BookmarkFolder[]>([])
 const selectedIndex = ref(0)
 const input = ref<HTMLInputElement>()
@@ -39,7 +53,7 @@ let dragStarted = false
 let dragBar: HTMLElement | undefined
 let capturedClickWasDrag = false
 let inputSelection: { start: number | null; end: number | null } | undefined
-const bookmarkTarget = ref<LauncherEntry>()
+const bookmarkTarget = ref<BookmarkTarget>()
 const showBookmarkDialog = ref(false)
 const savingBookmark = ref(false)
 const expanded = ref(false)
@@ -48,13 +62,64 @@ const applicationsExpanded = ref(false)
 const parsed = computed(() => parseSearchCommand(query.value))
 const isWeb = computed(() => parsed.value.mode === 'web')
 const isFiles = computed(() => parsed.value.mode === 'files')
+let appMemoryLookupGeneration = 0
+const websiteEntries = computed<LauncherEntry[]>(() => websites.value.map((site) => ({
+  id: site.id,
+  name: site.name,
+  aliases: [site.url],
+  kind: 'website',
+  subtitle: site.url,
+  url: site.url,
+  favicon: site.favicon,
+  folderIds: site.folderIds,
+  searchText: site.description ?? '',
+})))
 const entries = computed<LauncherEntry[]>(() => [
   ...apps.value.map((app) => ({ id: app.id, name: app.name, aliases: app.aliases, kind: 'app' as const, subtitle: '本地应用' })),
-  ...websites.value.map((site) => ({ id: site.id, name: site.name, kind: 'website' as const, subtitle: site.url, url: site.url, favicon: site.favicon, folderIds: site.folderIds, searchText: site.description ?? '' })),
+  ...websiteEntries.value,
 ])
 const index = computed(() => buildSearchIndex(entries.value))
-const results = computed(() => parsed.value.mode !== 'local' ? [] : searchEntries(parsed.value.query, entries.value, index.value).slice(0, 8))
-const selectableCount = computed(() => isFiles.value ? fileResults.value.length : results.value.length)
+function assertNever(value: never): never { throw new Error(`Unsupported launcher action: ${String(value)}`) }
+
+function toLauncherAction(result: SearchResult<LauncherEntry>): Exclude<LauncherAction, { kind: 'file' } | TranslationAction> {
+  const { entry, match } = result
+  switch (entry.kind) {
+    case 'app': return { kind: 'application', id: entry.id, name: entry.name, subtitle: entry.subtitle, match }
+    case 'website': return {
+      kind: 'website', id: entry.id, name: entry.name, subtitle: entry.subtitle,
+      url: entry.url ?? '', favicon: entry.favicon, folderIds: entry.folderIds ?? [], match,
+    }
+    default: return assertNever(entry.kind)
+  }
+}
+
+const searchRows = computed<SearchAction[]>(() => {
+  if (isWeb.value || isFiles.value) return []
+  const candidates = parsed.value.mode === 'saved-websites' ? websiteEntries.value : entries.value
+  const matches = searchEntries(parsed.value.query, candidates, index.value)
+  const ranked = parsed.value.mode === 'local' ? promoteRememberedAppResult(matches, rememberedAppId.value) : matches
+  return ranked.slice(0, 8).map(toLauncherAction)
+})
+watch(parsed, (command) => {
+  const generation = ++appMemoryLookupGeneration
+  rememberedAppId.value = null
+  if (command.mode !== 'local' || !command.query) return
+  const requestedQuery = command.query
+  void window.desktop.getRememberedAppSearchAppId(requestedQuery).then((appId) => {
+    if (generation !== appMemoryLookupGeneration || parsed.value.mode !== 'local' || parsed.value.query !== requestedQuery) return
+    rememberedAppId.value = appId
+  }).catch(() => undefined)
+}, { immediate: true })
+const launcherActions = computed(() => appendTranslationAction(searchRows.value, query.value, parsed.value.mode))
+const visibleFileActions = computed<Extract<LauncherAction, { kind: 'file' }>[]>(() => fileResults.value.slice(0, 8).map((file) => ({
+  kind: 'file', id: file.id, name: file.name, locationLabel: file.locationLabel, fileKind: file.kind,
+})))
+const selectableActions = computed<LauncherAction[]>(() => isFiles.value ? visibleFileActions.value : isWeb.value ? [] : launcherActions.value)
+const selectableCount = computed(() => selectableActions.value.length)
+const visibleAppIds = computed(() => launcherActions.value.flatMap((action) => action.kind === 'application' ? [action.id] : []))
+const appIcons = useAppResultIcons(visibleAppIds)
+
+watch(selectableActions, () => { selectedIndex.value = 0 })
 
 watch(selectedIndex, async () => {
   await nextTick()
@@ -209,22 +274,29 @@ async function submit(): Promise<void> {
     await hide()
     return
   }
-  if (isFiles.value) {
-    const item = fileResults.value[selectedIndex.value]
-    if (!item) return
-    const result = await window.desktop.openEverythingResult(item.id)
-    if (!result.ok) { error.value = result.error.message; return }
-    await hide()
-    return
+  const action = selectableActions.value[selectedIndex.value]
+  if (!action) return
+  await dispatchAction(action)
+}
+
+async function dispatchAction(action: LauncherAction): Promise<void> {
+  const searchQuery = action.kind === 'application' && parsed.value.mode === 'local' ? parsed.value.query : ''
+  let result: IpcResult<void>
+  switch (action.kind) {
+    case 'application': result = await window.desktop.launchApp(action.id); break
+    case 'website': result = await window.desktop.openWebsite(action.id); break
+    case 'file': result = await window.desktop.openEverythingResult(action.id); break
+    case 'translation': result = await window.desktop.openTranslation(action.text); break
+    default: return assertNever(action)
   }
-  const item = results.value[selectedIndex.value]
-  if (!item) return
-  const result = item.entry.kind === 'app' ? await window.desktop.launchApp(item.entry.id) : await window.desktop.openWebsite(item.entry.id)
   if (!result.ok) { error.value = result.error.message; return }
+  if (action.kind === 'application' && searchQuery) {
+    try { await window.desktop.rememberAppSearchResult(searchQuery, action.id) } catch { /* Launch succeeded; remembering the query must not change its outcome. */ }
+  }
   await hide()
 }
 
-async function promptBookmark(entry: LauncherEntry): Promise<void> {
+async function promptBookmark(entry: WebsiteAction): Promise<void> {
   bookmarkTarget.value = entry
   folders.value = await window.desktop.listBookmarkFolders()
   showBookmarkDialog.value = true
@@ -239,8 +311,9 @@ async function saveBookmark(input: { folderId?: string; newFolderName?: string }
       if (!result.ok) { error.value = result.error.message; return }
       folderId = result.data.id
     }
-    if (!folderId) return
-    const result = await window.desktop.addWebsiteToFolders(bookmarkTarget.value!.id, [...new Set([...(bookmarkTarget.value?.folderIds ?? []), folderId])])
+    const target = bookmarkTarget.value
+    if (!folderId || !target) return
+    const result = await window.desktop.addWebsiteToFolders(target.id, [...new Set([...target.folderIds, folderId])])
     if (!result.ok) { error.value = result.error.message; return }
     websites.value = await window.desktop.listWebsites()
     showBookmarkDialog.value = false
@@ -358,24 +431,30 @@ onBeforeUnmount(() => {
       <section v-if="query.trim()" ref="resultsPanel" class="launcher-results launcher-scrollable">
         <div v-if="isWeb" class="launcher-hint"><Globe :size="16" /><span>{{ parsed.query ? `使用默认搜索引擎搜索“${parsed.query}”` : '输入关键词后按 Enter 搜索网页' }}</span><kbd>Enter ↵</kbd></div>
         <template v-else-if="isFiles">
-          <button v-for="(result, idx) in fileResults.slice(0, 8)" :key="result.id" class="launcher-result" :class="{ selected: selectedIndex === idx }" @mousedown.prevent @mouseenter="selectedIndex = idx" @click="submit">
-            <span class="launcher-result-icon file-result-icon"><Folder v-if="result.kind === 'folder'" :size="17" /><File v-else :size="17" /></span>
+          <button v-for="(result, idx) in visibleFileActions" :key="`file:${result.id}`" class="launcher-result" :class="{ selected: selectedIndex === idx }" @mousedown.prevent @mouseenter="selectedIndex = idx" @click="dispatchAction(result)">
+            <span class="launcher-result-icon file-result-icon"><Folder v-if="result.fileKind === 'folder'" :size="17" /><File v-else :size="17" /></span>
             <span class="launcher-result-copy"><strong>{{ result.name }}</strong><small>{{ result.locationLabel }}</small></span>
             <CornerDownLeft v-if="selectedIndex === idx" :size="15" class="launcher-enter-icon" />
           </button>
           <div v-if="fileStatus" class="launcher-empty">{{ fileStatus }}</div>
         </template>
         <template v-else>
-          <div v-for="(result, idx) in results" :key="result.entry.id" class="launcher-result-wrap">
-            <button class="launcher-result" :class="{ selected: selectedIndex === idx }" @mousedown.prevent @mouseenter="selectedIndex = idx" @click="submit">
-              <span class="launcher-result-icon"><Favicon v-if="result.entry.kind === 'website'" :url="result.entry.url ?? ''" :favicon="result.entry.favicon" /><Command v-else :size="17" /></span>
-              <span class="launcher-result-copy"><strong>{{ result.entry.name }}</strong><small>{{ result.entry.subtitle }}</small></span>
-              <span class="launcher-result-match" v-if="result.match !== 'name'">{{ result.match === 'pinyin' ? '拼音' : result.match === 'alias' ? '别名' : '首字母' }}</span>
+          <div v-for="(result, idx) in launcherActions" :key="result.kind + ':' + (result.kind === 'translation' ? 'translate' : result.id)" class="launcher-result-wrap">
+            <button class="launcher-result" :class="{ selected: selectedIndex === idx }" @mousedown.prevent @mouseenter="selectedIndex = idx" @click="dispatchAction(result)">
+              <span class="launcher-result-icon">
+                <img v-if="result.kind === 'application' && appIcons[result.id]" class="favicon-image" :src="appIcons[result.id]" alt="" />
+                <Favicon v-else-if="result.kind === 'website'" :url="result.url" :favicon="result.favicon" />
+                <Languages v-else-if="result.kind === 'translation'" :size="17" />
+                <Command v-else :size="17" />
+              </span>
+              <span class="launcher-result-copy"><SearchResultName :name="result.name" :query="parsed.query" /><small>{{ result.subtitle }}</small></span>
+              <span v-if="(result.kind === 'application' || result.kind === 'website') && result.match !== 'name'" class="launcher-result-match">{{ result.match === 'pinyin' ? '拼音' : result.match === 'alias' ? '别名' : '首字母' }}</span>
               <CornerDownLeft v-if="selectedIndex === idx" :size="15" class="launcher-enter-icon" />
             </button>
-            <button v-if="result.entry.kind === 'website'" class="launcher-add" title="添加到收藏夹" @mousedown.prevent @click="promptBookmark(result.entry)"><BookmarkPlus :size="16" /></button>
+            <button v-if="result.kind === 'website'" class="launcher-add" title="添加到收藏夹" @mousedown.prevent @click="promptBookmark(result)"><BookmarkPlus :size="16" /></button>
           </div>
-          <div v-if="!results.length" class="launcher-empty">没有找到匹配的应用</div>
+          <div v-if="!launcherActions.length && parsed.mode === 'saved-websites' && !parsed.query" class="launcher-empty">输入网址名称或网址片段，搜索已收藏的网址。</div>
+          <div v-else-if="!launcherActions.length" class="launcher-empty">{{ parsed.mode === 'saved-websites' ? '没有找到匹配的收藏网址' : '没有找到匹配的应用或网址' }}</div>
         </template>
         <p v-if="error" class="launcher-error">{{ error }}</p>
       </section>

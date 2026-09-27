@@ -1,4 +1,7 @@
 import { pinyin } from 'pinyin-pro'
+import { normalizeSearchText } from './search-normalization'
+
+export { normalizeSearchText } from './search-normalization'
 
 export interface PinyinEntry {
   normalizedName: string
@@ -11,14 +14,6 @@ export interface PinyinEntry {
 }
 
 export type SearchIndex = Map<string, PinyinEntry>
-
-export function normalizeSearchText(value: string): string {
-  return value
-    .normalize('NFKD')
-    .replace(/\p{M}/gu, '')
-    .toLocaleLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '')
-}
 
 export function buildSearchIndex<T extends { id: string; name: string; searchText?: string; aliases?: string[] }>(entries: T[]): SearchIndex {
   return new Map(entries.map((entry) => {

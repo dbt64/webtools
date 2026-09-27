@@ -8,10 +8,26 @@ const desktopApi: DesktopApi = {
   setLauncherExpanded: (expanded, expandedSectionExtraHeight, hasSearchResults) => ipcRenderer.invoke(IPC_CHANNELS.setLauncherExpanded, expanded, expandedSectionExtraHeight, hasSearchResults) as Promise<void>,
   moveLauncherBy: (deltaX, deltaY) => ipcRenderer.send(IPC_CHANNELS.moveLauncherBy, deltaX, deltaY),
   showManager: () => ipcRenderer.invoke(IPC_CHANNELS.showManager) as Promise<void>,
+  openTranslation: (text) => ipcRenderer.invoke(IPC_CHANNELS.openTranslation, text) as ReturnType<DesktopApi['openTranslation']>,
+  managerReady: () => ipcRenderer.send(IPC_CHANNELS.managerReady),
+  onTranslationPrefill: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, request: unknown): void => {
+      if (typeof request !== 'object' || request === null) return
+      const payload = request as Record<string, unknown>
+      if (typeof payload.id !== 'string' || typeof payload.text !== 'string') return
+      handler({ id: payload.id, text: payload.text })
+    }
+    ipcRenderer.on(IPC_CHANNELS.translationPrefill, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.translationPrefill, listener)
+  },
+  acknowledgeTranslationPrefill: (id) => ipcRenderer.send(IPC_CHANNELS.acknowledgeTranslationPrefill, id),
   getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.getVersion) as Promise<string>,
   getApps: () => ipcRenderer.invoke(IPC_CHANNELS.getApps) as Promise<Awaited<ReturnType<DesktopApi['getApps']>>>,
   refreshApps: () => ipcRenderer.invoke(IPC_CHANNELS.refreshApps) as Promise<Awaited<ReturnType<DesktopApi['refreshApps']>>>,
+  getAppIcon: (id) => ipcRenderer.invoke(IPC_CHANNELS.getAppIcon, id) as ReturnType<DesktopApi['getAppIcon']>,
   launchApp: (id) => ipcRenderer.invoke(IPC_CHANNELS.launchApp, id) as ReturnType<DesktopApi['launchApp']>,
+  getRememberedAppSearchAppId: (query) => ipcRenderer.invoke(IPC_CHANNELS.getRememberedAppSearchAppId, query) as ReturnType<DesktopApi['getRememberedAppSearchAppId']>,
+  rememberAppSearchResult: (query, appId) => ipcRenderer.invoke(IPC_CHANNELS.rememberAppSearchResult, query, appId) as ReturnType<DesktopApi['rememberAppSearchResult']>,
   openWebsite: (id) => ipcRenderer.invoke(IPC_CHANNELS.openWebsite, id) as ReturnType<DesktopApi['openWebsite']>,
   getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getSettings) as ReturnType<DesktopApi['getSettings']>,
   updateSettings: (settings) => ipcRenderer.invoke(IPC_CHANNELS.updateSettings, settings) as ReturnType<DesktopApi['updateSettings']>,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   CircleHelp, Compass, Languages, Search, Settings2, SlidersHorizontal,
 } from '@lucide/vue'
@@ -9,10 +9,13 @@ import SearchView from './features/search/SearchView.vue'
 import EntriesView from './features/entries/EntriesView.vue'
 import SettingsView from './features/settings/SettingsView.vue'
 import TranslateView from './features/translate/TranslateView.vue'
+import type { TranslationPrefillRequest } from './shared/domain'
 
 type Section = 'search' | 'entries' | 'translate' | 'settings'
 
 const activeSection = ref<Section>('search')
+const translationPrefill = ref<TranslationPrefillRequest | null>(null)
+let removeTranslationPrefillListener: (() => void) | undefined
 
 const navItems: { id: Section; label: string; icon: typeof Search }[] = [
   { id: 'search', label: '快速搜索', icon: Search },
@@ -30,6 +33,20 @@ function focusSearch(): void {
 function navigateFromSearch(section: Exclude<Section, 'search'>): void {
   activeSection.value = section
 }
+
+onMounted(() => {
+  removeTranslationPrefillListener = window.desktop.onTranslationPrefill((request) => {
+    translationPrefill.value = request
+    activeSection.value = 'translate'
+    void nextTick().then(() => {
+      window.desktop.acknowledgeTranslationPrefill(request.id)
+      if (translationPrefill.value?.id === request.id) translationPrefill.value = null
+    })
+  })
+  window.desktop.managerReady()
+})
+
+onBeforeUnmount(() => removeTranslationPrefillListener?.())
 
 </script>
 
@@ -87,7 +104,7 @@ function navigateFromSearch(section: Exclude<Section, 'search'>): void {
       <SearchView v-if="activeSection === 'search'" @navigate="navigateFromSearch" />
       <EntriesView v-else-if="activeSection === 'entries'" class="entry-manager" />
       <SettingsView v-else-if="activeSection === 'settings'" />
-      <TranslateView v-else-if="activeSection === 'translate'" @settings="activeSection = 'settings'" />
+      <TranslateView v-else-if="activeSection === 'translate'" :prefill="translationPrefill" @settings="activeSection = 'settings'" />
 
       <section v-else class="section-placeholder">
         <div class="section-symbol">

@@ -1,8 +1,9 @@
 import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type AppSettings, type BookmarkFolder, type WebsiteEntry } from '../../src/shared/domain'
+import { sanitizeAppSearchMemory } from '../../src/shared/app-search-memory'
 
-type LegacyV2AppData = Omit<AppData, 'settings'> & {
+type LegacyV2AppData = Omit<AppData, 'settings' | 'appSearchMemory'> & { appSearchMemory?: unknown } & {
   settings: Omit<AppSettings, 'theme' | 'launcherDisplayMode'> & Partial<Pick<AppSettings, 'theme' | 'launcherDisplayMode'>>
 }
 
@@ -36,6 +37,7 @@ function validV2(value: unknown): value is LegacyV2AppData {
 function normalizeV2(input: LegacyV2AppData): AppData {
   return {
     ...input,
+    appSearchMemory: sanitizeAppSearchMemory(input.appSearchMemory),
     settings: {
       ...input.settings,
       theme: input.settings.theme ?? 'dark',
