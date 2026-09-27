@@ -6,7 +6,7 @@ import {
 import { createDefaultAppData, type AppSearchEntry, type AppSettings, type SearchEngine, type WebsiteEntry, type EverythingResult } from '@/shared/domain'
 import { buildSearchIndex } from '@/shared/pinyin-index'
 import { searchEntries, type SearchableEntry, type SearchResult as SearchResultItem } from '@/shared/search'
-import { parseSearchCommand } from '@/shared/search-command'
+import { parseManagerSearchCommand } from '@/shared/search-command'
 import SearchResult from './SearchResult.vue'
 import BookmarkDialog from '../bookmarks/BookmarkDialog.vue'
 import type { BookmarkFolder } from '@/shared/domain'
@@ -35,7 +35,7 @@ const refreshing = ref(false)
 const fileResults = ref<EverythingResult[]>([])
 const fileStatus = ref('')
 let fileSearchSequence = 0
-const parsed = computed(() => parseSearchCommand(query.value))
+const parsed = computed(() => parseManagerSearchCommand(query.value))
 const isWebSearch = computed(() => parsed.value.mode === 'web')
 const isFileSearch = computed(() => parsed.value.mode === 'files')
 const enabledEngines = computed(() => settings.value.searchEngines.filter((engine) => engine.enabled).sort((a, b) => a.order - b.order))
@@ -211,7 +211,7 @@ async function saveBookmark(input: { folderId?: string; newFolderName?: string }
 watch(query, (value) => {
   selectedIndex.value = 0
   const sequence = ++fileSearchSequence
-  const command = parseSearchCommand(value)
+  const command = parseManagerSearchCommand(value)
   fileResults.value = []
   fileStatus.value = ''
   if (command.mode !== 'files') return
