@@ -12,6 +12,7 @@ import { QwenMtAdapter } from './services/qwen-mt-adapter'
 import { SharedAIService } from './services/shared-ai-service'
 import { TranslationService } from './services/translation-service'
 import { AppCatalogService } from './services/app-catalog'
+import { LauncherDataService } from './services/launcher-data'
 import { AppLauncher } from './services/app-launcher'
 import { openExternalUrl } from './services/external-opener'
 import { BookmarkService } from './services/bookmark-service'
@@ -26,9 +27,18 @@ import { registerWebsiteIpcHandlers } from './ipc/website-handlers'
 import { registerSettingsIpcHandlers } from './ipc/settings-handlers'
 import { registerTranslationIpcHandlers } from './ipc/translation-handlers'
 import { registerEverythingIpcHandlers } from './ipc/everything-handlers'
+import { registerLauncherDataIpcHandlers } from './ipc/launcher-data-handlers'
 import { isCurrentAppMainFrame, isCurrentWindowMainFrame } from './ipc/window-security'
+import { LauncherVisibilitySequence, type LauncherVisibilityEvent } from '../src/shared/launcher-visibility'
+import { isNativeManagerOnly } from './services/native-manager-mode'
+import { NativeManagerClient, parseNativeLauncherState, type NativeLauncherSettingsUpdate, type NativeLauncherState } from './services/native-manager-client'
+import { NativeManagerRequestError, type NativeManagerEnvelope } from './services/native-manager-protocol'
+import { parseNativeManagerCommand } from './services/native-manager-commands'
+import { overlayNativeLauncherSettings, projectWebsitesForNative } from './services/native-launcher-settings'
 
 const isDevelopment = !app.isPackaged
+const managerOnly = isNativeManagerOnly(process.argv, process.env)
+const nativePipeName = process.env.WEBTOOLS_NATIVE_PIPE ?? 'WebTools.NativeHost.Manager.v1'
 if (isDevelopment) app.setName('webtools-desktop-dev')
 // Keep installed user data stable while isolating the development profile.
 app.setPath('userData', join(app.getPath('appData'), isDevelopment ? 'WebTools-Dev' : 'Nook'))
@@ -48,13 +58,89 @@ interface LauncherReadiness { ready: boolean; promise: Promise<void>; resolve: (
 const launcherReadiness = new WeakMap<BrowserWindow, LauncherReadiness>()
 interface LauncherToggleRequest { shouldShow: boolean }
 let launcherToggleRequest: LauncherToggleRequest | null = null
+const launcherVisibilitySequence = new LauncherVisibilitySequence()
 let tray: Tray | null = null
 let quitting = false
 let hotkeyService: GlobalHotkeyService | null = null
+let nativeManagerClient: NativeManagerClient | null = null
+let nativeLauncherState: NativeLauncherState | null = null
+let managerRendererReady = false
+interface PendingNativeIntent {
+  requestId: string
+  intent: { kind: 'open-page'; section: 'search' | 'entries' | 'settings' | 'translate' } | { kind: 'translation-prefill'; text: string }
+  resolve: () => void
+  reject: (error: Error) => void
+}
+let pendingNativeIntent: PendingNativeIntent | null = null
+let removeNativeCommandHandler: (() => void) | null = null
 
 function cancelActiveAIRequests(): void {
   translationService?.cancelAll()
   cancelAIConnectionTests()
+}
+
+function currentSettings() {
+  const stored = dataStore.snapshot().settings
+  return nativeLauncherState ? overlayNativeLauncherSettings(stored, nativeLauncherState) : stored
+}
+
+async function syncNativeWebsiteProjection(): Promise<void> {
+  if (!managerOnly) return
+  if (!nativeManagerClient?.isConnected) throw new Error('Native Host is not connected; website changes were not synchronized.')
+  await nativeManagerClient.request('websites-update', projectWebsitesForNative(dataStore.snapshot().webEntries))
+}
+
+async function updateNativeLauncherSettings(update: NativeLauncherSettingsUpdate) {
+  if (!nativeManagerClient?.isConnected) throw new Error('Native Host is not connected; Launcher settings were not saved.')
+  const result = await nativeManagerClient.request<unknown>('launcher-settings-update', update)
+  nativeLauncherState = parseNativeLauncherState(result)
+  return currentSettings()
+}
+
+function deliverPendingNativeIntent(): void {
+  const pending = pendingNativeIntent
+  const window = managerWindow
+  if (!pending || !managerRendererReady || !window || window.isDestroyed() || window.webContents.isDestroyed()) return
+  window.show()
+  window.focus()
+  window.webContents.send(IPC_CHANNELS.nativeManagerIntent, { requestId: pending.requestId, ...pending.intent })
+}
+
+function waitForNativeIntentAcknowledgement(
+  requestId: string,
+  intent: PendingNativeIntent['intent'],
+): Promise<void> {
+  if (pendingNativeIntent) pendingNativeIntent.reject(new NativeManagerRequestError('INTENT_SUPERSEDED', 'A newer Manager request replaced this one.'))
+  return new Promise<void>((resolve, reject) => {
+    pendingNativeIntent = { requestId, intent, resolve, reject }
+    deliverPendingNativeIntent()
+  })
+}
+
+async function handleNativeManagerCommand(message: NativeManagerEnvelope): Promise<void | (() => void)> {
+  const command = parseNativeManagerCommand(message)
+  if (command.kind === 'shutdown-manager') {
+    return () => {
+      quitting = true
+      app.quit()
+    }
+  }
+  if (command.kind === 'open-page') {
+    showManager()
+    await waitForNativeIntentAcknowledgement(command.requestId, { kind: 'open-page', section: command.section })
+    return
+  }
+  if (!isValidTranslationText(command.text)) throw new NativeManagerRequestError('INVALID_TRANSLATION_TEXT', '翻译内容为空或超过 20,000 个字符。')
+  showManager()
+  await waitForNativeIntentAcknowledgement(command.requestId, { kind: 'translation-prefill', text: command.text })
+}
+
+function acknowledgeNativeManagerIntent(context: { sender: object; senderFrame: object | null }, requestId: unknown): void {
+  if (!isCurrentWindowMainFrame(context, managerWindow) || typeof requestId !== 'string') return
+  const pending = pendingNativeIntent
+  if (!pending || pending.requestId !== requestId) return
+  pendingNativeIntent = null
+  pending.resolve()
 }
 
 function brandResourcePath(fileName: string): string {
@@ -89,8 +175,12 @@ function createWindow(): void {
   })
   window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) {
+      managerRendererReady = false
       translationPrefillQueue.resetReadiness()
       cancelActiveAIRequests()
+      if (managerOnly && nativeManagerClient?.isConnected) {
+        void nativeManagerClient.request('manager-renderer-not-ready', {}).catch((error) => console.error('[native-manager] renderer-not-ready failed', error))
+      }
     }
   })
   window.on('closed', () => {
@@ -98,6 +188,15 @@ function createWindow(): void {
       translationPrefillQueue.resetReadiness()
       cancelActiveAIRequests()
       managerWindow = null
+      managerRendererReady = false
+      if (pendingNativeIntent) {
+        pendingNativeIntent.reject(new Error('Manager window closed before acknowledging the current request.'))
+        pendingNativeIntent = null
+      }
+      if (managerOnly && !quitting) {
+        quitting = true
+        app.quit()
+      }
     }
   })
   window.on('close', (event) => {
@@ -131,6 +230,14 @@ function deliverTranslationPrefill(): void {
 function markManagerRendererReady(sender: WebContents): void {
   const window = managerWindow
   if (!window || window.isDestroyed() || window.webContents.isDestroyed() || sender !== window.webContents) return
+  managerRendererReady = true
+  if (managerOnly && nativeManagerClient?.isConnected) {
+    void nativeManagerClient.request('manager-renderer-ready', {}).then(() => deliverPendingNativeIntent()).catch((error) => {
+      console.error('[native-manager] renderer-ready acknowledgement failed', error)
+      app.quit()
+    })
+    return
+  }
   const request = translationPrefillQueue.markReady()
   if (request) window.webContents.send(IPC_CHANNELS.translationPrefill, request)
 }
@@ -210,6 +317,7 @@ function createLauncherWindow(): BrowserWindow {
   window.on('closed', () => {
     launcherReadiness.get(window)?.resolve()
     if (launcherWindow === window) {
+      launcherVisibilitySequence.next()
       launcherWindow = null
       launcherPositioned = false
       launcherShown = false
@@ -232,6 +340,29 @@ function hideLauncher(): void {
   launcherLastBounds = launcherWindow.getBounds()
   launcherWindow.setPosition(parkedLauncherPosition.x, parkedLauncherPosition.y)
   launcherWindow.blur()
+  sendLauncherVisibility(launcherWindow, { kind: 'hidden', generation: launcherVisibilitySequence.next() })
+}
+
+function sendLauncherVisibility(window: BrowserWindow, event: LauncherVisibilityEvent): void {
+  if (!window.isDestroyed() && launcherWindow === window && launcherReadiness.get(window)?.ready) {
+    window.webContents.send(IPC_CHANNELS.launcherVisibility, event)
+  }
+}
+
+async function dispatchLauncherShown(window: BrowserWindow): Promise<void> {
+  const generation = launcherVisibilitySequence.next()
+  const { launcherDisplayMode, theme } = dataStore.snapshot().settings
+  const event: LauncherVisibilityEvent = { kind: 'shown', generation, launcherDisplayMode, theme }
+  if (!await waitForLauncherRenderer(window) || !launcherShown || !launcherVisibilitySequence.isCurrent(generation)) return
+  const acknowledged = launcherVisibilitySequence.waitForAcknowledgement(generation)
+  sendLauncherVisibility(window, event)
+  await acknowledged
+  if (launcherWindow === window && !window.isDestroyed() && launcherShown && launcherVisibilitySequence.isCurrent(generation)) window.focus()
+}
+
+function acknowledgeLauncherVisibility(sender: WebContents, generation: unknown): void {
+  if (!launcherWindow || sender !== launcherWindow.webContents || typeof generation !== 'number' || !Number.isSafeInteger(generation)) return
+  launcherVisibilitySequence.acknowledge(generation)
 }
 
 function markLauncherRendererReady(sender: WebContents): void {
@@ -240,11 +371,12 @@ function markLauncherRendererReady(sender: WebContents): void {
   if (!readiness || readiness.ready) return
   readiness.ready = true
   readiness.resolve()
+  if (launcherShown) void dispatchLauncherShown(launcherWindow)
 }
 
-async function showLauncher(toggleRequest?: LauncherToggleRequest): Promise<void> {
+async function showLauncher(): Promise<void> {
   const window = createLauncherWindow()
-  const { launcherDisplayMode, theme } = dataStore.snapshot().settings
+  const { launcherDisplayMode } = dataStore.snapshot().settings
   if (!launcherPositioned) {
     const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
     const bounds = display.workArea
@@ -253,14 +385,7 @@ async function showLauncher(toggleRequest?: LauncherToggleRequest): Promise<void
   } else if (launcherLastBounds) window.setBounds(launcherLastBounds)
   launcherShown = true
   resizeLauncher(launcherDisplayMode === 'expanded')
-  const detail = JSON.stringify({ launcherDisplayMode, theme })
-  const dispatchShowState = async (): Promise<void> => {
-    if (!await waitForLauncherRenderer(window) || window.isDestroyed() || launcherWindow !== window || (toggleRequest && !toggleRequest.shouldShow)) return
-    await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('webtools-launcher-show', { detail: ${detail} }))`).catch(() => undefined)
-  }
-  const showState = dispatchShowState()
-  window.focus()
-  await showState
+  await dispatchLauncherShown(window)
 }
 
 function resizeLauncher(expanded: boolean, expandedSectionExtraHeight = 0, hasSearchResults = false): void {
@@ -294,7 +419,7 @@ function toggleLauncher(): void {
       if (!window || window.isDestroyed()) return
       if (launcherLastBounds) window.setBounds(launcherLastBounds)
       launcherShown = true
-      window.focus()
+      void dispatchLauncherShown(window)
     } else {
       hideLauncher()
     }
@@ -306,7 +431,7 @@ function toggleLauncher(): void {
   }
   const request: LauncherToggleRequest = { shouldShow: true }
   launcherToggleRequest = request
-  void showLauncher(request).finally(() => {
+  void showLauncher().finally(() => {
     if (launcherToggleRequest === request) launcherToggleRequest = null
   })
 }
@@ -332,9 +457,9 @@ const startedHidden = process.argv.includes('--hidden')
 
 ipcMain.handle('app:get-version', () => app.getVersion())
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock()
+const hasSingleInstanceLock = managerOnly || app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) app.quit()
-else app.on('second-instance', (_event, commandLine) => {
+else if (!managerOnly) app.on('second-instance', (_event, commandLine) => {
   if (!commandLine.includes('--hidden')) showManager()
 })
 
@@ -350,6 +475,22 @@ app.whenReady().then(async () => {
   }
   const recoveryMessage = dataStore.getRecoveryMessage()
   if (recoveryMessage) await dialog.showMessageBox({ type: 'info', title: 'WebTools 本地数据', message: '本机数据已完成升级或恢复。', detail: recoveryMessage, buttons: ['确定'] })
+  if (managerOnly) {
+    nativeManagerClient = new NativeManagerClient(nativePipeName)
+    nativeManagerClient.onCommand(handleNativeManagerCommand)
+    nativeManagerClient.onDisconnect((error) => {
+      console.error('[native-manager] Native Host disconnected; exiting Manager', error?.message ?? '')
+      if (!quitting) app.quit()
+    })
+    try {
+      nativeLauncherState = parseNativeLauncherState(await nativeManagerClient.connect())
+      await syncNativeWebsiteProjection()
+    } catch (error) {
+      dialog.showErrorBox('WebTools Native Host 连接失败', error instanceof Error ? error.message : '无法连接常驻启动器。')
+      app.quit()
+      return
+    }
+  }
   const aiCredentials = new AIProviderCredentialStore(secretStore)
   const sharedAIService = new SharedAIService({
     dataStore,
@@ -369,16 +510,59 @@ app.whenReady().then(async () => {
   const bookmarkService = new BookmarkService(dataStore)
   const websiteService = new WebsiteService(dataStore)
   const websiteMetadata = new WebsiteMetadataService()
-  const everything = new EverythingClient(() => dataStore.snapshot().settings.everythingEsPath)
-  await appCatalog.refresh()
-  hotkeyService = new GlobalHotkeyService()
-  const shortcutResult = hotkeyService.register(dataStore.snapshot().settings.quickSearchShortcut, toggleLauncher)
-  if (!shortcutResult.ok) console.warn(shortcutResult.error.message)
-  setOpenAtLogin(dataStore.snapshot().settings.launchOnStartup)
-  createTray()
-  registerWindowIpcHandlers({ showLauncher, hideLauncher, setLauncherExpanded: resizeLauncher, moveLauncherBy, markLauncherRendererReady, showManager, openTranslation, markManagerRendererReady, acknowledgeTranslationPrefill })
-  registerAppIpcHandlers({ appCatalog, appLauncher, dataStore })
-  registerWebsiteIpcHandlers({ websiteService, websiteMetadata, bookmarkService })
+  const everything = new EverythingClient(() => currentSettings().everythingEsPath)
+  const launcherData = new LauncherDataService(appCatalog, websiteService)
+  if (managerOnly) {
+    void appCatalog.refresh().then(() => {
+      launcherData.markAppsChanged()
+      managerWindow?.webContents.send(IPC_CHANNELS.appsCatalogUpdated)
+    }).catch((error) => console.error('[manager] application catalog refresh failed', error))
+  } else await appCatalog.refresh()
+  if (!managerOnly) {
+    hotkeyService = new GlobalHotkeyService()
+    const shortcutResult = hotkeyService.register(dataStore.snapshot().settings.quickSearchShortcut, toggleLauncher)
+    if (!shortcutResult.ok) console.warn(shortcutResult.error.message)
+    setOpenAtLogin(dataStore.snapshot().settings.launchOnStartup)
+    createTray()
+  }
+  registerWindowIpcHandlers({
+    showLauncher: () => { if (!managerOnly) void showLauncher() },
+    hideLauncher: () => { if (!managerOnly) hideLauncher() },
+    acknowledgeLauncherVisibility,
+    setLauncherExpanded: (sender, expanded, extraHeight, hasResults, generation) => {
+    if (launcherWindow && sender === launcherWindow.webContents && launcherShown && launcherVisibilitySequence.isCurrent(generation)) {
+      resizeLauncher(expanded, extraHeight, hasResults)
+    }
+    },
+    moveLauncherBy: (sender, deltaX, deltaY) => { if (!managerOnly) moveLauncherBy(sender, deltaX, deltaY) },
+    markLauncherRendererReady,
+    showManager,
+    openTranslation,
+    markManagerRendererReady,
+    acknowledgeTranslationPrefill,
+    acknowledgeNativeManagerIntent,
+  })
+  registerAppIpcHandlers({
+    appCatalog,
+    appLauncher,
+    dataStore,
+    launcherData,
+    getRememberedSearchAppId: managerOnly ? async (query) => {
+      if (!nativeManagerClient?.isConnected) return null
+      const result = await nativeManagerClient.request<{ appId: string | null }>('app-memory-get', { query })
+      return typeof result?.appId === 'string' ? result.appId : null
+    } : undefined,
+    rememberSearchResult: managerOnly ? async (query, appId) => {
+      if (!nativeManagerClient?.isConnected) throw new Error('Native Host is not connected.')
+      await nativeManagerClient.request('app-memory-remember', { query, appId })
+    } : undefined,
+    onAppsChanged: () => managerWindow?.webContents.send(IPC_CHANNELS.appsCatalogUpdated),
+  })
+  registerWebsiteIpcHandlers({ websiteService, websiteMetadata, bookmarkService, onWebsitesChanged: async () => {
+    launcherData.markWebsitesChanged()
+    await syncNativeWebsiteProjection()
+  } })
+  registerLauncherDataIpcHandlers({ launcherData, isLauncherMainFrame: (event) => isCurrentWindowMainFrame(event, launcherWindow) })
   registerSettingsIpcHandlers({
     dataStore,
     hotkeyService,
@@ -387,6 +571,8 @@ app.whenReady().then(async () => {
     isManagerMainFrame: (context) => isCurrentWindowMainFrame(context, managerWindow),
     isAppMainFrame: (context) => isCurrentAppMainFrame(context, [managerWindow, launcherWindow]),
     cancelTranslations: cancelActiveAIRequests,
+    getSettings: currentSettings,
+    updateNativeLauncherSettings: managerOnly ? updateNativeLauncherSettings : undefined,
   })
   cancelAIConnectionTests = registerTranslationIpcHandlers({
     translationService,
@@ -395,16 +581,20 @@ app.whenReady().then(async () => {
     openExternal: openExternalUrl,
     isManagerMainFrame: (context) => isCurrentWindowMainFrame(context, managerWindow),
   })
-  registerEverythingIpcHandlers({ everything, dataStore, getManagerWindow: () => managerWindow })
-  createLauncherWindow()
-  if (!startedHidden) createWindow()
+  registerEverythingIpcHandlers({ everything, dataStore, getManagerWindow: () => managerWindow, getSettings: currentSettings })
+  if (!managerOnly) createLauncherWindow()
+  if (managerOnly || !startedHidden) createWindow()
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      if (managerOnly) app.quit()
+      else createWindow()
+    }
   })
 })
 
 app.on('window-all-closed', () => {
-  // The app remains resident in the Windows tray.
+  if (managerOnly) app.quit()
+  // Fallback mode remains resident in the Windows tray.
 })
 
 app.on('before-quit', () => {
@@ -412,4 +602,7 @@ app.on('before-quit', () => {
   hotkeyService?.dispose()
   tray?.destroy()
   tray = null
+  cancelActiveAIRequests()
+  nativeManagerClient?.close()
+  nativeManagerClient = null
 })

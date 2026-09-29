@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Check, Copy, ExternalLink, Languages, Sparkles } from '@lucide/vue'
 import type { TranslationPrefillRequest } from '@/shared/domain'
 import { MYMEMORY_MAX_UTF8_BYTES, TRANSLATION_LANGUAGES, type TranslationLanguageCode, type TranslationSourceLanguage } from '@/shared/translation-contracts'
 import type { TranslationProviderInfo } from '@/shared/translation-contracts'
 import { TranslationRequestGate } from '@/shared/translation-request-gate'
 
-const emit = defineEmits<{ settings: [] }>()
+const emit = defineEmits<{ settings: []; prefillApplied: [id: string] }>()
 const props = defineProps<{ prefill: TranslationPrefillRequest | null }>()
 const sourceText = ref('')
 const translation = ref('')
@@ -20,6 +20,7 @@ const sourceBytes = computed(() => new TextEncoder().encode(sourceText.value).le
 const exceedsFreeLimit = computed(() => providerInfo.value?.engine === 'mymemory' && sourceBytes.value > MYMEMORY_MAX_UTF8_BYTES)
 const canTranslate = computed(() => Boolean(sourceText.value.trim()) && !loading.value && !exceedsFreeLimit.value)
 const requestGate = new TranslationRequestGate()
+let isMounted = false
 let settingsReady = false
 let settingsSaveTimer: number | undefined
 let settingsSaveGeneration = 0
@@ -33,7 +34,7 @@ function clearAutoTranslateTimer(): void {
 
 function scheduleAutoTranslate(): void {
   clearAutoTranslateTimer()
-  if (!settingsReady || !providerInfo.value?.configured || !sourceText.value.trim()) return
+  if (!isMounted || !settingsReady || !providerInfo.value?.configured || !sourceText.value.trim()) return
   autoTranslateTimer = window.setTimeout(() => {
     autoTranslateTimer = undefined
     if (canTranslate.value) void translate()
@@ -73,29 +74,36 @@ watch([sourceLanguage, targetLanguage], () => {
   }, 180)
 })
 
-watch(() => props.prefill?.id, () => {
+watch(() => props.prefill?.id, async () => {
   const prefill = props.prefill
   if (!prefill) return
   invalidateResult()
   sourceText.value = prefill.text
   scheduleAutoTranslate()
+  await nextTick()
+  if (props.prefill?.id === prefill.id && sourceText.value === prefill.text) emit('prefillApplied', prefill.id)
 }, { immediate: true })
 
 onMounted(async () => {
+  isMounted = true
   try {
     const [settings, info] = await Promise.all([window.desktop.getSettings(), window.desktop.getTranslationProviderInfo()])
+    if (!isMounted) return
     sourceLanguage.value = settings.translation.sourceLanguage
     targetLanguage.value = settings.translation.targetLanguage
     if (info.ok) providerInfo.value = info.data
   } catch {
+    if (!isMounted) return
     errorMessage.value = '无法读取翻译设置。'
   } finally {
+    if (!isMounted) return
     settingsReady = true
     scheduleAutoTranslate()
   }
 })
 
 onBeforeUnmount(() => {
+  isMounted = false
   settingsReady = false
   if (settingsSaveTimer !== undefined) window.clearTimeout(settingsSaveTimer)
   clearAutoTranslateTimer()
@@ -103,7 +111,7 @@ onBeforeUnmount(() => {
 })
 
 async function translate(): Promise<void> {
-  if (!canTranslate.value) return
+  if (!isMounted || !canTranslate.value) return
   clearAutoTranslateTimer()
   invalidateResult()
   const requestId = crypto.randomUUID()

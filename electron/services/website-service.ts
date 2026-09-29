@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { WebsiteEntry, WebsiteSaveInput } from '../../src/shared/domain'
+import type { WebsiteEntry, WebsiteSaveInput, WebsiteSearchEntry } from '../../src/shared/domain'
 import type { IpcResult } from '../../src/shared/ipc'
 import { openExternalUrl, validateExternalUrl } from './external-opener'
 import { DataStore } from './data-store'
@@ -12,6 +12,14 @@ export class WebsiteService {
   list(folderId?: string): WebsiteEntry[] {
     const entries = this.store.snapshot().webEntries
     return folderId ? entries.filter((entry) => entry.folderIds.includes(folderId)) : entries
+  }
+
+  listForLauncher(): WebsiteSearchEntry[] {
+    return this.store.listLauncherWebsites()
+  }
+
+  getIcons(ids: string[]): Record<string, string | null> {
+    return this.store.getWebsiteFavicons(ids)
   }
 
   async save(input: WebsiteSaveInput): Promise<IpcResult<WebsiteEntry>> {

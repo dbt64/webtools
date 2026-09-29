@@ -1,0 +1,566 @@
+{
+  "generatedFrom": "current Electron pure search functions",
+  "applications": [
+    {
+      "id": "a111111111111111",
+      "name": "Orchid Browser",
+      "aliases": [
+        "OB",
+        "Orchid Web"
+      ],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "b222222222222222",
+      "name": "Orbit Editor",
+      "aliases": [
+        "Orbit Tools"
+      ],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "c333333333333333",
+      "name": "星河编辑器",
+      "aliases": [
+        "Milkyway Editor"
+      ],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "d444444444444444",
+      "name": "Terminal Setup",
+      "aliases": [
+        "Nova Console"
+      ],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "e555555555555555",
+      "name": "Aurora Notes",
+      "aliases": [
+        "AN"
+      ],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "f666666666666666",
+      "name": "Integration Helper",
+      "aliases": [
+        "IH"
+      ],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "0777777777777777",
+      "name": "Café Scheduler",
+      "aliases": [
+        "CS"
+      ],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "1000000000000001",
+      "name": "Parity App 01",
+      "aliases": [],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "1000000000000002",
+      "name": "Parity App 02",
+      "aliases": [],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "1000000000000003",
+      "name": "Parity App 03",
+      "aliases": [],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "1000000000000004",
+      "name": "Parity App 04",
+      "aliases": [],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "1000000000000005",
+      "name": "Parity App 05",
+      "aliases": [],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "1000000000000006",
+      "name": "Parity App 06",
+      "aliases": [],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "1000000000000007",
+      "name": "Parity App 07",
+      "aliases": [],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "1000000000000008",
+      "name": "Parity App 08",
+      "aliases": [],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "1000000000000009",
+      "name": "Parity App 09",
+      "aliases": [],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "f000000000000001",
+      "name": "Visual Studio Code",
+      "aliases": [
+        "VS Code"
+      ],
+      "kind": "app",
+      "subtitle": "本地应用"
+    },
+    {
+      "id": "f000000000000002",
+      "name": "文件资源管理器",
+      "aliases": [
+        "File Explorer",
+        "Explorer",
+        "explorer.exe"
+      ],
+      "kind": "app",
+      "subtitle": "本地应用"
+    }
+  ],
+  "websites": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "name": "Orbit Docs",
+      "aliases": [
+        "https://docs.orbit.example/handbook/index"
+      ],
+      "kind": "website",
+      "subtitle": "https://docs.orbit.example/handbook/index",
+      "url": "https://docs.orbit.example/handbook/index",
+      "folderIds": [
+        "00000000-0000-4000-8000-000000000010"
+      ],
+      "searchText": "internal knowledge base"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "name": "Northstar Portal",
+      "aliases": [
+        "https://portal.northstar.example/start"
+      ],
+      "kind": "website",
+      "subtitle": "https://portal.northstar.example/start",
+      "url": "https://portal.northstar.example/start",
+      "folderIds": [
+        "00000000-0000-4000-8000-000000000010"
+      ],
+      "searchText": "product documentation"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "name": "Orchid Guide",
+      "aliases": [
+        "https://guide.orchid.example/start"
+      ],
+      "kind": "website",
+      "subtitle": "https://guide.orchid.example/start",
+      "url": "https://guide.orchid.example/start",
+      "folderIds": [],
+      "searchText": "browser help"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000004",
+      "name": "Parity 00 Guide",
+      "aliases": [
+        "https://parity.example/guide"
+      ],
+      "kind": "website",
+      "subtitle": "https://parity.example/guide",
+      "url": "https://parity.example/guide",
+      "folderIds": [],
+      "searchText": ""
+    }
+  ],
+  "cases": [
+    {
+      "raw": "",
+      "mode": "local",
+      "query": "",
+      "results": []
+    },
+    {
+      "raw": " ",
+      "mode": "local",
+      "query": "",
+      "results": []
+    },
+    {
+      "raw": "visual",
+      "mode": "local",
+      "query": "visual",
+      "results": [
+        {
+          "kind": "application",
+          "id": "f000000000000001",
+          "title": "Visual Studio Code",
+          "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "chrome",
+      "mode": "local",
+      "query": "chrome",
+      "results": [
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "note",
+      "mode": "local",
+      "query": "note",
+      "results": [
+        {
+          "kind": "application",
+          "id": "e555555555555555",
+          "title": "Aurora Notes",
+          "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "code",
+      "mode": "local",
+      "query": "code",
+      "results": [
+        {
+          "kind": "application",
+          "id": "f000000000000001",
+          "title": "Visual Studio Code",
+          "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "vsc",
+      "mode": "local",
+      "query": "vsc",
+      "results": [
+        {
+          "kind": "application",
+          "id": "f000000000000001",
+          "title": "Visual Studio Code",
+          "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "文件",
+      "mode": "local",
+      "query": "文件",
+      "results": [
+        {
+          "kind": "application",
+          "id": "f000000000000002",
+          "title": "文件资源管理器",
+          "action": "launch-app"
+        }
+      ]
+    },
+    {
+      "raw": "设置",
+      "mode": "local",
+      "query": "设置",
+      "results": []
+    },
+    {
+      "raw": "wenjian",
+      "mode": "local",
+      "query": "wenjian",
+      "results": [
+        {
+          "kind": "application",
+          "id": "f000000000000002",
+          "title": "文件资源管理器",
+          "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "wjzy",
+      "mode": "local",
+      "query": "wjzy",
+      "results": [
+        {
+          "kind": "application",
+          "id": "f000000000000002",
+          "title": "文件资源管理器",
+          "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "xinghe",
+      "mode": "local",
+      "query": "xinghe",
+      "results": [
+        {
+          "kind": "application",
+          "id": "c333333333333333",
+          "title": "星河编辑器",
+          "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "xh",
+      "mode": "local",
+      "query": "xh",
+      "results": [
+        {
+          "kind": "application",
+          "id": "c333333333333333",
+          "title": "星河编辑器",
+          "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "oe",
+      "mode": "local",
+      "query": "oe",
+      "results": [
+        {
+          "kind": "application",
+          "id": "b222222222222222",
+          "title": "Orbit Editor",
+          "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "parity",
+      "mode": "local",
+      "query": "parity",
+      "results": [
+        {
+          "kind": "website",
+          "id": "00000000-0000-4000-8000-000000000004",
+          "title": "Parity 00 Guide",
+          "action": "open-website"
+        },
+        {
+          "kind": "application",
+          "id": "1000000000000001",
+          "title": "Parity App 01",
+          "action": "launch-app"
+        },
+        {
+          "kind": "application",
+          "id": "1000000000000002",
+          "title": "Parity App 02",
+          "action": "launch-app"
+        },
+        {
+          "kind": "application",
+          "id": "1000000000000003",
+          "title": "Parity App 03",
+          "action": "launch-app"
+        },
+        {
+          "kind": "application",
+          "id": "1000000000000004",
+          "title": "Parity App 04",
+          "action": "launch-app"
+        },
+        {
+          "kind": "application",
+          "id": "1000000000000005",
+          "title": "Parity App 05",
+          "action": "launch-app"
+        },
+        {
+          "kind": "application",
+          "id": "1000000000000006",
+          "title": "Parity App 06",
+          "action": "launch-app"
+        },
+        {
+          "kind": "application",
+          "id": "1000000000000007",
+          "title": "Parity App 07",
+          "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "orbit",
+      "mode": "local",
+      "query": "orbit",
+      "results": [
+        {
+          "kind": "website",
+          "id": "00000000-0000-4000-8000-000000000001",
+          "title": "Orbit Docs",
+          "action": "open-website"
+        },
+        {
+          "kind": "application",
+          "id": "b222222222222222",
+          "title": "Orbit Editor",
+          "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "handbook",
+      "mode": "local",
+      "query": "handbook",
+      "results": [
+        {
+          "kind": "website",
+          "id": "00000000-0000-4000-8000-000000000001",
+          "title": "Orbit Docs",
+          "action": "open-website"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
+    },
+    {
+      "raw": "?openai",
+      "mode": "web",
+      "query": "openai",
+      "results": []
+    },
+    {
+      "raw": "/orbit",
+      "mode": "saved-websites",
+      "query": "orbit",
+      "results": [
+        {
+          "kind": "website",
+          "id": "00000000-0000-4000-8000-000000000001",
+          "title": "Orbit Docs",
+          "action": "open-website"
+        }
+      ]
+    },
+    {
+      "raw": "/handbook",
+      "mode": "saved-websites",
+      "query": "handbook",
+      "results": [
+        {
+          "kind": "website",
+          "id": "00000000-0000-4000-8000-000000000001",
+          "title": "Orbit Docs",
+          "action": "open-website"
+        }
+      ]
+    },
+    {
+      "raw": "file:notes",
+      "mode": "files",
+      "query": "notes",
+      "results": []
+    }
+  ]
+}

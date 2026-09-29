@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   ChevronDown, CircleHelp, Compass, Languages, LayoutGrid, Search, Settings2, SlidersHorizontal,
 } from '@lucide/vue'
@@ -7,16 +7,40 @@ import logoDark from '@/assets/brand/logo-dark.svg'
 import logoLight from '@/assets/brand/logo-light.svg'
 import SearchView from './features/search/SearchView.vue'
 import EntriesView from './features/entries/EntriesView.vue'
-import SettingsView from './features/settings/SettingsView.vue'
 import TranslateView from './features/translate/TranslateView.vue'
 import type { TranslationPrefillRequest } from './shared/domain'
+import type { NativeManagerIntent } from './shared/ipc'
 
 type Section = 'search' | 'entries' | 'translate' | 'settings'
+
+function createSettingsLoadState(message: string, role: 'status' | 'alert') {
+  return defineComponent({
+    name: role === 'status' ? 'SettingsLoadingState' : 'SettingsErrorState',
+    setup: () => () => h('section', { class: 'content-page settings-load-state' }, [
+      h('div', { class: 'page-heading' }, [h('div', [
+        h('p', { class: 'eyebrow' }, '偏好与连接'),
+        h('h1', '设置'),
+        h('p', { class: 'page-description', role, 'aria-live': role === 'status' ? 'polite' : 'assertive' }, message),
+      ])]),
+    ]),
+  })
+}
+
+const SettingsLoading = createSettingsLoadState('正在加载设置…', 'status')
+const SettingsLoadError = createSettingsLoadState('设置暂时无法加载，请返回其他页面后重试。', 'alert')
+const SettingsView = defineAsyncComponent({
+  loader: () => import('./features/settings/SettingsView.vue'),
+  loadingComponent: SettingsLoading,
+  errorComponent: SettingsLoadError,
+  delay: 0,
+})
 
 const activeSection = ref<Section>('search')
 const appsExpanded = ref(false)
 const translationPrefill = ref<TranslationPrefillRequest | null>(null)
 let removeTranslationPrefillListener: (() => void) | undefined
+let removeNativeManagerIntentListener: (() => void) | undefined
+const currentNativeRequestId = ref<string | null>(null)
 
 const navItems: { id: Section; label: string; icon: typeof Search }[] = [
   { id: 'search', label: '快速搜索', icon: Search },
@@ -39,18 +63,49 @@ function navigateFromSearch(section: Exclude<Section, 'search'>): void {
 
 onMounted(() => {
   removeTranslationPrefillListener = window.desktop.onTranslationPrefill((request) => {
+    currentNativeRequestId.value = null
     translationPrefill.value = request
     activeSection.value = 'translate'
     appsExpanded.value = true
-    void nextTick().then(() => {
-      window.desktop.acknowledgeTranslationPrefill(request.id)
-      if (translationPrefill.value?.id === request.id) translationPrefill.value = null
-    })
   })
+  removeNativeManagerIntentListener = window.desktop.onNativeManagerIntent((intent) => handleNativeManagerIntent(intent))
   window.desktop.managerReady()
 })
 
-onBeforeUnmount(() => removeTranslationPrefillListener?.())
+onBeforeUnmount(() => {
+  removeTranslationPrefillListener?.()
+  removeNativeManagerIntentListener?.()
+})
+
+function handleNativeManagerIntent(intent: NativeManagerIntent): void {
+  currentNativeRequestId.value = intent.requestId
+  if (intent.kind === 'translation-prefill') {
+    translationPrefill.value = { id: intent.requestId, text: intent.text }
+    activeSection.value = 'translate'
+    appsExpanded.value = true
+    return
+  }
+
+  translationPrefill.value = null
+  activeSection.value = intent.section
+  if (intent.section === 'translate') appsExpanded.value = true
+  void nextTick().then(() => {
+    if (currentNativeRequestId.value !== intent.requestId) return
+    window.desktop.acknowledgeNativeManagerIntent(intent.requestId)
+    currentNativeRequestId.value = null
+  })
+}
+
+function handleTranslationPrefillApplied(id: string): void {
+  if (translationPrefill.value?.id !== id) return
+  if (currentNativeRequestId.value === id) {
+    window.desktop.acknowledgeNativeManagerIntent(id)
+    currentNativeRequestId.value = null
+  } else {
+    window.desktop.acknowledgeTranslationPrefill(id)
+  }
+  translationPrefill.value = null
+}
 
 </script>
 
@@ -119,7 +174,7 @@ onBeforeUnmount(() => removeTranslationPrefillListener?.())
       <SearchView v-if="activeSection === 'search'" @navigate="navigateFromSearch" />
       <EntriesView v-else-if="activeSection === 'entries'" class="entry-manager" />
       <SettingsView v-else-if="activeSection === 'settings'" />
-      <TranslateView v-else-if="activeSection === 'translate'" :prefill="translationPrefill" @settings="activeSection = 'settings'" />
+      <TranslateView v-else-if="activeSection === 'translate'" :prefill="translationPrefill" @settings="activeSection = 'settings'" @prefill-applied="handleTranslationPrefillApplied" />
 
       <section v-else class="section-placeholder">
         <div class="section-symbol">

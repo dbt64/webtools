@@ -2,11 +2,12 @@
   "name": "webtools-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "A personal Windows launcher and web toolkit",
+  "description": "A native-first Windows launcher and productivity toolkit with an on-demand Electron manager",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "electron:dev": "electron-vite dev",
+    "native:dev": "node scripts/native-dev.mjs",
     "build": "electron-vite build",
     "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "test": "node --experimental-strip-types --test",

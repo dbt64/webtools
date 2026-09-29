@@ -13,6 +13,26 @@ export interface WebsiteEntry {
   createdAt: number
 }
 
+/** Search-only website data sent to the resident Launcher renderer. */
+export interface WebsiteSearchEntry {
+  id: string
+  name: string
+  url: string
+  description?: string
+  folderIds: string[]
+}
+
+export interface LauncherDataVersions {
+  apps: number
+  websites: number
+}
+
+export interface LauncherDataChanges {
+  versions: LauncherDataVersions
+  apps?: AppSearchEntry[]
+  websites?: WebsiteSearchEntry[]
+}
+
 export interface WebsiteSaveInput {
   id?: string
   name: string

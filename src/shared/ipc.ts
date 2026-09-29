@@ -1,6 +1,7 @@
-import type { AppSearchEntry, AppSettings, BookmarkFolder, WebsiteEntry, WebsiteSaveInput, EverythingResult, TranslationPrefillRequest, ThemePreference } from './domain'
+import type { AppSearchEntry, AppSettings, BookmarkFolder, WebsiteEntry, WebsiteSaveInput, EverythingResult, TranslationPrefillRequest, ThemePreference, LauncherDataChanges, LauncherDataVersions } from './domain'
 import type { AIProviderId } from './ai-config.ts'
 import type { TranslationProviderInfo, TranslationRequest, TranslationResult } from './translation-contracts.ts'
+import type { LauncherVisibilityEvent } from './launcher-visibility.ts'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -28,17 +29,24 @@ export interface AIProviderStatus {
 export interface DesktopApi {
   showLauncher(): Promise<void>
   launcherReady(): void
+  onLauncherVisibility(handler: (event: LauncherVisibilityEvent) => void): () => void
+  acknowledgeLauncherVisibility(generation: number): void
   hideLauncher(): Promise<void>
-  setLauncherExpanded(expanded: boolean, expandedSectionExtraHeight?: number, hasSearchResults?: boolean): Promise<void>
+  setLauncherExpanded(expanded: boolean, expandedSectionExtraHeight?: number, hasSearchResults?: boolean, generation?: number): Promise<void>
   moveLauncherBy(deltaX: number, deltaY: number): void
   showManager(): Promise<void>
   openTranslation(text: string): Promise<IpcResult<void>>
   managerReady(): void
   onTranslationPrefill(handler: (request: TranslationPrefillRequest) => void): () => void
   acknowledgeTranslationPrefill(id: string): void
+  onNativeManagerIntent(handler: (intent: NativeManagerIntent) => void): () => void
+  acknowledgeNativeManagerIntent(requestId: string): void
   getVersion(): Promise<string>
   getApps(): Promise<AppSearchEntry[]>
+  getLauncherData(knownVersions: LauncherDataVersions): Promise<LauncherDataChanges>
+  getWebsiteIcons(ids: string[]): Promise<Record<string, string | null>>
   refreshApps(): Promise<AppSearchEntry[]>
+  onAppsCatalogUpdated(handler: () => void): () => void
   getAppIcon(id: string): Promise<IpcResult<{ dataUrl: string | null }>>
   launchApp(id: string): Promise<IpcResult<void>>
   getRememberedAppSearchAppId(query: string): Promise<string | null>
@@ -72,9 +80,15 @@ export interface DesktopApi {
   chooseEverythingPath(): Promise<string | null>
 }
 
+export type NativeManagerIntent =
+  | { requestId: string; kind: 'open-page'; section: 'search' | 'entries' | 'settings' | 'translate' }
+  | { requestId: string; kind: 'translation-prefill'; text: string }
+
 export const IPC_CHANNELS = {
   showLauncher: 'window:show-launcher',
   launcherReady: 'window:launcher-ready',
+  launcherVisibility: 'window:launcher-visibility',
+  acknowledgeLauncherVisibility: 'window:acknowledge-launcher-visibility',
   hideLauncher: 'window:hide-launcher',
   setLauncherExpanded: 'window:set-launcher-expanded',
   moveLauncherBy: 'window:move-launcher-by',
@@ -83,9 +97,14 @@ export const IPC_CHANNELS = {
   managerReady: 'window:manager-ready',
   translationPrefill: 'window:translation-prefill',
   acknowledgeTranslationPrefill: 'window:acknowledge-translation-prefill',
+  nativeManagerIntent: 'native-manager:intent',
+  acknowledgeNativeManagerIntent: 'native-manager:acknowledge-intent',
   getVersion: 'app:get-version',
   getApps: 'apps:list',
+  getLauncherData: 'launcher:get-data',
+  getWebsiteIcons: 'websites:get-icons',
   refreshApps: 'apps:refresh',
+  appsCatalogUpdated: 'apps:catalog-updated',
   getAppIcon: 'apps:get-icon',
   launchApp: 'apps:launch',
   getRememberedAppSearchAppId: 'apps:get-remembered-search-result',

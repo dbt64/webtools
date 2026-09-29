@@ -7,14 +7,26 @@ import type { IpcResult } from '../../src/shared/ipc'
 function fail<T>(code: string, message: string): IpcResult<T> { return { ok: false, error: { code, message } } }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 
-export function registerWebsiteIpcHandlers(deps: { websiteService: WebsiteService; websiteMetadata: WebsiteMetadataService; bookmarkService: BookmarkService }): void {
+export function registerWebsiteIpcHandlers(deps: { websiteService: WebsiteService; websiteMetadata: WebsiteMetadataService; bookmarkService: BookmarkService; onWebsitesChanged: () => void | Promise<void> }): void {
   ipcMain.handle('websites:list', (_event, folderId: unknown) => deps.websiteService.list(typeof folderId === 'string' ? folderId : undefined))
   ipcMain.handle('websites:save', async (_event, input: unknown) => {
     if (!isRecord(input) || typeof input.name !== 'string' || typeof input.url !== 'string' || !Array.isArray(input.folderIds) || !input.folderIds.every((value) => typeof value === 'string') || (input.id !== undefined && typeof input.id !== 'string') || (input.description !== undefined && typeof input.description !== 'string') || (input.favicon !== undefined && typeof input.favicon !== 'string')) return fail('INVALID_ENTRY', '网址信息无效。')
-    return deps.websiteService.save({ id: input.id as string | undefined, name: input.name, url: input.url, description: input.description as string | undefined, favicon: input.favicon as string | undefined, folderIds: input.folderIds })
+    const result = await deps.websiteService.save({ id: input.id as string | undefined, name: input.name, url: input.url, description: input.description as string | undefined, favicon: input.favicon as string | undefined, folderIds: input.folderIds })
+    if (result.ok) await deps.onWebsitesChanged()
+    return result
   })
-  ipcMain.handle('websites:delete', async (_event, id: unknown) => typeof id === 'string' ? deps.websiteService.delete(id) : fail('INVALID_ID', '网址编号无效。'))
-  ipcMain.handle('websites:add-to-folders', async (_event, id: unknown, folderIds: unknown) => typeof id === 'string' && Array.isArray(folderIds) && folderIds.every((value) => typeof value === 'string') ? deps.websiteService.addWebsiteToFolders(id, folderIds) : fail('INVALID_FOLDER', '收藏夹编号无效。'))
+  ipcMain.handle('websites:delete', async (_event, id: unknown) => {
+    if (typeof id !== 'string') return fail('INVALID_ID', '网址编号无效。')
+    const result = await deps.websiteService.delete(id)
+    if (result.ok) await deps.onWebsitesChanged()
+    return result
+  })
+  ipcMain.handle('websites:add-to-folders', async (_event, id: unknown, folderIds: unknown) => {
+    if (typeof id !== 'string' || !Array.isArray(folderIds) || !folderIds.every((value) => typeof value === 'string')) return fail('INVALID_FOLDER', '收藏夹编号无效。')
+    const result = await deps.websiteService.addWebsiteToFolders(id, folderIds)
+    if (result.ok) await deps.onWebsitesChanged()
+    return result
+  })
   ipcMain.handle('websites:fetch-metadata', async (_event, url: unknown) => {
     if (typeof url !== 'string') return fail('INVALID_URL', '网址格式不正确。')
     try { return { ok: true, data: await deps.websiteMetadata.fetch(url) } } catch (error) { return fail('FETCH_METADATA_FAILED', error instanceof Error ? error.message : '无法获取网站信息。') }
@@ -27,6 +39,6 @@ export function registerWebsiteIpcHandlers(deps: { websiteService: WebsiteServic
   })
   ipcMain.handle('bookmarks:delete-folder', async (_event, folderId: unknown): Promise<IpcResult<void>> => {
     if (typeof folderId !== 'string') return fail('INVALID_FOLDER', '收藏夹编号无效。')
-    try { await deps.bookmarkService.deleteFolder(folderId); return { ok: true, data: undefined } } catch (error) { return fail('DELETE_FOLDER_FAILED', error instanceof Error ? error.message : '无法删除收藏夹。') }
+    try { await deps.bookmarkService.deleteFolder(folderId); await deps.onWebsitesChanged(); return { ok: true, data: undefined } } catch (error) { return fail('DELETE_FOLDER_FAILED', error instanceof Error ? error.message : '无法删除收藏夹。') }
   })
 }

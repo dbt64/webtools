@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { parseSearchCommand } from '../../shared/search-command.ts'
-import { appendTranslationAction, isTranslationCandidate } from './launcher-results.ts'
+import { appendTranslationAction, isTranslationCandidate, searchLauncherEntriesLazy } from './launcher-results.ts'
+
+test('empty or remote command does not resolve the Launcher search index', () => {
+  let indexReads = 0
+  const index = () => { indexReads++; return new Map() }
+  for (const [query, mode] of [['', 'local'], ['', 'saved-websites'], ['x', 'web'], ['x', 'files']]) {
+    assert.deepEqual(searchLauncherEntriesLazy(query, mode, [], [], index, null), [])
+  }
+  assert.equal(indexReads, 0)
+  searchLauncherEntriesLazy('x', 'local', [], [], index, null)
+  assert.equal(indexReads, 1)
+})
 
 test('accepts English words and phrases for translation, even without app matches', () => {
   for (const query of ['test', 'hello world', 'Visual Studio Code', "don't stop", 'state-of-the-art', 'l’amour', 'state‑of‑the‑art', 'café']) {

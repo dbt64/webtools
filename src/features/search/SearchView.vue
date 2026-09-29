@@ -39,6 +39,7 @@ const fileStatus = ref('')
 const rememberedAppId = ref<string | null>(null)
 let fileSearchSequence = 0
 let appMemoryLookupGeneration = 0
+let removeAppsCatalogUpdatedListener: (() => void) | undefined
 const parsed = computed(() => parseManagerSearchCommand(query.value))
 const isWebSearch = computed(() => parsed.value.mode === 'web')
 const isFileSearch = computed(() => parsed.value.mode === 'files')
@@ -251,11 +252,15 @@ watch(query, (value) => {
   }, 160)
 })
 onMounted(() => {
+  removeAppsCatalogUpdatedListener = window.desktop.onAppsCatalogUpdated(() => { void loadApps() })
   void loadApps()
   searchInput.value?.focus()
   document.addEventListener('pointerdown', handleOutsidePointer)
 })
-onUnmounted(() => document.removeEventListener('pointerdown', handleOutsidePointer))
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', handleOutsidePointer)
+  removeAppsCatalogUpdatedListener?.()
+})
 </script>
 
 <template>

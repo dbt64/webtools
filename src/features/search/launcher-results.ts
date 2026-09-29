@@ -1,12 +1,11 @@
 import { promoteRememberedAppResult } from '../../shared/app-search-memory.ts'
-import type { AppSearchEntry, EverythingResult, WebsiteEntry } from '../../shared/domain.ts'
+import type { AppSearchEntry, EverythingResult, WebsiteSearchEntry } from '../../shared/domain.ts'
 import type { SearchIndex } from '../../shared/pinyin-index.ts'
 import type { ParsedSearchCommand } from '../../shared/search-command.ts'
 import { searchEntries, type SearchableEntry, type SearchResult } from '../../shared/search.ts'
 
 export interface LauncherEntry extends Omit<SearchableEntry, 'kind'> {
   kind: 'app' | 'website'
-  favicon?: string
   url?: string
   searchText?: string
 }
@@ -22,7 +21,7 @@ export type TranslationAction = {
 
 export type LauncherAction =
   | { kind: 'application'; id: string; name: string; subtitle: string; match: SearchMatch }
-  | { kind: 'website'; id: string; name: string; subtitle: string; url: string; favicon?: string; folderIds: string[]; match: SearchMatch }
+  | { kind: 'website'; id: string; name: string; subtitle: string; url: string; folderIds: string[]; match: SearchMatch }
   | { kind: 'file'; id: string; name: string; locationLabel: string; fileKind: EverythingResult['kind'] }
   | TranslationAction
 
@@ -33,7 +32,7 @@ export function toLauncherAppEntry(app: AppSearchEntry): LauncherEntry {
   return { id: app.id, name: app.name, aliases: app.aliases, kind: 'app', subtitle: '本地应用' }
 }
 
-export function toLauncherWebsiteEntry(site: WebsiteEntry): LauncherEntry {
+export function toLauncherWebsiteEntry(site: WebsiteSearchEntry): LauncherEntry {
   return {
     id: site.id,
     name: site.name,
@@ -41,7 +40,6 @@ export function toLauncherWebsiteEntry(site: WebsiteEntry): LauncherEntry {
     kind: 'website',
     subtitle: site.url,
     url: site.url,
-    favicon: site.favicon,
     folderIds: site.folderIds,
     searchText: site.description ?? '',
   }
@@ -63,13 +61,26 @@ export function searchLauncherEntries<T extends LauncherEntry>(
   return ranked.slice(0, 8)
 }
 
+/** Defer the UI's search-index dependency until a local query needs it. */
+export function searchLauncherEntriesLazy<T extends LauncherEntry>(
+  query: string,
+  mode: ParsedSearchCommand['mode'],
+  appEntries: T[],
+  websiteEntries: T[],
+  getIndex: () => SearchIndex,
+  rememberedAppId: string | null,
+): SearchResult<T>[] {
+  if (!query || mode === 'web' || mode === 'files') return []
+  return searchLauncherEntries(query, mode, appEntries, websiteEntries, getIndex(), rememberedAppId)
+}
+
 export function toLauncherAction(result: SearchResult<LauncherEntry>): Exclude<LauncherAction, { kind: 'file' | 'translation' }> {
   const { entry, match } = result
   switch (entry.kind) {
     case 'app': return { kind: 'application', id: entry.id, name: entry.name, subtitle: entry.subtitle, match }
     case 'website': return {
       kind: 'website', id: entry.id, name: entry.name, subtitle: entry.subtitle,
-      url: entry.url ?? '', favicon: entry.favicon, folderIds: entry.folderIds ?? [], match,
+      url: entry.url ?? '', folderIds: entry.folderIds ?? [], match,
     }
     default: return assertNever(entry.kind)
   }
