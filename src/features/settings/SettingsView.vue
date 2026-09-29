@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Check, FolderSearch, Keyboard, KeyRound, Languages } from '@lucide/vue'
 import { createDefaultAppData, type AppSettings, type LauncherDisplayMode, type ThemePreference } from '@/shared/domain'
 import { cloneSharedAISettings, QWEN_REGIONS, type AIProviderId, type QwenRegion, type SharedAISettings } from '@/shared/ai-config'
@@ -40,6 +40,7 @@ const savingTheme = ref(false)
 const savingLauncherMode = ref(false)
 const everythingStatus = ref<{ executablePath?: string; running: boolean; version?: string }>()
 const checkingEverything = ref(false)
+let isMounted = false
 
 const selectedProvider = computed(() => aiDraft.value.defaultProviderId)
 const selectedProviderDescriptor = computed(() => aiProviders.value.find((provider) => provider.id === selectedProvider.value))
@@ -123,7 +124,9 @@ async function saveLauncherMode(launcherDisplayMode: LauncherDisplayMode): Promi
 
 async function refreshEverything(): Promise<void> {
   checkingEverything.value = true
-  everythingStatus.value = await window.desktop.detectEverything()
+  const status = await window.desktop.detectEverything()
+  if (!isMounted) return
+  everythingStatus.value = status
   checkingEverything.value = false
 }
 
@@ -164,6 +167,7 @@ async function refreshAIProviderStatuses(): Promise<void> {
     const result = await window.desktop.getAIProviderStatus(provider.id)
     return result.ok ? { id: provider.id, status: result.data } : { id: provider.id, error: result.error.message }
   }))
+  if (!isMounted) return
   aiProviderStatuses.value = Object.fromEntries(statuses.flatMap((item) => 'status' in item ? [[item.id, item.status] as const] : []))
   aiProviderStatusError.value = statuses.find((item) => 'error' in item)?.error ?? ''
 }
@@ -244,22 +248,29 @@ async function chooseTranslationEngine(engine: TranslationEngineId): Promise<voi
 }
 
 onMounted(async () => {
+  isMounted = true
   try {
-    settings.value = await window.desktop.getSettings()
+    const loadedSettings = await window.desktop.getSettings()
+    if (!isMounted) return
+    settings.value = loadedSettings
     aiDraft.value = cloneSharedAISettings(settings.value.sharedAI)
     const [providers, translationInfo] = await Promise.all([
       window.desktop.getAIProviderDescriptors(),
       window.desktop.getTranslationProviderInfo(),
     ])
+    if (!isMounted) return
     if (!providers.ok) throw new Error(providers.error.message)
     aiProviders.value = providers.data
     if (translationInfo.ok) translationProviderInfo.value = translationInfo.data
     await refreshAIProviderStatuses()
+    if (!isMounted) return
     await refreshEverything()
   } catch {
-    errorMessage.value = '无法读取本机设置。'
+    if (isMounted) errorMessage.value = '无法读取本机设置。'
   }
 })
+
+onBeforeUnmount(() => { isMounted = false })
 </script>
 
 <template>

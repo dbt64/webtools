@@ -1,41 +1,108 @@
 # WebTools
 
-WebTools 是一款面向 Windows 的个人桌面启动器，使用 Electron、Vue 3 和 TypeScript 构建。
+**一个为 Windows 打造的 Native-first 启动器与效率工具。** NativeHost 使用 C#、.NET 10 和 WPF 负责常驻搜索、系统托盘与全局快捷键；网址管理、设置和翻译等界面由 Electron Manager 按需启动。
 
-## 已包含的功能
+WebTools 可以搜索并启动 Windows 应用、打开收藏网址、执行网页搜索和查找本机文件。日常唤起与搜索由 NativeHost 独立完成；只有打开管理页面或翻译时，才需要启动 Electron。
 
-- 扫描开始菜单快捷方式，以应用名称、拼音或拼音首字母搜索并启动。
-- 搜索并启动 Windows 应用，支持拼音、首字母和别名匹配；使用 `Ctrl+Alt+Space` 唤出独立搜索框。
-- 搜索并打开手动维护的网址，支持网格/列表排布和收藏夹整理。
-- 在“网址与工具”中添加网址，WebTools 会尝试读取网页标题和图标；可建立收藏夹、切换网格/列表显示。
-- 输入 `?关键词` 使用当前选中的网页搜索引擎；内置 Google、百度、Bilibili，也可在设置中添加自定义引擎。
-- 输入 `file:关键词` 使用可选的 Everything 索引搜索本机文件和文件夹。
-- 自动获取网站标题与 favicon；图标无法获取时显示域名首字母。
-- 用 Google Translate 网页或 OpenAI 兼容 API 翻译文字。AI 地址可设置为 OpenAI、DeepSeek 等兼容服务。
+## 界面预览
 
-本地网址、收藏夹和偏好保存在原有 Electron `userData` 目录；首次启动会备份并迁移旧版数据。AI API Key 使用 Windows DPAPI 加密保护，不放入普通设置文件。
+当前 Native Launcher 仍处于最终验收阶段，项目截图将在迁移完成后更新。
 
-关闭主窗口会将 WebTools 收到系统托盘。可在设置中修改全局快捷键，并选择是否在登录 Windows 时启动。
+## 功能
 
-## 开发
+### Native Launcher
+
+- 搜索并启动开始菜单、桌面快捷方式、Windows 注册应用和打包应用。
+- 支持中文、拼音、拼音首字母、别名及模糊匹配。
+- 使用系统托盘和可配置的全局快捷键快速唤起。
+- 搜索和打开已保存的网址；用 `/关键词` 按名称或网址筛选收藏网址。
+- 用 `?关键词` 调用当前网页搜索引擎。
+- 用 `file:关键词` 搜索文件和文件夹；此功能需要单独安装并运行 Everything。
+- 支持浅色、深色和跟随系统主题，以及紧凑和展开布局。
+- 英文搜索可显示翻译入口，并将原文交给 Manager 中的翻译页面。
+
+### Electron Manager
+
+- 管理快速搜索、网址与收藏夹、应用设置。
+- 提供翻译页面，支持无 API Key 的在线翻译服务和可配置的 AI 翻译 Provider。
+- 在 Native-first 模式下按需启动；关闭 Manager 后 NativeHost 可继续运行。
+
+## 架构
+
+```mermaid
+flowchart TD
+    Windows[Windows] --> NativeHost[WebTools.NativeHost<br/>C# / .NET 10 / WPF]
+    NativeHost --> Launcher[Native Launcher]
+    NativeHost --> Search[应用目录与搜索核心]
+    NativeHost --> Tray[系统托盘与全局快捷键]
+    NativeHost --> Everything[可选 Everything 文件搜索]
+    NativeHost -->|Named Pipe / 按需启动| Manager[Electron Manager<br/>Electron / Vue 3 / TypeScript]
+    Manager --> SearchManager[快速搜索管理]
+    Manager --> Entries[网址与收藏夹]
+    Manager --> Settings[设置]
+    Manager --> Translation[翻译与 AI Provider]
+```
+
+Launcher 与 Manager 分工运行：NativeHost 提供轻量的 Windows 常驻入口；Manager 集中承载需要完整桌面 UI 的管理和工具页面。NativeHost 通过 Named Pipe 与 Manager 通信，并在请求管理页面或翻译时启动它。
+
+## 搜索语法
+
+| 输入 | 用途 |
+|---|---|
+| `关键词` | 搜索本机应用和已保存网址 |
+| `?关键词` | 使用当前搜索引擎进行网页搜索 |
+| `/关键词` | 仅搜索已保存网址，可匹配名称和网址 |
+| `file:关键词` | 使用 Everything 搜索文件和文件夹 |
+
+在仓库外使用 `file:` 前，请先安装并运行 [Everything](https://www.voidtools.com/)，然后在 WebTools 设置中启用文件搜索并检测或选择 `es.exe`。WebTools 不会下载、捆绑或自动安装 Everything。
+
+## 开发与验证
+
+开发 Native-first 应用需要 Windows、Node.js/npm 和 .NET 10 SDK。Everything 是可选组件；AI 翻译需要用户自行配置受支持 Provider 的凭据。
+
+在仓库根目录安装 JavaScript 依赖：
 
 ```powershell
 npm install
-npm run dev
 ```
 
-## 检查与打包
+启动 Native-first 应用：
+
+```powershell
+npm run native:dev
+```
+
+旧 Electron Launcher/reference 入口仍保留：
+
+```powershell
+npm run electron:dev
+```
+
+常用检查与构建命令：
 
 ```powershell
 npm run typecheck
+npm test
 npm run build
-npm run package:win
+dotnet build .\native\WebTools.NativeHost\WebTools.NativeHost.csproj --configuration Release
+dotnet run --project .\native\WebTools.NativeHost.Checks\WebTools.NativeHost.Checks.csproj --configuration Release
 ```
 
-安装包输出至 `release/`。应用目录来自当前用户/所有用户的开始菜单快捷方式、Windows 注册应用和 App Paths。
+`npm run build` 构建 Electron Manager。仓库中的 `npm run package:win` 仍使用现有 Electron Builder 配置生成旧 Electron 应用安装包；Native Launcher 的 Phase 4E 验收包由 `scripts/build-native-phase4e-acceptance.ps1` 单独生成。Phase 4E 安装包用于测试，不代表 production installer migration 已完成。
 
-### Everything 文件搜索
+## 当前状态
 
-Everything 是可选依赖。先安装并启动 [Everything](https://www.voidtools.com/)，然后在 WebTools“设置 → Everything 文件搜索”中启用功能并自动检测或选择 `es.exe`。在快速搜索框输入 `file:` 前缀，例如 `file:meeting notes`。WebTools 不会下载、捆绑或自动安装 Everything。
+Native Launcher 正处于 Phase 4E 最终用户验收阶段，部分 Windows GUI 和生命周期检查仍待人工完成。生产安装器迁移尚未完成，旧 Electron Launcher 与现有 Electron 打包配置仍保留。
 
-第一次使用 AI 翻译前，请在“设置”里填写兼容 API 的服务地址、模型和 API Key。OpenAI 常用地址为 `https://api.openai.com/v1`；DeepSeek 常用地址为 `https://api.deepseek.com`。点击“测试连接”会向服务发送一次简短请求。
+## 项目结构
+
+```text
+native/       WPF NativeHost、搜索核心、托盘与 Manager 通信
+electron/     Electron Main、preload、IPC 与后台服务
+src/          Vue 页面、共享类型和前端搜索/翻译逻辑
+resources/    Electron 应用与托盘图标
+scripts/      Native 开发入口及验收包构建脚本
+docs/         架构、迁移、性能审计和实施记录
+```
+
+更多架构说明、验收记录和历史设计见[文档索引](docs/README.md)。

@@ -1,7 +1,15 @@
 node_modules/
+**/bin/
+**/obj/
 out/
 dist/
 release/
+/output/
+**/.vs/
+**/.idea/
+**/TestResults/
+*.user
+*.suo
 .superpowers/sdd/*
 !.superpowers/sdd/.gitignore
 *.log

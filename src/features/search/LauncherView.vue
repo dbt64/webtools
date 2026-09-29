@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { ArrowDown, ArrowUp, ArrowUpRight, BookmarkPlus, Command, CornerDownLeft, File, Folder, Globe, Languages, Search } from '@lucide/vue'
-import type { AppSearchEntry, BookmarkFolder, WebsiteEntry, EverythingResult, LauncherDisplayMode, ThemePreference } from '@/shared/domain'
+import type { AppSearchEntry, BookmarkFolder, WebsiteSearchEntry, EverythingResult, LauncherDataVersions } from '@/shared/domain'
 import type { IpcResult } from '@/shared/ipc'
+import { isNewerLauncherVisibilityEvent, type LauncherVisibilityEvent } from '@/shared/launcher-visibility'
 import logoDark from '@/assets/brand/logo-dark.svg'
 import logoLight from '@/assets/brand/logo-light.svg'
-import { buildSearchIndex } from '@/shared/pinyin-index'
 import { parseSearchCommand } from '@/shared/search-command'
+import { LauncherSearchIndexCache } from './launcher-search-index-cache'
+import { useWebsiteIcons } from './use-website-icons'
 import {
   appendTranslationAction,
-  searchLauncherEntries,
+  searchLauncherEntriesLazy,
   toLauncherAction,
   toLauncherAppEntry,
   toLauncherFileAction,
@@ -30,7 +32,8 @@ interface LauncherApplication { id: string; name: string; icon: Component }
 const applications = ref<LauncherApplication[]>([{ id: 'translate', name: '翻译', icon: Languages }])
 const query = ref('')
 const apps = ref<AppSearchEntry[]>([])
-const websites = ref<WebsiteEntry[]>([])
+const websites = ref<WebsiteSearchEntry[]>([])
+const loadedVersions = ref<LauncherDataVersions>({ apps: -1, websites: -1 })
 const rememberedAppId = ref<string | null>(null)
 const folders = ref<BookmarkFolder[]>([])
 const selectedIndex = ref(0)
@@ -45,6 +48,10 @@ const fileResults = ref<EverythingResult[]>([])
 const fileStatus = ref('')
 let fileSearchSequence = 0
 let shortcutResizeObserver: ResizeObserver | undefined
+let websiteShortcutIconObserver: IntersectionObserver | undefined
+let websiteResultIconObserver: IntersectionObserver | undefined
+const visibleWebsiteShortcutIconIds = new Set<string>()
+const visibleWebsiteResultIconIds = new Set<string>()
 let dragPointerId: number | undefined
 let dragStartX = 0
 let dragStartY = 0
@@ -64,19 +71,22 @@ const parsed = computed(() => parseSearchCommand(query.value))
 const isWeb = computed(() => parsed.value.mode === 'web')
 const isFiles = computed(() => parsed.value.mode === 'files')
 let appMemoryLookupGeneration = 0
+let currentVisibilityGeneration = 0
+let launcherVisible = false
+let unsubscribeLauncherVisibility: (() => void) | undefined
 const appEntries = computed<LauncherEntry[]>(() => apps.value.map(toLauncherAppEntry))
 const websiteEntries = computed<LauncherEntry[]>(() => websites.value.map(toLauncherWebsiteEntry))
-const entries = computed<LauncherEntry[]>(() => [...appEntries.value, ...websiteEntries.value])
-const index = computed(() => buildSearchIndex(entries.value))
+const indexCache = new LauncherSearchIndexCache<LauncherEntry>()
+const index = computed(() => indexCache.get(appEntries.value, websiteEntries.value))
 function assertNever(value: never): never { throw new Error(`Unsupported launcher action: ${String(value)}`) }
 
 const searchRows = computed<SearchAction[]>(() => {
-  return searchLauncherEntries(
+  return searchLauncherEntriesLazy(
     parsed.value.query,
     parsed.value.mode,
     appEntries.value,
     websiteEntries.value,
-    index.value,
+    () => index.value,
     rememberedAppId.value,
   ).map(toLauncherAction)
 })
@@ -96,6 +106,8 @@ const selectableActions = computed<LauncherAction[]>(() => isFiles.value ? visib
 const selectableCount = computed(() => selectableActions.value.length)
 const visibleAppIds = computed(() => launcherActions.value.flatMap((action) => action.kind === 'application' ? [action.id] : []))
 const appIcons = useAppResultIcons(visibleAppIds)
+const websiteIcons = useWebsiteIcons(computed(() => loadedVersions.value.websites))
+const websiteIconMap = websiteIcons.icons
 
 watch(selectableActions, () => { selectedIndex.value = 0 })
 
@@ -104,39 +116,45 @@ watch(selectedIndex, async () => {
   resultsPanel.value?.querySelector<HTMLElement>('.launcher-result.selected')?.scrollIntoView({ block: 'nearest' })
 })
 
-async function focus(): Promise<void> {
+async function focus(generation: number): Promise<void> {
   await nextTick()
+  if (!launcherVisible || generation !== currentVisibilityGeneration) return
   input.value?.focus()
-  input.value?.select()
+  if (!query.value) input.value?.select()
 }
 
-async function load(): Promise<void> {
-  try { [apps.value, websites.value] = await Promise.all([window.desktop.getApps(), window.desktop.listWebsites()]) } catch { apps.value = []; websites.value = [] }
+let launcherDataLoad: Promise<void> | undefined
+function loadLauncherData(checkAgainAfterCurrent = false): Promise<void> {
+  if (launcherDataLoad) return checkAgainAfterCurrent ? launcherDataLoad.then(() => loadLauncherData()) : launcherDataLoad
+  // Electron IPC cannot clone Vue's reactive proxy; send a plain snapshot.
+  const knownVersions = { ...loadedVersions.value }
+  const request = Promise.resolve().then(() => window.desktop.getLauncherData(knownVersions)).then((changes) => {
+    if (changes.apps !== undefined) apps.value = changes.apps
+    if (changes.websites !== undefined) websites.value = changes.websites
+    loadedVersions.value = changes.versions
+  }).catch(() => undefined)
+  launcherDataLoad = request.finally(() => { launcherDataLoad = undefined })
+  return launcherDataLoad
 }
 
 async function hide(): Promise<void> {
-  query.value = ''
-  error.value = ''
-  expanded.value = false
-  websitesExpanded.value = false
-  applicationsExpanded.value = false
-  await window.desktop.setLauncherExpanded(false)
   await window.desktop.hideLauncher()
 }
 
-async function openWebsite(website: WebsiteEntry): Promise<void> {
+async function openWebsite(website: WebsiteSearchEntry): Promise<void> {
   const result = await window.desktop.openWebsite(website.id)
   if (!result.ok) { error.value = result.error.message; return }
   await hide()
 }
 
 function syncWindowSize(): void {
+  if (!launcherVisible) return
   const hasSearchResults = Boolean(query.value.trim())
   const isExpanded = expanded.value || hasSearchResults
   const expandedSectionExtraHeight = expanded.value
     ? (websitesExpanded.value ? 180 : 0) + (applicationsExpanded.value ? 120 : 0)
     : 0
-  void window.desktop.setLauncherExpanded(isExpanded, expandedSectionExtraHeight, hasSearchResults)
+  void window.desktop.setLauncherExpanded(isExpanded, expandedSectionExtraHeight, hasSearchResults, currentVisibilityGeneration)
 }
 
 function toggleExpanded(): void {
@@ -173,13 +191,68 @@ async function observeShortcutSections(): Promise<void> {
   await nextTick()
   shortcutResizeObserver?.disconnect()
   measureExpandableSections()
-  if (typeof ResizeObserver === 'undefined') return
-  shortcutResizeObserver ??= new ResizeObserver(() => measureExpandableSections())
-  for (const container of [websiteShortcutList.value, applicationShortcutList.value]) {
-    if (!container) continue
-    shortcutResizeObserver.observe(container)
-    container.querySelectorAll('.launcher-shortcut').forEach((card) => shortcutResizeObserver?.observe(card))
+  if (typeof ResizeObserver !== 'undefined') {
+    shortcutResizeObserver ??= new ResizeObserver(() => measureExpandableSections())
+    for (const container of [websiteShortcutList.value, applicationShortcutList.value]) {
+      if (!container) continue
+      shortcutResizeObserver.observe(container)
+      container.querySelectorAll('.launcher-shortcut').forEach((card) => shortcutResizeObserver?.observe(card))
+    }
   }
+  observeVisibleWebsiteIcons()
+}
+
+function observeVisibleWebsiteIcons(): void {
+  websiteShortcutIconObserver?.disconnect()
+  websiteResultIconObserver?.disconnect()
+  const shortcutRoot = expanded.value && !query.value.trim() ? websiteShortcutList.value : undefined
+  if (shortcutRoot) {
+    const cards = [...shortcutRoot.querySelectorAll<HTMLElement>('[data-website-id]')]
+    const availableIds = new Set(cards.flatMap((card) => card.dataset.websiteId ? [card.dataset.websiteId] : []))
+    for (const id of visibleWebsiteShortcutIconIds) if (!availableIds.has(id)) visibleWebsiteShortcutIconIds.delete(id)
+    if (typeof IntersectionObserver === 'undefined') {
+      visibleWebsiteShortcutIconIds.clear()
+      for (const card of cards.slice(0, 16)) if (card.dataset.websiteId) visibleWebsiteShortcutIconIds.add(card.dataset.websiteId)
+    } else {
+      websiteShortcutIconObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          const id = (entry.target as HTMLElement).dataset.websiteId
+          if (!id) continue
+          if (entry.isIntersecting) visibleWebsiteShortcutIconIds.add(id)
+          else visibleWebsiteShortcutIconIds.delete(id)
+        }
+        websiteIcons.setVisibleShortcutIds([...visibleWebsiteShortcutIconIds])
+      }, { root: shortcutRoot, threshold: 0.01 })
+      for (const card of cards) websiteShortcutIconObserver.observe(card)
+    }
+  } else {
+    visibleWebsiteShortcutIconIds.clear()
+  }
+  const resultRoot = resultsPanel.value
+  if (resultRoot) {
+    const rows = [...resultRoot.querySelectorAll<HTMLElement>('[data-website-result-id]')]
+    const availableIds = new Set(rows.flatMap((row) => row.dataset.websiteResultId ? [row.dataset.websiteResultId] : []))
+    for (const id of visibleWebsiteResultIconIds) if (!availableIds.has(id)) visibleWebsiteResultIconIds.delete(id)
+    if (typeof IntersectionObserver === 'undefined') {
+      visibleWebsiteResultIconIds.clear()
+      for (const row of rows) if (row.dataset.websiteResultId) visibleWebsiteResultIconIds.add(row.dataset.websiteResultId)
+    } else {
+      websiteResultIconObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          const id = (entry.target as HTMLElement).dataset.websiteResultId
+          if (!id) continue
+          if (entry.isIntersecting) visibleWebsiteResultIconIds.add(id)
+          else visibleWebsiteResultIconIds.delete(id)
+        }
+        websiteIcons.setVisibleResultIds([...visibleWebsiteResultIconIds])
+      }, { root: resultRoot, threshold: 0.01 })
+      for (const row of rows) websiteResultIconObserver.observe(row)
+    }
+  } else {
+    visibleWebsiteResultIconIds.clear()
+  }
+  websiteIcons.setVisibleShortcutIds([...visibleWebsiteShortcutIconIds])
+  websiteIcons.setVisibleResultIds([...visibleWebsiteResultIconIds])
 }
 
 function beginBarPointer(event: PointerEvent): void {
@@ -293,7 +366,7 @@ async function saveBookmark(input: { folderId?: string; newFolderName?: string }
     if (!folderId || !target) return
     const result = await window.desktop.addWebsiteToFolders(target.id, [...new Set([...target.folderIds, folderId])])
     if (!result.ok) { error.value = result.error.message; return }
-    websites.value = await window.desktop.listWebsites()
+    await loadLauncherData(true)
     showBookmarkDialog.value = false
   } finally { savingBookmark.value = false }
 }
@@ -325,37 +398,58 @@ watch(query, (value) => {
   } else if (command.mode === 'files') fileStatus.value = '输入关键词搜索文件和文件夹。'
 })
 
-function handleLauncherShow(event: Event): void {
-  const detail = event instanceof CustomEvent
-    ? event.detail as { launcherDisplayMode?: unknown; theme?: unknown } | undefined
-    : undefined
-  const launcherDisplayMode: LauncherDisplayMode = detail?.launcherDisplayMode === 'expanded' ? 'expanded' : 'compact'
-  const theme: ThemePreference = detail?.theme === 'light' || detail?.theme === 'dark' || detail?.theme === 'system' ? detail.theme : 'dark'
-  applyTheme(theme)
-  query.value = ''
-  expanded.value = launcherDisplayMode === 'expanded'
+function handleLauncherVisibility(event: LauncherVisibilityEvent): void {
+  if (!isNewerLauncherVisibilityEvent(currentVisibilityGeneration, event.generation)) return
+  currentVisibilityGeneration = event.generation
+  launcherVisible = event.kind === 'shown'
+  if (event.kind === 'hidden') {
+    ++fileSearchSequence
+    ++appMemoryLookupGeneration
+    query.value = ''
+    expanded.value = false
+    websitesExpanded.value = false
+    applicationsExpanded.value = false
+    selectedIndex.value = 0
+    fileResults.value = []
+    fileStatus.value = ''
+    rememberedAppId.value = null
+    error.value = ''
+    showBookmarkDialog.value = false
+    bookmarkTarget.value = undefined
+    visibleWebsiteResultIconIds.clear()
+    visibleWebsiteShortcutIconIds.clear()
+    websiteIcons.setVisibleResultIds([])
+    websiteIcons.setVisibleShortcutIds([])
+    return
+  }
+  applyTheme(event.theme)
+  expanded.value = event.launcherDisplayMode === 'expanded'
   websitesExpanded.value = false
   applicationsExpanded.value = false
   error.value = ''
-  void load()
+  void loadLauncherData()
   syncWindowSize()
-  void focus()
+  void focus(event.generation).finally(() => window.desktop.acknowledgeLauncherVisibility(event.generation))
 }
 
 onMounted(() => {
-  void load()
-  void focus()
+  void loadLauncherData()
   void observeShortcutSections()
-  window.addEventListener('webtools-launcher-show', handleLauncherShow)
+  unsubscribeLauncherVisibility = window.desktop.onLauncherVisibility(handleLauncherVisibility)
   window.desktop.launcherReady()
 })
 
-watch([websites, expanded], () => { if (expanded.value) void observeShortcutSections() }, { deep: true })
+watch([websites, expanded, query], () => { void observeShortcutSections() }, { deep: true, flush: 'post' })
 watch(applications, () => { if (expanded.value) void observeShortcutSections() }, { deep: true })
+watch(launcherActions, observeVisibleWebsiteIcons, { flush: 'post' })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('webtools-launcher-show', handleLauncherShow)
+  unsubscribeLauncherVisibility?.()
   shortcutResizeObserver?.disconnect()
+  websiteShortcutIconObserver?.disconnect()
+  websiteResultIconObserver?.disconnect()
+  visibleWebsiteShortcutIconIds.clear()
+  visibleWebsiteResultIconIds.clear()
   document.documentElement.classList.remove('launcher-dragging')
 })
 </script>
@@ -382,8 +476,8 @@ onBeforeUnmount(() => {
             </button>
           </header>
           <div ref="websiteShortcutList" class="launcher-shortcut-list website-shortcut-list launcher-scrollable" :class="{ expanded: websitesExpanded }">
-            <button v-for="website in websites" :key="website.id" class="launcher-shortcut" :title="website.url" @mousedown.prevent @click="openWebsite(website)">
-              <Favicon :url="website.url" :favicon="website.favicon" />
+            <button v-for="website in websites" :key="website.id" class="launcher-shortcut" :data-website-id="website.id" :title="website.url" @mousedown.prevent @click="openWebsite(website)">
+              <Favicon :url="website.url" :favicon="websiteIconMap[website.id]" />
               <span>{{ website.name }}</span>
             </button>
             <p v-if="!websites.length" class="launcher-shortcut-empty">收藏的网址会显示在这里</p>
@@ -417,11 +511,11 @@ onBeforeUnmount(() => {
           <div v-if="fileStatus" class="launcher-empty">{{ fileStatus }}</div>
         </template>
         <template v-else>
-          <div v-for="(result, idx) in launcherActions" :key="result.kind + ':' + (result.kind === 'translation' ? 'translate' : result.id)" class="launcher-result-wrap">
+          <div v-for="(result, idx) in launcherActions" :key="result.kind + ':' + (result.kind === 'translation' ? 'translate' : result.id)" class="launcher-result-wrap" :data-website-result-id="result.kind === 'website' ? result.id : undefined">
             <button class="launcher-result" :class="{ selected: selectedIndex === idx }" @mousedown.prevent @mouseenter="selectedIndex = idx" @click="dispatchAction(result)">
               <span class="launcher-result-icon">
                 <img v-if="result.kind === 'application' && appIcons[result.id]" class="favicon-image" :src="appIcons[result.id]" alt="" />
-                <Favicon v-else-if="result.kind === 'website'" :url="result.url" :favicon="result.favicon" />
+                <Favicon v-else-if="result.kind === 'website'" :url="result.url" :favicon="websiteIconMap[result.id]" />
                 <Languages v-else-if="result.kind === 'translation'" :size="17" />
                 <Command v-else :size="17" />
               </span>
