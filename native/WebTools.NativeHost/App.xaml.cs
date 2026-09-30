@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Interop;
 using WebTools.NativeHost.Catalog;
 using WebTools.NativeHost.Data;
+using WebTools.NativeHost.Diagnostics;
 using WebTools.NativeHost.Services;
 using WpfApplication = System.Windows.Application;
 using WpfMessageBox = System.Windows.MessageBox;
@@ -32,6 +33,10 @@ public partial class App : WpfApplication
     private MainWindow? _launcherWindow;
     private TrayIconService? _trayIcon;
     private Task? _pipeTask;
+    private Phase4EResourceControlServer? _phase4eResourceControl;
+    private Task? _phase4eResourceControlTask;
+    private UpdatePreparationServer? _updatePreparationServer;
+    private Task? _updatePreparationTask;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -43,9 +48,19 @@ public partial class App : WpfApplication
         _diagnostics.Record("runtime", $"os={Environment.OSVersion};dotnet={Environment.Version};arch={RuntimeInformation.ProcessArchitecture}");
         foreach (var display in MonitorPlacement.DescribeDisplays()) _diagnostics.Record("display", display);
 
+        Phase4EResourceTestOptions? resourceTest = null;
         try
         {
-            _singleInstanceMutex = new Mutex(false, MutexName);
+            resourceTest = Phase4EResourceTestOptions.Parse(e.Args);
+            if (resourceTest is not null)
+            {
+                var isolatedStatePath = Path.Combine(resourceTest.ProfileRoot, "launcher-state.json");
+                if (!File.Exists(isolatedStatePath) || !File.Exists(resourceTest.CatalogSnapshotPath))
+                    throw new InvalidDataException("The isolated Phase 4E resource test profile or catalog snapshot is missing.");
+            }
+
+            var testMutexSuffix = resourceTest is null ? "" : $".Phase4E.{resourceTest.ControlPipeName[(resourceTest.ControlPipeName.LastIndexOf('.') + 1)..]}";
+            _singleInstanceMutex = new Mutex(false, MutexName + testMutexSuffix);
             try { _ownsSingleInstanceMutex = _singleInstanceMutex.WaitOne(0, false); }
             catch (AbandonedMutexException) { _ownsSingleInstanceMutex = true; _diagnostics.Record("mutex", "recovered-abandoned-instance"); }
             if (!_ownsSingleInstanceMutex)
@@ -57,9 +72,9 @@ public partial class App : WpfApplication
 
             var allowDevelopmentManager = e.Args.Contains("--manager-dev", StringComparer.Ordinal);
             var profileDirectory = allowDevelopmentManager ? "WebTools-Dev" : "Nook";
-            var profilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), profileDirectory);
+            var profilePath = resourceTest?.ProfileRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), profileDirectory);
             _stateStore = new LauncherStateStore(Path.Combine(profilePath, "launcher-state.json"));
-            _useLoginStartupRegistry = !allowDevelopmentManager;
+            _useLoginStartupRegistry = !allowDevelopmentManager && resourceTest is null;
             var state = _stateStore.LoadOrMigrate(Path.Combine(profilePath, "nook-data.json"), out var migrationStatus);
             _diagnostics.Record("launcher_state_loaded", migrationStatus);
             if (_useLoginStartupRegistry)
@@ -68,8 +83,9 @@ public partial class App : WpfApplication
                 catch (Exception error) { _diagnostics.Record("login_startup_apply_error", error.GetType().Name); }
             }
 
+            var managerPipeName = resourceTest is null ? ManagerPipeName : $"{ManagerPipeName}.Phase4E.{resourceTest.ControlPipeName[(resourceTest.ControlPipeName.LastIndexOf('.') + 1)..]}";
             _pipeServer = new NativeManagerPipeServer(
-                ManagerPipeName,
+                managerPipeName,
                 _stateStore,
                 ApplyLauncherSettingsAsync,
                 ReplaceWebsitesAsync,
@@ -79,24 +95,41 @@ public partial class App : WpfApplication
 
             var processLauncher = new ManagerProcessLauncher(allowDevelopmentManager);
             _managerController = new ManagerController(_pipeServer, processLauncher, _diagnostics, ShowManagerError);
+            if (resourceTest is null)
+            {
+                _updatePreparationServer = new UpdatePreparationServer(
+                    UpdatePreparationServer.DefaultPipeName,
+                    (timeout, cancellationToken) => _managerController?.TryPrepareForUpdateAsync(timeout, cancellationToken) ?? Task.FromResult(true),
+                    () =>
+                    {
+                        Dispatcher.BeginInvoke(new Action(() => _launcherWindow?.Close()));
+                        return Task.CompletedTask;
+                    },
+                    message => _diagnostics.Record("update_pipe", message));
+                _updatePreparationTask = _updatePreparationServer.RunAsync(_hostCancellation.Token);
+            }
             _launcherWindow = new MainWindow(
                 _diagnostics,
                 _stateStore,
                 state,
-                new AppCatalogSnapshotStore(AppCatalogSnapshotStore.DefaultPath),
-                _managerController);
+                new AppCatalogSnapshotStore(resourceTest?.CatalogSnapshotPath ?? AppCatalogSnapshotStore.DefaultPath),
+                _managerController,
+                resourceTest is not null);
             MainWindow = _launcherWindow;
             var handle = new WindowInteropHelper(_launcherWindow).EnsureHandle();
-            _launcherWindow.RegisterHotkey(handle);
-            _trayIcon = new TrayIconService(
-                () => _managerController.OpenPage(ManagerPage.Search),
-                () => _managerController.OpenPage(ManagerPage.Entries),
-                () => _managerController.OpenPage(ManagerPage.Settings),
-                () => _managerController.OpenPage(ManagerPage.Translation),
-                () => Dispatcher.BeginInvoke(new Action(() => _launcherWindow?.ShowFromTray())),
-                () => Dispatcher.BeginInvoke(new Action(() => _ = ExitApplicationAsync())));
-            _launcherWindow.EffectiveThemeChanged += _trayIcon.ApplyEffectiveTheme;
-            _trayIcon.ApplyEffectiveTheme(LauncherThemePalette.ResolveEffectiveTheme(state.Theme, PackagedIconResolver.GetCurrentSystemTheme()));
+            _launcherWindow.RegisterHotkey(handle, resourceTest?.Hotkey);
+            if (resourceTest is null)
+            {
+                _trayIcon = new TrayIconService(
+                    () => _managerController.OpenPage(ManagerPage.Favorites),
+                    () => _managerController.OpenPage(ManagerPage.Entries),
+                    () => _managerController.OpenPage(ManagerPage.Settings),
+                    () => _managerController.OpenPage(ManagerPage.Translation),
+                    () => Dispatcher.BeginInvoke(new Action(() => _launcherWindow?.ShowFromTray())),
+                    () => Dispatcher.BeginInvoke(new Action(() => _ = ExitApplicationAsync())));
+                _launcherWindow.EffectiveThemeChanged += _trayIcon.ApplyEffectiveTheme;
+                _trayIcon.ApplyEffectiveTheme(LauncherThemePalette.ResolveEffectiveTheme(state.Theme, PackagedIconResolver.GetCurrentSystemTheme()));
+            }
             _launcherWindow.Closing += (_, _) => CleanupHostResources();
             _launcherWindow.Closed += (_, _) =>
             {
@@ -104,19 +137,27 @@ public partial class App : WpfApplication
                 Shutdown();
             };
 
-            _diagnostics.Record("host_ready", $"hotkey={state.QuickSearchShortcut};tray=visible;pipe={ManagerPipeName}");
+            var activeShortcut = resourceTest?.Hotkey ?? state.QuickSearchShortcut;
+            _diagnostics.Record("host_ready", $"hotkey={activeShortcut};tray={(_trayIcon is null ? "omitted-test-mode" : "visible")};pipe={managerPipeName}");
             _diagnostics.RecordStartupReady();
+            if (resourceTest is not null)
+            {
+                _phase4eResourceControl = new Phase4EResourceControlServer(resourceTest.ControlPipeName, _launcherWindow);
+                _phase4eResourceControlTask = _phase4eResourceControl.RunAsync(_hostCancellation.Token);
+            }
             _ = _launcherWindow.InitializeSearchAsync();
         }
         catch (Win32Exception exception)
         {
             _diagnostics.Record("startup_error", $"{exception.NativeErrorCode}: {exception.Message}");
+            if (resourceTest is not null) { Shutdown(1); return; }
             WpfMessageBox.Show($"WebTools Native Host could not start.\n{exception.Message}\nWin32 error: {exception.NativeErrorCode}", "WebTools Native Host", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error);
             Shutdown(1);
         }
         catch (Exception exception)
         {
             _diagnostics.Record("startup_error", exception.ToString());
+            if (resourceTest is not null) { Shutdown(1); return; }
             WpfMessageBox.Show($"WebTools Native Host could not start.\n{exception.Message}", "WebTools Native Host", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error);
             Shutdown(1);
         }
@@ -128,6 +169,10 @@ public partial class App : WpfApplication
         _hostCancellation.Cancel();
         try { _pipeTask?.Wait(TimeSpan.FromSeconds(2)); }
         catch (AggregateException error) { _diagnostics?.Record("pipe_task_exit_error", error.GetBaseException().GetType().Name); }
+        try { _phase4eResourceControlTask?.Wait(TimeSpan.FromSeconds(2)); }
+        catch (AggregateException error) { _diagnostics?.Record("resource_control_exit_error", error.GetBaseException().GetType().Name); }
+        try { _updatePreparationTask?.Wait(TimeSpan.FromSeconds(2)); }
+        catch (AggregateException error) { _diagnostics?.Record("update_pipe_exit_error", error.GetBaseException().GetType().Name); }
         try { _pipeServer?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
         catch (Exception error) { _diagnostics?.Record("pipe_cleanup_error", error.GetType().Name); }
         ReleaseSingleInstanceMutex();

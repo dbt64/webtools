@@ -1,4 +1,4 @@
-import { shell } from 'electron'
+import electron from 'electron'
 
 export function validateExternalUrl(value: string): URL {
   let url: URL
@@ -12,5 +12,5 @@ export function validateExternalUrl(value: string): URL {
 }
 
 export async function openExternalUrl(value: string): Promise<void> {
-  await shell.openExternal(validateExternalUrl(value).toString())
+  await electron.shell.openExternal(validateExternalUrl(value).toString())
 }

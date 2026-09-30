@@ -4,10 +4,6 @@
 
 WebTools 可以搜索并启动 Windows 应用、打开收藏网址、执行网页搜索和查找本机文件。日常唤起与搜索由 NativeHost 独立完成；只有打开管理页面或翻译时，才需要启动 Electron。
 
-## 界面预览
-
-当前 Native Launcher 仍处于最终验收阶段，项目截图将在迁移完成后更新。
-
 ## 功能
 
 ### Native Launcher
@@ -23,9 +19,14 @@ WebTools 可以搜索并启动 Windows 应用、打开收藏网址、执行网�
 
 ### Electron Manager
 
-- 管理快速搜索、网址与收藏夹、应用设置。
+- 默认打开收藏网址页面，可使用收藏夹整理网址，支持折叠文件夹、调整顺序和分类；布局会随窗口宽度自适应。
+- 管理网址与应用设置。
 - 提供翻译页面，支持无 API Key 的在线翻译服务和可配置的 AI 翻译 Provider。
 - 在 Native-first 模式下按需启动；关闭 Manager 后 NativeHost 可继续运行。
+
+## Windows 安装
+
+运行 Windows 安装包后，桌面和开始菜单快捷方式会启动 `WebTools.NativeHost.exe`。Electron Manager 位于安装目录的 `Manager/` 子目录，由 NativeHost 在需要管理页面或翻译时启动；通常不需要直接运行其中的 `WebTools.exe`。更新会沿用原安装目录；如果 WebTools 正在运行，安装程序会先征求退出确认，正常关闭后在当前安装流程中继续更新。
 
 ## 架构
 
@@ -37,8 +38,7 @@ flowchart TD
     NativeHost --> Tray[系统托盘与全局快捷键]
     NativeHost --> Everything[可选 Everything 文件搜索]
     NativeHost -->|Named Pipe / 按需启动| Manager[Electron Manager<br/>Electron / Vue 3 / TypeScript]
-    Manager --> SearchManager[快速搜索管理]
-    Manager --> Entries[网址与收藏夹]
+    Manager --> Websites[网址 / 收藏夹管理]
     Manager --> Settings[设置]
     Manager --> Translation[翻译与 AI Provider]
 ```
@@ -72,7 +72,7 @@ npm install
 npm run native:dev
 ```
 
-旧 Electron Launcher/reference 入口仍保留：
+开发时可单独启动 Electron Manager：
 
 ```powershell
 npm run electron:dev
@@ -88,20 +88,20 @@ dotnet build .\native\WebTools.NativeHost\WebTools.NativeHost.csproj --configura
 dotnet run --project .\native\WebTools.NativeHost.Checks\WebTools.NativeHost.Checks.csproj --configuration Release
 ```
 
-`npm run build` 构建 Electron Manager。仓库中的 `npm run package:win` 仍使用现有 Electron Builder 配置生成旧 Electron 应用安装包；Native Launcher 的 Phase 4E 验收包由 `scripts/build-native-phase4e-acceptance.ps1` 单独生成。Phase 4E 安装包用于测试，不代表 production installer migration 已完成。
+`npm run build` 构建 Electron Manager renderer、Main 和 preload。`npm run native:dev` 启动 NativeHost 并按需启动 Manager；`npm run electron:dev` 仅用于单独调试 Manager。`npm run package:win` 生成 NativeHost 为入口、Electron Manager 单独安装在 `Manager/` 下的 Windows 安装包，并执行独立路径安装/卸载 smoke 验证。
 
 ## 当前状态
 
-Native Launcher 正处于 Phase 4E 最终用户验收阶段，部分 Windows GUI 和生命周期检查仍待人工完成。生产安装器迁移尚未完成，旧 Electron Launcher 与现有 Electron 打包配置仍保留。
+Native Launcher 迁移已完成。NativeHost 负责常驻搜索、系统托盘、全局快捷键和开机启动；Electron Manager 按需启动。实现与验收细节见 [Phase 4F 报告](docs/native-launcher-phase4f-removal.md)。
 
 ## 项目结构
 
 ```text
 native/       WPF NativeHost、搜索核心、托盘与 Manager 通信
 electron/     Electron Main、preload、IPC 与后台服务
-src/          Vue 页面、共享类型和前端搜索/翻译逻辑
-resources/    Electron 应用与托盘图标
-scripts/      Native 开发入口及验收包构建脚本
+src/          Vue 页面、共享类型和 Manager UI
+resources/    应用品牌图标
+scripts/      Native 开发入口及生产安装包构建脚本
 docs/         架构、迁移、性能审计和实施记录
 ```
 

@@ -3,11 +3,11 @@ import { computed, reactive, ref } from 'vue'
 import type { WebsiteEntry } from '@/shared/domain'
 import type { BookmarkFolder } from '@/shared/domain'
 
-const props = defineProps<{ entry?: WebsiteEntry; folders: BookmarkFolder[]; saving?: boolean }>()
+const props = defineProps<{ entry?: WebsiteEntry; folders: BookmarkFolder[]; initialFolderIds?: string[]; saving?: boolean }>()
 const emit = defineEmits<{ save: [value: { id?: string; name: string; url: string; description?: string; favicon?: string; folderIds: string[] }]; cancel: [] }>()
 const form = reactive({ name: props.entry?.name ?? '', url: props.entry?.url ?? '', description: props.entry?.description ?? '' })
 const favicon = ref(props.entry?.favicon)
-const folderIds = ref([...(props.entry?.folderIds ?? [])])
+const folderIds = ref([...(props.entry?.folderIds ?? props.initialFolderIds ?? [])])
 const fetchedTitle = ref('')
 const metadataLoading = ref(false)
 const metadataMessage = ref('')

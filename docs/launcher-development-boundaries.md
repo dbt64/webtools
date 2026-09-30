@@ -4,17 +4,17 @@ The deterministic behavior fixtures live in `tests/fixtures/launcher-parity.json
 
 ## Ownership
 
-- **Launcher UI** owns input state, focus, keyboard selection, hover, scrolling, layout, and animation.
-- **Shared search behavior** owns command parsing, normalization, matching, ranking, pinyin, result limits, app-search memory semantics, and typed actions.
-- **Windows/Electron adapters** own `.lnk`, AUMID, App Paths, icons, process launching, Everything integration, global shortcuts, tray, and `BrowserWindow` lifecycle.
-- **Manager** owns Settings UI, translation providers, website management, and future complex modules such as Applications.
+- **NativeHost** is the production launcher and owns the WPF search window, input and selection state, Windows app discovery/launch, icons, Everything integration, tray, global hotkey, login startup, and the Native launcher state store.
+- **Native search behavior** implements command parsing, normalization, matching, ranking, pinyin, result limits, app-search memory, and typed actions. The JSON parity fixtures and contract tests describe cross-implementation behavior; changes to those semantics must update the fixtures and relevant implementations.
+- **Electron Main** is Manager-only in production. It owns the Manager window, secure renderer IPC, the Manager DataStore, and the Named Pipe client to NativeHost. It does not create a production Launcher window, tray icon, global shortcut, or startup entry.
+- **Manager** owns website management, Settings UI, translation providers, and other full-page tools. Launcher settings and website changes are projected to NativeHost over the versioned Named Pipe protocol.
 
 ## Current behavior baseline
 
 - `?query` searches the selected web engine, `file:query` delegates to Everything, and `/query` searches saved websites only. Manager quick search converts `/query` to ordinary local search. Prefix recognition currently requires the first raw character; leading whitespace before a prefix remains local text.
 - Ordinary local search mixes applications and saved websites. `/` mode limits candidates to saved websites. Website names, URL aliases, and descriptions are indexed; opening a website uses its saved ID.
 - Search normalizes case, accents, and punctuation, supports pinyin, and sorts by the current rank tiers before name ordering. Ordinary app and website rows share an eight-result limit. An eligible Latin phrase can append a translation action after those rows, including as row nine.
-- Launcher row actions distinguish application, website, file, and translation. Web search is a command mode rather than a row action. App and website launches use stable IDs; file launch uses an opaque Everything result ID.
+- Native launcher row actions distinguish application, website, file, and translation. Web search is a command mode rather than a row action. App and website launches use stable IDs; file launch uses an opaque Everything result ID.
 
 ## Change rule
 
@@ -25,8 +25,8 @@ The deterministic behavior fixtures live in `tests/fixtures/launcher-parity.json
 
 ## Applications and data ownership
 
-An Applications module must reuse the Electron-owned `AppSearchEntry` identity, display name, aliases, icon lookup, and `launchApp(id)` semantics; it must not create a second app catalog or alias model. Catalog IDs are derived from the effective launch identity and remain stable while that identity is unchanged; changing an install target or shortcut invocation can change an ID. Any future persisted aliases, favorites, hidden state, or categories need one explicit writer. Electron remains the sole `DataStore` owner; a future Native proof of concept must not write the existing data file or create a competing persistence model.
+NativeHost owns the production app catalog and launcher-specific persisted state. Catalog IDs are derived from effective launch identity; aliases let duplicate shortcuts remain searchable. Manager continues to own the existing website and translation configuration data and synchronizes the reduced launcher website projection and launcher settings through the Named Pipe protocol. Do not add a second writer for the Manager website schema or expose local filesystem paths to Manager renderer code.
 
-## Future Native parity
+## Parity fixtures
 
-The JSON fixtures define fictional applications, websites, fixed IDs, and fixed memory timestamps without machine paths or user data. A future Native launcher can reproduce the same semantic inputs and outputs. This phase does not create a Native project or an Applications module.
+The JSON fixtures use fictional applications, websites, fixed IDs, and fixed memory timestamps without machine paths or user data. Keep them deterministic and update the parity contract when changing shared search semantics. Windows discovery, focus, hover, scrolling, drag, tray, shortcut registration, window lifecycle, and external launches require NativeHost runtime verification; they are not established by the shared contract tests.

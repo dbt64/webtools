@@ -1,20 +1,25 @@
 # WebTools Native Launcher — Phase 4E Feature Parity & User Acceptance
 
 审计日期：2026-09-29
+Closeout 更新：2026-09-30
 审计范围：当前工作树中的 Native WPF Launcher、Electron Manager/reference Launcher、NativeHost 与自动化检查。
-结论状态：**拖动范围修复、自动化验证和独立 Windows acceptance 安装包已完成；完整 Windows UI acceptance 尚未完成。暂不建议进入 Phase 4F。**
+结论状态：**Phase 4E 核心 GUI、隔离迁移、hotkey 冲突、五轮冷启动基线及资源归因通过。独立 No-UIA 真 WPF 3000-query workload 在首轮增长后趋于平台；UIA 对照显著放大了观测到的增长。P2 资源归因 blocker 已关闭。Phase 4E 完成并 READY FOR PHASE 4F；Phase 4F 尚未开始。**
 
-本报告只记录 Phase 4E 结果。本轮仅收敛 Native Launcher 拖动起始区域，并新增回归检查、Phase 4E 专用 acceptance installer 脚本和人工清单；没有修改 Electron Launcher、正式 installer 配置或数据结构。Phase 4E acceptance 包已生成并完成隔离安装 smoke test。没有 commit、push、PR，也没有进入 Phase 4F。工作树中已有的用户修改均保留。
+2026-09-29 的原始实现轮只收敛 Native Launcher 拖动起始区域，并新增回归检查、Phase 4E 专用 acceptance installer 脚本和人工清单；没有修改 Electron Launcher、正式 installer 配置或数据结构。2026-09-30 closeout 增加了临时 profile migration、真实 hotkey conflict checks，以及隔离 A/B 资源归因测试驱动。Phase 4E acceptance 包已生成并完成隔离安装 smoke test。没有 commit、push、PR，也没有进入 Phase 4F。
+
+## 2026-09-30 Acceptance Update
+
+用户确认已安装的 Phase 4E acceptance build 通过核心 GUI 验收：Native 应用冷启动、普通搜索期间 Electron=0、全局快捷键/首字符/中文 IME、`?`/`/`/`file:` 命令、SearchBox TextBox 与指定空白拖动、Translation cold/warm handoff、Manager 正常关闭后 Electron 归零、NativeHost 保留、Manager reopen、5/30 次 Manager cycles 无 orphan/duplicate，以及 Settings 使用、同步和持久化。以上只按用户明确确认的范围记为 **PASS (USER CONFIRMED)**；Windows OS reboot 单独仍为 **NOT TESTED**。另完成真实 DataStore v2 schema 的临时目录迁移验收、真实 `RegisterHotKey` 冲突事务、五轮独立冷启动基线，以及新的隔离 A/B 资源归因。此前安装版 PID 23928 的 UIA 1000-query/300-toggle 结果保留为历史观测；新的同 build、新 PID、隔离 profile 对照表明 UIA 显著放大了测量到的增长，No-UIA workload 则在 R2/R3 趋平。本轮没有进入 Phase 4F。
 
 ## 1. Executive Summary
 
-当前实现已经具备 Native-only 空闲架构：NativeHost 持有托盘、全局快捷键、WPF Launcher、搜索、目录快照和 Manager Controller；Electron Manager 由页面导航或翻译 handoff 按需启动。此前进程样本只发现 NativeHost，没有 WebTools/Electron 进程；该样本中的 PID 9684 后来已退出，本轮没有重新启动它做内存测量。用户最近报告的 Task Manager 读数单独记录为人工观察，不与旧 Private Bytes/Working Set 样本混用。
+当前实现已经具备 Native-only 空闲架构：NativeHost 持有托盘、全局快捷键、WPF Launcher、搜索、目录快照和 Manager Controller；Electron Manager 由页面导航或翻译 handoff 按需启动。2026-09-30 用户确认了本报告开头列出的核心安装版 GUI 行为。当前 build 五轮资源基线已使用同一采样器采集；此前 process sample 与用户 Task Manager 读数仅作为历史记录，不混用口径或据此宣称优化收益。
 
-本轮自动验证通过：TypeScript typecheck、Node 测试 109/109、Electron production build、NativeHost Release build、Native checks 39/39、真实 Windows 目录扫描 287 个 app、Win32 图标 100/100、真实临时快捷方式 launch smoke test、win-x64 self-contained publish，以及最新 Phase 4E 安装包在中文/空格路径的安装、Manager discovery 和卸载 smoke test。拖动回归检查使用真实 WPF TextBox 字符布局和 hit testing 验证文字区/空白区判定，但没有模拟真实鼠标或键盘焦点。自动化证据没有覆盖完整 UI 行为。
+本轮 fresh automated verification：TypeScript typecheck、Node 测试 109/109、Electron production build、NativeHost Release build、Native checks 46/46，以及真实 Windows `RegisterHotKey` 冲突事务。新增迁移覆盖基于真实 DataStore v2 字段并只使用临时 profile；没有访问或修改用户真实 profile/credentials。资源归因驱动通过显式参数启动隔离 NativeHost，profile 和 catalog snapshot 位于临时目录，named pipe 限制为当前用户；不启动 Manager、不调用 SearchCore 代替 UI、不激活结果。A/B 的 NativeHost 与 managed DLL SHA-256 一致；原已安装 PID 27632 在整个测试期间保持运行，采样期 NativeHostCount=2（原实例+隔离测试实例）、Electron=0。A/B 测试 Host 都经测试管道正常退出。此前的目录扫描、图标、临时 `.lnk` 和 acceptance installer 隔离安装结果仍作为 2026-09-29 历史证据保留，本轮没有重跑。拖动回归检查覆盖 WPF TextBox hit-test，真实鼠标和键盘焦点行为则由用户确认通过。
 
-**没有发现已确认的 P0/P1 缺陷。** 这不代表 Phase 4E acceptance 完成：冷启动、热键/IME、Manager 冷暖 handoff、正常关闭后 Electron 归零、30 次 Manager 周期、实际设置同步、旧 Electron 用户档案迁移和 DPI/多屏都尚未完成 GUI/runtime 验收。Native 拖动现已限制到搜索栏和顶部指定拖动面；WPF 真实鼠标交互仍须按清单人工验收。
+**没有发现已确认的 P0/P1 缺陷。** 核心 GUI/lifecycle、隔离迁移和真实 hotkey 冲突检查通过。五次冷启动 Private Bytes median 76,726,272 B（73.17 MiB），Working Set median 142,372,864 B（135.78 MiB），每轮 Electron=0。新的隔离 A/B 中，No-UIA 真 WPF workload 同一 PID 连续 3×1000 次查询，Private Bytes settle 为 123.04→124.96→125.88 MiB，R2→R3 +0.93 MiB；随后 300 次注册热键显隐后 settle 为 114.82 MiB。UIA 对照在另一新 PID 上以相同语料执行 1000 次查询，settle 为 278.23 MiB；相对自身 idle 的增长约 +149.98 MiB，而 No-UIA 首轮 settle 相对自身 idle 增长约 +20.82 MiB。两者 workload 增长相差约 129.15 MiB，托管堆也表现出显著差异。证据支持 UI Automation 显著放大了此前增长；它不证明 UIA 解释 100% 的历史增幅，也没有识别具体保留对象或 GC root。No-UIA R2/R3 已趋于平台，未触发 profiling 条件，资源 P2 gate 关闭。Win32/Store app 实际启动、图标呈现、Theme 视觉、DPI/多屏和 OS reboot 的剩余验证仍单独列出；没有把源码推断成 runtime PASS。
 
-本轮 acceptance installer：`D:\System default\Desktop\HomePage\release\native-phase4e-acceptance-20260929-233750\WebTools-Native-Phase4E-Setup.exe`（2026-09-29 23:40:54 构建完成，167,637,148 bytes，SHA-256 `74B32B081172F52FD78D5484F55E89D07CDC0B515AA737B992176833909A70FD`）。它使用独立 Phase 4E NSIS 配置，安装入口为 `WebTools.NativeHost.exe`，Electron Manager 放在 `Manager\WebTools.exe`，由 Native ManagerController 按需发现/启动。测试安装到 `D:\System default\Desktop\HomePage\release\native-phase4e-acceptance-20260929-233750\smoke-install\Phase 4E 中文 空格验证`，检查通过后由该测试安装自身的卸载程序清理；没有触碰已有用户安装。
+本轮 acceptance installer：`release\native-phase4e-acceptance-20260929-233750\WebTools-Native-Phase4E-Setup.exe`（2026-09-29 23:40:54 构建完成，167,637,148 bytes，SHA-256 `74B32B081172F52FD78D5484F55E89D07CDC0B515AA737B992176833909A70FD`）。它使用独立 Phase 4E NSIS 配置，安装入口为 `WebTools.NativeHost.exe`，Electron Manager 放在 `Manager\WebTools.exe`，由 Native ManagerController 按需发现/启动。测试安装到 `release\native-phase4e-acceptance-20260929-233750\smoke-install\Phase 4E 中文 空格验证`，检查通过后由该测试安装自身的卸载程序清理；没有触碰已有用户安装。
 
 ## 2. Current Architecture
 
@@ -55,7 +60,7 @@ Windows 任务管理器“应用分组”、Private Bytes 和 Working Set 是不
 
 ## 4. Feature Parity Matrix
 
-状态按用户可观察行为记录。源代码/核心测试通过不等于完整 GUI parity 已通过。
+下方原始审计各节（第 4–32 节）保留 2026-09-29 当时的证据快照；第 33 节和文末 Final Acceptance 已按 2026-09-30 用户确认更新。旧节中的“未测”状态不代表当前状态；当前有效状态以 Final Acceptance 矩阵为准。
 
 | Feature | Electron reference | Native 当前实现 | 状态 | 严重级别 | 后续动作 |
 |---|---|---|---|---|---|
@@ -85,6 +90,8 @@ Windows 任务管理器“应用分组”、Private Bytes 和 Working Set 是不
 | Existing-user migration | Electron profile persistence | one-time legacy Nook state import + Native state persistence | PARTIAL（fixture test pass） | P2 gate | 使用真实旧用户档案副本验证 hotkey/theme/engine/sites/app memory。 |
 
 ## 5. P0 / P1 / P2 / P3 Differences
+
+以下是初始代码/设计审计的风险快照；当前验收状态以文档后部的 **Phase 4E Final Acceptance** 为准。
 
 | Severity | Confirmed issue count | Findings |
 |---|---:|---|
@@ -194,7 +201,7 @@ Native checks 39/39 包含 catalog snapshot reload、损坏快照安全拒绝/�
 
 ## 27. Post-search Memory
 
-SearchCore stress harness 完成 1,000 次查询后，该 harness process Private Bytes 从 38,449,152 B 降至 38,412,288 B；一次记录的 Working Set 为 107,307,008 B；GDI 9→9、USER 13→14、threads 23。它是独立 harness，而非 WPF Launcher renderer/window 的显存或完整 NativeHost memory 测量；起止快照不能证明 1,000 次真实 UI 查询后的长期 plateau。没有执行 100 query → hide → wait 或 1,000 次 mixed UI search。
+初始审计时，SearchCore stress harness 完成 1,000 次查询后，该 harness process Private Bytes 从 38,449,152 B 降至 38,412,288 B；一次记录的 Working Set 为 107,307,008 B；GDI 9→9、USER 13→14、threads 23。它是独立 harness，而非 WPF Launcher renderer/window 的显存或完整 NativeHost memory 测量。后续完整 WPF UI 自动化时间序列见本报告 Resource Stress 节；该 harness 结果不能替代 UI 样本。
 
 ## 28. Manager Memory Lifecycle
 
@@ -202,7 +209,7 @@ SearchCore stress harness 完成 1,000 次查询后，该 harness process Privat
 
 ## 29. GDI / USER
 
-Win32 icon cache 测试首次读取 100 个图标时 GDI 11→48，缓存上限 64，重复读取仍为 48；这显示缓存填充带来一次性资源上升后样本稳定。Search stress harness GDI 9→9、USER 13→14。没有执行 300 次 WPF show/hide、1000 次实际 UI 搜索、主题切换和 Manager cycles 后的 GDI/USER 采样序列。因此结论是 **自动化样本未显示单调增长；完整 Launcher 的 leak/plateau 状态未知**。
+Win32 icon cache 测试首次读取 100 个图标时 GDI 11→48，缓存上限 64，重复读取仍为 48；这显示缓存填充带来一次性资源上升后样本稳定。Search stress harness GDI 9→9、USER 13→14。**截至初始审计**尚无 300 次 WPF show/hide 或 1000 次真实 UI 搜索后的 GDI/USER 序列；后续完整 workload 数值见本报告 Resource Stress 节。Manager cycles 的资源指标仍未采集。
 
 ## 30. Startup Performance
 
@@ -214,102 +221,260 @@ NativeHost 使用 .NET 10 Windows Desktop self-contained `win-x64` 发布；项�
 
 ## 32. Automated Tests
 
-本轮复核实际执行：
+2026-09-30 fresh-run results：
 
 - Vue/renderer TypeScript：`vue-tsc --noEmit -p tsconfig.web.json`，通过。
 - Main/preload TypeScript：`tsc --noEmit -p tsconfig.node.json`，通过。
-- Node tests：109/109 通过。测试入口通过当前 workspace bundled Node 直接调用，因为本执行 shell 没有可用的 `npm` 命令；这不是声称运行了字面上的 `npm test`。
-- Electron production bundle：直接运行 `electron-vite build`，Main、preload、Launcher 和 Manager bundles 通过。
-- NativeHost Release build：通过，0 warning / 0 error。
-- NativeHost checks：39/39 通过，包括指定拖动区域、TextBox 实际文本 hit test、文字区拒绝拖动、右侧空白区允许拖动并通过阈值的回归检查。
-- Native SearchCore stress：287 app catalog；本地 query n=950，中位数 0.030 ms / P95 0.127 ms；Everything n=50，中位数 170.441 ms / P95 183.485 ms。
-- Icon check：100/100 Win32 sample resolves；64-entry bounded cache；repeat pass GDI 48→48。Phase 4E earlier packaged icon sample resolved 12/12。
-- Launch action check：真实临时 `.lnk` 启动产生预期 marker，没有启动 Electron。
-- Self-contained publish：`win-x64`, `UseAppHost=true`, `PublishSingleFile=false`, `PublishTrimmed=false`，通过；本轮没有把测试包安装到真实用户默认 profile，也没有声称它与既有安装的 payload 一致。
-- Phase 4E acceptance installer：Electron Manager production payload + NativeHost Release self-contained payload；默认安装/快捷方式入口为 `WebTools.NativeHost.exe`，Manager 位于 `Manager\WebTools.exe`。独立 NSIS test build 成功；在包含中文和空格的隔离路径安装后，Native Manager discovery 校验通过；使用该临时安装的 Uninstall.exe 清理后目录已消失。
-- `git diff --check`：报告和清单最终更新后再次运行；只出现 Git 关于既有文件 LF/CRLF 转换的提示，没有 whitespace error。
+- `npm test`：109/109 通过；Node 输出既有 `MODULE_TYPELESS_PACKAGE_JSON` 警告。
+- `npm run build`：Electron Main、preload、Launcher 和 Manager production bundles 通过。
+- `dotnet build native/WebTools.NativeHost/WebTools.NativeHost.csproj --configuration Release --runtime win-x64`：通过，0 warning / 0 error。
+- NativeHost checks：本次最终重跑为 46/46；新增 Phase 4E resource-driver 参数隔离检查。另覆盖指定拖动区域、TextBox hit test、迁移边界与真实 `RegisterHotKey` 冲突回滚。
+- `git diff --check`：最终 closeout diff 检查通过；Git 只提示既有 LF/CRLF 转换，不存在 whitespace error。
 
-当前 shell 不提供可用 `npm` 命令，因此通过同一 workspace 中已安装的 Node 程序直接调用 package scripts 对应入口：执行了 `vue-tsc --noEmit -p tsconfig.web.json`、`tsc --noEmit -p tsconfig.node.json`、Node test runner 和 `electron-vite build`，均成功；这不是声称运行了字面上的 `npm run ...` 命令。测试过程产生的既有 `MODULE_TYPELESS_PACKAGE_JSON` 警告没有导致失败。
+本轮已实际运行字面的 `npm run typecheck`、`npm test` 和 `npm run build`；Node tests 为 109/109，Node 输出既有 `MODULE_TYPELESS_PACKAGE_JSON` 警告。另完成 NativeHost Release build、46 项 Native checks、A/B real-WPF workload 与 PowerShell 脚本解析验证。
 
-## 33. Manual Verification Required
+## 33. Remaining Manual / Environment Checks (historical snapshot)
 
-以下项目本轮没有真实 UI 验收，不标 PASS：
+用户已于 2026-09-30 确认核心 GUI/lifecycle 项目通过；不要要求重复。仍未取得当前轮真实证据的细项如下：
 
-- [ ] 停止全部 WebTools 进程后安装版冷启动；首次快捷键打开、第一字符、中文 IME、30 次 toggle。
-- [ ] ESC、blur hide、内部控件交互、拖动区域，以及 100 次 query 后 hide/reopen。
-- [ ] 英文、中文、全拼、首字母、alias、substring、`?`、`/`、`file:` 的输入、选择、Enter、点击和错误态。
-- [ ] 从 Native Launcher 启动常见 Win32、桌面 `.lnk`、多个真实 Store app；确认启动后窗口隐藏。
-- [ ] Win32、packaged、网站、文件夹/文件和 fallback 图标在真实窗口呈现，图标加载不影响选择。
-- [ ] 网站 CRUD、搜索引擎/custom template 更新后即时生效和 NativeHost 重启后保持。
-- [ ] Everything 有效、不可用、快速输入、空结果、打开文件/目录。
-- [ ] Translation cold/warm handoff，Unicode/多行/长文本/快速重复，精确原文和 provider 调用行为。
-- [ ] Search / Entries / Settings / Translation 页面复用 Manager；点击 × 后 Electron 主/renderer/GPU/utility 全部退出；Manager reopen；30 次开关无 orphan。
-- [ ] 新/冲突 hotkey 事务，系统主题运行时变化，默认 compact/expanded，真实旧 Electron profile migration。
-- [ ] 100/125/150% DPI、多显示器、鼠标当前屏幕、任务栏位置、visual hover/selection/scrollbar。
-- [ ] 5 轮独立冷启动 30 秒 Private Bytes/Working Set median；100 搜索后 hide/wait；1000 mixed UI searches；300 show/hide；主题/图标/Manager cycles 后 GDI/USER 时间序列。
+- [ ] 从安装版启动具体 Win32、桌面 `.lnk` 和多个 Store app；逐个确认目标应用与窗口隐藏。
+- [ ] 真实 UI 中核对 Win32/Store/site/file/fallback 图标及快速 query 时没有错配。
+- [ ] 单独执行系统已占用 hotkey 的 Settings UI 流程，检查 UI 错误提示和未保存行为；真实 RegisterHotKey 冲突以及旧注册保留已由本机自动检查覆盖。
+- [ ] 100/125/150% DPI、多显示器、鼠标当前屏幕、任务栏边缘及主题视觉对照。
+- [ ] Windows OS reboot（应用冷启动已通过，不降级）。
+- [x] 当前 acceptance build 5 次独立冷启动约 30 秒资源指标 — PASS (MEASURED; USER NORMAL EXIT)。
+- [x] 隔离 A/B No-UIA 真实 WPF 搜索与 300 次注册热键 show-hide 资源门槛 — **PASS (MEASURED)**；见 `Resource Attribution — isolated A/B`。旧 UIA-only 样本后续完成归因，不能再作为当前 blocker。
 
-使用上述 Phase 4E acceptance 包做 GUI 验收。TextBox 文字区/空白区真实鼠标拖动、拖后第一字符和中文 IME 仍未执行。不要用强制结束 NativeHost 的方式推断普通 Manager close。Phase 4E 的 Manager-close 验收必须是在 NativeHost 留存、用户正常点击 Manager × 的条件下记录 Electron 进程归零。
+五轮基线通过用户正常托盘 Exit、代理正常启动和只读采样完成，逐轮确认进程退出；没有使用带强制清理的旧 smoke script。此历史快照中的 UIA-only 压力结果已由后续隔离 A/B 归因及 No-UIA 平台测试取代。Manager 正常关闭、Electron 归零、NativeHost 留存、reopen 与 5/30 周期功能仍依据用户此前确认。
 
 ## 34. Remaining Differences
 
-1. **P2 acceptance gate：旧数据迁移** — 迁移测试 fixture 通过，但旧 Electron profile 的实际升级保留尚未验证。Phase 4F 前需用 profile 副本对照所有 Launcher 相关设置和记忆数据。
-2. **未分级 acceptance gaps** — Translation/Manager 生命周期、热键实际注册、Everything 错误 UI、冷启动、主题视觉、DPI/多屏尚未实测。不能把这些未知项当成通过或缺陷已修复。
-3. **P3 视觉差异** — WPF 与 Chromium 字体栅格、系统托盘菜单和控件原生渲染预计存在轻微平台差异；应确认不影响可读性和操作，再作为 intentional difference 接受。
-4. **catalog labels** — 当前真实扫描有两个同名“火绒安全软件”记录，IDs 不同。它们可能对应不同有效启动命令，现有 identity 设计不会错误合并；本轮没有进一步验证它们是不是用户可见重复项。
+1. **Historical snapshot — P2 resource attribution was unresolved at this point.** See the later `Resource Attribution — isolated A/B` section, which supersedes this snapshot and closes the resource gate.
+2. **NOT TESTED：具体 app launch / icon presentation** — 当前轮没有安装版 Win32/Store app UI launch 和图标视觉证据；已有目录、图标和临时 `.lnk` 自动检查仍有效，但不替代安装版 UI。
+3. **P3 / Phase 4G follow-up：** Windows OS reboot、额外 DPI/多显示器组合、长时间稳定性与 WPF/Chromium 视觉细节。应用冷启动已单独通过。
+4. **catalog labels** — 此前真实扫描有两个同名“火绒安全软件”记录，IDs 不同，可能对应不同有效启动命令；没有观察证据表明这是用户可见问题。
 
 ## 35. Phase 4F Readiness
 
-**当前不建议进入 Phase 4F。** 自动化检查通过，但 4F 的进入条件还缺运行时证据。优先完成：
-
-1. Phase 4E Windows GUI checklist，尤其 cold boot、Translation cold/warm handoff、Manager 正常关闭后 Electron=0 和 30 次重开。
-2. 使用隔离的真实旧用户 profile 副本验证 migration、hotkey 冲突事务、website/search engine/theme/app memory 保存与重启。
-3. 按人工清单验证修复后的拖动区域；结果区和快捷卡片不得因为拖动手势失去交互。
-4. 采集 5 轮独立 cold-start 30 秒 baseline 和完整 WPF UI 的 search/show-hide/GDI/USER 时间序列。
-
-在这些项目验证完成前，Native 可称为 **可继续验收的 replacement candidate**，但还不能称为已通过 Phase 4E 的 production replacement，也不能建议删除 Electron Launcher。
+**Historical decision superseded by the later Resource Attribution section.** Windows OS reboot、DPI/多显示器和视觉细节仍按 Phase 4G/P3 follow-up 保留。Electron Launcher、preload、Vue entry、Main paths 和 production installer 均保留。
 
 ## Phase 4E Final Acceptance
 
-本节按用户提供的最终验收门槛记录当前证据。`USER MANUAL VERIFICATION` 表示本轮没有真实 Windows GUI 操作证据，不能按代码或单元测试推断通过。
+本节为 2026-09-30 当前 closeout 的权威状态，覆盖并取代上方截至 2026-09-29 的 GUI 状态快照。状态严格区分用户确认、自动化证据和未测试项目。
 
 ### SearchBox Drag UX
 
 - **代码行为：** SearchBar 的指定空白拖动面继续支持窗口拖动；QueryBox 只有在 WPF hit test 表明指针下方没有实际文字字符时才可成为拖动候选。文字内部点击、caret、拖选和双击选词仍由 TextBox 处理。手势必须越过系统拖动阈值才启动窗口拖动，按钮、结果、卡片和滚动条不会触发窗口拖动。拖动结束且 Launcher 仍可见时，代码会重新激活窗口并恢复 QueryBox 键盘焦点。
-- **自动验证：** Native checks 39/39 通过；新增回归检查使用已加载 WPF TextBox 的实际字符布局、`GetCharacterIndexFromPoint` 与视觉命中源区分字符和右侧空白，并验证拖动来源和系统阈值。Microsoft API 对空白点返回无字符索引的行为见 [TextBox.GetCharacterIndexFromPoint](https://learn.microsoft.com/en-us/dotnet/api/system.windows.controls.textbox.getcharacterindexfrompoint?view=windowsdesktop-10.0)。
-- **人工验收：** 真实鼠标拖动、caret/拖选/双击、拖动后第一字符、中文 IME composition、blur-hide 与拖动的交互仍为 **USER MANUAL VERIFICATION**；没有把自动 hit-test 结果当成 GUI PASS。
+- **自动验证：** 当前 Native checks 46/46 通过，包含 SearchBox 字符 hit-test/拖动范围回归；真实鼠标交互另由用户本轮确认通过。Microsoft API 对空白点返回无字符索引的行为见 [TextBox.GetCharacterIndexFromPoint](https://learn.microsoft.com/en-us/dotnet/api/system.windows.controls.textbox.getcharacterindexfrompoint?view=windowsdesktop-10.0)。
+- **用户验收：** 用户确认文字区维持 TextBox 行为、指定空白处拖动正常，拖动后立即输入可用。
 
 ### Acceptance gates
 
 | Gate | Current evidence | Status |
 |---|---|---|
-| A. Cold boot / Native-only | 源码和既有 harness 支持 Native-only 启动；本轮没有从完全退出状态启动安装包并检查进程组。 | USER MANUAL VERIFICATION |
-| B. 30 次 hotkey、首字符、中文 IME | 没有真实键盘交互。 | USER MANUAL VERIFICATION |
-| C. English / Chinese / 拼音 / initials / alias / substring / `?` / `/` / `file:`，搜索时 Electron=0 | 既有 SearchCore 自动检查通过；完整 Native GUI 和逐模式进程计数未测。 | USER MANUAL VERIFICATION |
-| D. Win32 / `.lnk` / Store app 启动、图标及 Launcher hide | 既有 287 app catalog、100/100 图标和真实临时 `.lnk` launch smoke 通过；当前安装版的 GUI 端到端验收未测。 | USER MANUAL VERIFICATION |
-| E. SearchBox drag 与 TextBox 原生交互 | WPF hit-test/threshold 回归自动检查通过；鼠标、选区、拖后焦点/IME 未实测。 | 自动检查通过；GUI 为 USER MANUAL VERIFICATION |
-| F/G. Translation cold/warm handoff | 协议、队列和 acknowledgement 自动测试通过；Native Launcher 到实际 Manager/Translation 页面和原文交接未实测。 | USER MANUAL VERIFICATION |
-| H/I. Manager 正常关闭归零、重开、30 cycles | 本轮没有点击 Manager 关闭按钮并跟踪 Main/Renderer/GPU/Utility，也没有执行 30 轮。 | USER MANUAL VERIFICATION |
-| J. Settings sync 与重启持久化 | 数据/协议相关自动测试通过；hotkey/theme/engine/website 的 GUI 即时同步和重启持久化未实测。 | USER MANUAL VERIFICATION |
-| K. Hotkey conflict transaction | 自动逻辑检查覆盖有限；与系统/其它进程实际冲突场景未测。 | USER MANUAL VERIFICATION |
-| L. Existing-user migration | 只存在 fixture/代码路径验证；真实旧 Electron profile 副本迁移未做。 | USER MANUAL VERIFICATION |
-| M. DPI / 多显示器 | 本轮未运行 100%/125%/150% 缩放或双屏 GUI 验收。 | USER MANUAL VERIFICATION |
+| Native application cold start / Electron=0 | User-confirmed on installed acceptance build. | PASS (USER CONFIRMED) |
+| Windows OS reboot | No reboot evidence. | NOT TESTED — Phase 4G follow-up |
+| Global hotkey / immediate typing / first character / Chinese IME | User-confirmed. A specific count of 30 hotkey toggles was not recorded. | PASS (USER CONFIRMED) |
+| Escape / blur-hide | Not included in this closeout's explicit confirmation list. | NOT TESTED |
+| Normal search / Electron=0 | User-confirmed for Native Launcher. | PASS (USER CONFIRMED) |
+| Pinyin / initials search contract | SearchCore fixtures cover full pinyin and initials; installed UI query corpus was not separately enumerated in the latest confirmation. | PASS (AUTOMATED); UI detail NOT TESTED |
+| Saved website search and `/` | User-confirmed actual Launcher search; website synchronization/persistence also passed. | PASS (USER CONFIRMED) |
+| `?` web search | User-confirmed actual Launcher search. | PASS (USER CONFIRMED) |
+| `file:` / Everything | User-confirmed actual Launcher search. Detailed failure-path variants were not listed separately. | PASS (USER CONFIRMED); failure variants NOT TESTED |
+| Win32 / installed `.lnk` / Store app launch | No installed app launch was included in this confirmation. Existing temporary `.lnk` action smoke test is separate. | NOT TESTED (installed UI) |
+| Temporary `.lnk` launch action | Real temporary shortcut created its marker using typed launch action without starting Electron. | PASS (AUTOMATED) |
+| App icon rendering / fallback in installed UI | Extraction/cache checks passed earlier; current installed UI rendering was not confirmed. | PASS (AUTOMATED); UI NOT TESTED |
+| SearchBox drag / TextBox interaction | User-confirmed text behavior, designated blank-area drag, and typing after drag. | PASS (USER CONFIRMED) |
+| Translation cold handoff | User-confirmed. | PASS (USER CONFIRMED) |
+| Translation warm handoff | User-confirmed. | PASS (USER CONFIRMED) |
+| Manager normal close / Electron process group=0 / NativeHost remains | User-confirmed using normal × close. | PASS (USER CONFIRMED) |
+| Manager reopen / 5-cycle / 30-cycle / no orphan or duplicate | User-confirmed. | PASS (USER CONFIRMED) |
+| Settings sync and restart persistence | User-confirmed. The closeout scope included hotkey, selected search engine, and website add/edit/delete sync. Custom-template editing was not separately enumerated. | PASS (USER CONFIRMED) |
+| Hotkey conflict transaction | Hidden-WPF-HWND test used real Windows `RegisterHotKey`: occupied chord was rejected, old service chord remained registered, and temporary registrations were released. Settings error surface was not separately tested. | PASS (AUTOMATED) |
+| Existing-user migration | Temporary profile used the actual legacy Electron DataStore v2 shape and production migration path; no real user profile was touched. | PASS (ISOLATED PROFILE ACCEPTANCE) |
+| DPI / multi-monitor / theme visual comparison | No 100/125/150% or multi-monitor UI session in this environment. | NOT TESTED — ENVIRONMENT LIMITATION (P3) |
+| Current-build five-run resource baseline | Five distinct PIDs; ~30-second idle samples; Electron=0 in all five; user tray Exit and actual process exit verified each round. | PASS (MEASURED; USER NORMAL EXIT) |
+| Historical installed-process UIA run: 1000 UI search / 300 UI show-hide | PID 23928, 352 samples; SEARCH-100 171.89 MiB → SEARCH-1000 310.39 MiB; UIA attribution was then unknown. | Historical observation; superseded for resource attribution by the isolated A/B below |
+| Isolated no-UIA real WPF repeat: 3000 queries + 300 toggles | Fresh PID 9148, 545 samples; R1/R2/R3 settle 123.04/124.96/125.88 MiB; Electron=0. | PASS — plausible plateau after first-round warm-up |
+| Isolated UIA real WPF control: 1000 queries | Fresh PID 7796, 230 samples; settle 278.23 MiB; Electron=0. | Attribution control; materially higher workload growth than A |
 
-### Memory and resources
+### Existing-user migration acceptance
 
-- **USER-REPORTED Task Manager observations:** NativeHost fresh start approximately 40 MB; typical use approximately 60 MB; occasional short peak approximately 70 MB; repeated searches have not shown sustained monotonic growth. These are user-reported observations, not this turn's measurement and not a controlled Private Bytes/Working Set benchmark.
-- 本轮没有对最新 acceptance build 进行 5 次独立冷启动采样，也没有按同一工具/指标完成 100/1000 次真实搜索、300 次 show/hide、30 次 Manager cycle 的 Private Bytes、Working Set、GDI、USER、Threads 时间序列。
-- 因此本轮不能判定标准化 memory plateau 或 GDI/USER 无单调增长；也没有发现需要因此启动新内存优化的证据。当前不做内存优化。
+- Built an isolated `nook-data.json` v2 fixture from the actual legacy `DataStore` field names and exercised the production `LauncherStateStore.LoadOrMigrate` path with temporary test paths.
+- First launch created Native state and preserved hotkey, theme, launcher display mode, selected/custom search engine template, saved website projection, and app search memory.
+- Second launch loaded Native state without duplication or source rewrite; a valid existing Native state took precedence over legacy settings.
+- Invalid optional website description normalized to an empty value while other fields migrated. Malformed legacy JSON fell back deterministically without changing the source. Corrupt Native state was retained under a `.corrupt-*` copy and did not trigger a legacy overwrite.
+- A fake isolated SecretStore fixture and fake AI settings were excluded from `launcher-state.json`; the legacy file and fake secret file remained byte-for-byte unchanged. No real `%APPDATA%\Nook`, `%LOCALAPPDATA%\WebTools`, `launcher-state.json`, SecretStore, or credentials were accessed or modified.
+- Result: **PASS (ISOLATED PROFILE ACCEPTANCE)** using a real schema-shaped temporary fixture; this is not an in-place migration test against a disposable Windows account.
+
+### Current-build resource baseline
+
+**PASS (MEASURED; USER NORMAL EXIT, 2026-09-30).** The user exited normally through the Native tray after each round. Before the next normal launch, NativeHost and WebTools Manager process counts were verified as zero. The sampler recorded each new PID after approximately 30 seconds idle and completed with exit code 0. After the fifth tray Exit, both process counts were again zero. No forced termination, forced GC, working-set trimming, debugger attachment, profile changes by the sampler, or cache disabling was used.
+
+Environment: Windows 11 Pro 10.0.22631, build 22631, x64; timestamps below use UTC+08:00. Installed executable: isolated Phase 4E install\WebTools.NativeHost.exe. Its EXE and managed DLL match the acceptance staging directory under release/native-phase4e-acceptance-20260929-233750/stage/host:
+
+- EXE SHA-256: 381CF80D7E8B6D7D2362B0F47CD01CFDAA29C29C90B533C63E4028EEB714C07E
+- DLL SHA-256: 7580FC3094277FB494BA2208737552DE5641133868AA2E0288F5280C4FB71343
+- Sampler: native/scripts/Measure-Phase4EResources.ps1, Baseline mode. CSV is saved after every round.
+- Raw evidence (outside Git): external evidence archive\phase4e-resource-baseline-20260930-125515.csv
+
+All rows are ProcessName=WebTools.NativeHost and ProcessPresent=True. Memory values are raw bytes.
+
+| Run | PID | Sample time (UTC+08) | Wait | Private Bytes | Working Set | GDI | USER | Handles | Threads | Electron |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 26424 | 12:57:32.2871596 | ~30 s | 76,492,800 | 142,184,448 | 22 | 27 | 737 | 27 | 0 |
+| 2 | 14184 | 13:00:20.0204091 | ~30 s | 76,808,192 | 142,577,664 | 22 | 27 | 734 | 28 | 0 |
+| 3 | 25348 | 13:02:44.7644330 | ~30 s | 76,726,272 | 142,225,408 | 22 | 27 | 737 | 28 | 0 |
+| 4 | 4680 | 13:04:49.4424087 | ~30 s | 76,558,336 | 142,462,976 | 22 | 27 | 730 | 27 | 0 |
+| 5 | 18932 | 13:10:19.2903398 | ~30 s | 76,869,632 | 142,372,864 | 22 | 27 | 737 | 28 | 0 |
+| Median per metric | — | — | — | 76,726,272 | 142,372,864 | 22 | 27 | 737 | 28 | 0 |
+
+Each median is the third value after independently sorting five samples. Private Bytes median is **73.17 MiB**, Working Set median is **135.78 MiB** (1 MiB=1,048,576 bytes). These are distinct counters and do not equal Task Manager's grouped/private-working-set display. Similar cold-start values establish a repeatable idle baseline, not a same-process workload plateau or a no-leak conclusion. Historical Phase 4C/4D samples are not used to claim improvement.
+
+### Historical resource stress
+
+| Workload | Before | Peak | After / plateau | Status |
+|---|---|---|---|---|
+| Historical UIA-only 1000 mixed real WPF UI queries | Existing PID: IDLE-START last-10 median 155.10 MiB Private Bytes | 323.20 MiB Private Bytes / 364.17 MiB Working Set across full run | Search settle: first-10 median 309.24 MiB; last-10 309.08 MiB, 60 seconds | Historical result: attribution was unresolved then; superseded by the isolated A/B below |
+| 300 Launcher show/hide | After search settle ~309.08 MiB Private Bytes | HOTKEY checkpoints 311.48–321.23 MiB; full-run peak shown at left | Hotkey settle: first-10 median 320.98 MiB; last-10 321.19 MiB, 60 seconds | Workload complete; no continued monotonic rise within final settle, but plateau is materially above pre-query state |
+| Manager open/close resource metrics | — | — | — | NOT TESTED — lifecycle pass is USER CONFIRMED, but no resource samples were taken |
+
+The existing SearchCore harness is not a substitute for WPF UI stress. Earlier partial manual data is retained below as historical evidence; the completed run and its instrumentation limits are documented after it.
+
+### Historical partial real UI resource stress — ended by user, 2026-09-30
+
+The user explicitly chose to end high-count manual stress and leave this gate incomplete. No acceptance thresholds were relaxed. Product runtime was not changed. The sampler and usage instructions received small fixes: Stress attaches to an existing single NativeHost; search batches total 1000 rather than 100 + 1000.
+
+Both sessions sampled NativeHost PID **23928** at approximately one-second intervals using the same installed acceptance build and current user state. NativeHost was not restarted or terminated; no debugger, forced GC, working-set trimming, profile modification by the sampler, or cache clearing was used. Raw files remain outside Git:
+
+- First CSV: external evidence archive\phase4e-resource-stress-20260930-133834.csv — 856 samples, 13:38:35.3790256–13:53:00.5205668 UTC+08. The user confirmed batches 1–5, totaling **500 real WPF query updates**, with search functioning. The script does not independently count queries; checkpoints are based on explicit user confirmation.
+- SEARCH-BATCH-05 recorded 11 nonzero Electron samples, 13:50:16.6977874–13:50:26.7383950, count 1 then 4 then 0. The user confirmed opening Manager/Translation and closing it. This is workload-control interruption, not evidence that ordinary query input unexpectedly starts Electron. The CSV cannot pass the all-Native/Electron=0 stress criterion.
+- Second CSV: external evidence archive\phase4e-resource-stress-20260930-135325.csv — 223 samples, 13:53:26.3527934–13:57:10.9815492 UTC+08. Only the sampler was restarted; NativeHost was preserved. Every sample has Electron=0. No completed batch was explicitly confirmed in this session; the user ended it while waiting for batch 1.
+- All 1079 samples show the same NativeHost PID present and NativeHostCount=1. Both samplers were intentionally interrupted using their stop signal and console cancellation; exit code 1 represents cancellation, not a completed PASS. NativeHost PID 23928 remained running and Manager count was 0 afterward.
+
+First-session checkpoints (memory in MiB; 1 MiB=1,048,576 bytes):
+
+| Observation | Private Bytes | Working Set | GDI | USER | Handles | Threads |
+|---|---:|---:|---:|---:|---:|---:|
+| Before (last initial idle sample) | 72.83 | 135.10 | 22 | 27 | 734 | 27 |
+| SEARCH-100 | 114.35 | 188.28 | 71 | 41 | 826 | 23 |
+| SEARCH-200 | 132.51 | 201.20 | 65 | 41 | 848 | 20 |
+| SEARCH-300 | 126.52 | 195.64 | 68 | 41 | 837 | 21 |
+| SEARCH-400 | 130.06 | 196.93 | 65 | 40 | 860 | 23 |
+| SEARCH-500 | 134.79 | 202.26 | 67 | 41 | 853 | 23 |
+| Whole CSV peak (metrics independently maximized) | 144.61 | 212.38 | 73 | 48 | 875 | 29 |
+
+The peak row independently maximizes each metric over the entire first CSV, including Manager navigation and waits; it is not a clean Native-only workload peak. Each checkpoint is its latest actual sample after user confirmation. Pauses between confirmations, including an interrupted conversation, are part of the recording; elapsed stage duration does not independently prove query count.
+
+**Resource assessment: INCONCLUSIVE FOR THE FULL GATE.** Private Bytes after initial growth fluctuates across checkpoints (114.35, 132.51, 126.52, 130.06, 134.79 MiB). GDI (71, 65, 68, 65, 67), USER (41, 41, 41, 40, 41), handles (826, 848, 837, 860, 853), and threads (23, 20, 21, 23, 23) are not strictly monotonic in this limited sequence. This is neither a reproduced sustained-leak finding nor enough evidence for a stable plateau. Working Set is auxiliary evidence. No After-1000, SEARCH-FINAL-SETTLE, hotkey checkpoint, or HOTKEY-FINAL-SETTLE exists; those remain incomplete/not tested. Manager resource before/peak/after remains separately unmeasured.
+
+### Historical UIA-only automated real WPF resource stress — 2026-09-30
+
+After the user ended repetitive manual input, a test-only automation path was added to the existing sampler. A smoke run confirmed UI Automation reaches the installed WPF `QueryBox`, that `ValuePattern.SetValue` triggers the real `TextChanged`/`RenderQuery` flow and renders actual result rows, and that the configured global hotkey shows and hides the actual window. An additional `file:codex` smoke waited for the real asynchronous Everything search to finish. The full driver then completed the planned workload without clicking/opening any result or starting Manager.
+
+- Installed build: `isolated Phase 4E install\WebTools.NativeHost.exe`; existing NativeHost PID **23928** was reused. The process was not restarted or terminated, and the sampled 5-run cold-start baseline belongs to different PIDs, so it is not a like-for-like before measurement.
+- Workload: 1,000 actual WPF TextBox value replacements in a repeated ten-query mix (`visual`, Chinese, pinyin, initials, saved website, `/`, `?`, and two `file:` searches); each update waited for the current WPF presentation, and file queries waited until the Everything busy status ended. Then 300 show/hide cycles used Win32 `keybd_event` for the configured `Control+Alt+Space`; Windows dispatched the real registered hotkey to the NativeHost. This is synthesized keyboard input, not a claim of 300 physical keyboard presses.
+- Sampling: one-second NativeHost Private Bytes, Working Set, GDI, USER, Handles, Threads, PID/process presence, Electron count, NativeHost count, and workload driver. **352 samples** covered 14:40:26–14:46:21 UTC+08. Every sample had PID 23928 present, NativeHostCount=1, ElectronProcessCount=0; all 1,000-query and 300-cycle checkpoints were captured. Launcher ended hidden; Manager remained absent.
+- Raw CSV (outside Git): `external evidence archive\phase4e-resource-stress-20260930-144026.csv`.
+
+Checkpoint trend (MiB; 1 MiB=1,048,576 bytes):
+
+| Search updates | Private Bytes | Working Set | GDI | USER | Handles | Threads |
+|---:|---:|---:|---:|---:|---:|---:|
+| IDLE-START first-10 median | 131.51 | — | — | — | — | — |
+| IDLE-START last-10 median | 155.10 | — | — | — | — | — |
+| 100 | 171.89 | 217.77 | 64 | 50 | 800 | 28 |
+| 200 | 198.52 | 243.07 | 64 | 50 | 798 | 28 |
+| 300 | 208.45 | 253.74 | 64 | 49 | 792 | 27 |
+| 400 | 229.28 | 273.89 | 64 | 49 | 787 | 25 |
+| 500 | 242.93 | 287.43 | 64 | 50 | 799 | 28 |
+| 600 | 260.44 | 304.64 | 64 | 50 | 793 | 26 |
+| 700 | 279.98 | 323.66 | 64 | 51 | 795 | 27 |
+| 800 | 287.20 | 330.59 | 64 | 49 | 794 | 26 |
+| 900 | 309.89 | 352.79 | 64 | 49 | 796 | 25 |
+| 1000 | 310.39 | 353.34 | 64 | 49 | 794 | 25 |
+| Search 60-second settle, first-10 median | 309.24 | — | 64 | — | — | — |
+| Search 60-second settle, last-10 median | 309.08 | — | 64 | — | — | — |
+| Hotkey 300 checkpoint | 320.98 | 361.29 | 86 | 42 | 770 | 20 |
+| Hotkey 60-second settle, first-10 median | 320.98 | — | 86 | — | — | — |
+| Hotkey 60-second settle, last-10 median | 321.19 | — | 86 | — | — | — |
+
+The **workload completed, but the resource acceptance did not pass**: the search checkpoints rise at every 100-query checkpoint from 171.89 to 310.39 MiB Private Bytes. The first 30-second idle window also rises from a first-10 median of 131.51 to a last-10 median of 155.10 MiB. Private Bytes is nearly flat during each final 60-second settle, while hotkey toggles add a further ~12 MiB relative to the search-settle median and GDI settles at 86 versus 64 during search. These observations establish an allocation increase under this run, not a product leak diagnosis.
+
+The driver calls the actual WPF `TextBox` and goes through its event/search/result/icon path, but `ValuePattern.SetValue` is not identical to physical key-by-key typing. Repeated UI Automation tree queries can also instantiate/cache accessibility peers in the measured process. We cannot separate those costs from normal WPF query allocations using this run. No forced GC, working-set trim, debugger, cache clearing, profile edits, application restart, or product runtime change was performed. Because the cause is not isolated and the query checkpoints show sustained upward growth, no automatic product fix was attempted. Preserve this as **P2 / resource acceptance unresolved**; do not mark the gate PASS based only on the final 60-second flat samples.
+
+### Resource Attribution — isolated A/B (2026-09-30)
+
+This section is the current resource source of truth. It supersedes the earlier PID 23928 UIA-only run and the prior `INCONCLUSIVE` resource status above.
+
+**Build and process isolation**
+
+- NativeHost was published from the current source as .NET 10, `win-x64`, self-contained, with the non-single-file release layout. Both experiments used the exact same published files:
+  - EXE SHA-256: `18BE0D1FB5B8FBEA9BD10BC59D2A8B04D8EAC487A38CE1C350CD26AA6C1E2E04`
+  - managed DLL SHA-256: `11E9B7224D1F4BED4BFD79976D0F81096D99833DC13AFDE2B5E42BAB9E30270F`
+- Existing installed NativeHost PID **27632** was preserved throughout. A and B used fresh isolated PIDs **9148** and **7796**, respectively. Each sampled row intentionally reports NativeHostCount=2 (installed instance + test instance), ElectronProcessCount=0, and the expected target PID.
+- A/B used separate temporary profiles copied from the same user-state/catalog snapshot and the same exact ten-query corpus: `visual`, `微信`, `weixin`, `wx`, `bilibili`, `/bili`, `?test`, `file:codex`, `file:测试`, `控制面板`.
+- One shared sampler collected one-second Private Bytes, Working Set, GDI, USER, Handles, Threads, PID/presence, ElectronProcessCount, NativeHostCount, scenario, checkpoint, and driver fields. Both test processes closed normally through the explicit current-user-only test pipe. No process was force-terminated; no forced GC, working-set trim, cache clear, debugger, or user profile mutation was used.
+- Test-only mode created a real WPF `MainWindow` and `QueryBox`, omitted the test process tray to avoid colliding with the installed tray, and used an isolated random hotkey `Control+Alt+Shift+F12`. Normal NativeHost startup and tray behavior remain behind the unchanged non-test path.
+- For stages with ten settle samples, reported medians are the conventional median: the mean of the two center values after sorting; MiB values are rounded to two decimals. The B-1000 row is its latest checkpoint sample.
+
+**Experiment A — No-UIA real WPF**
+
+The driver set the real `QueryBox.Text` on the WPF Dispatcher. This raised the normal `TextChanged` event and ran the real `RenderQuery`, SearchCore/Everything, result collection/binding, visible icon loading, and WPF layout path. The driver did not import or call UI Automation APIs. Each query waited for real WPF presentation and asynchronous Everything/icon work. After 30 seconds idle it ran 3 consecutive rounds of 1000 queries in the same PID; each round hid the Launcher and settled for 60 seconds. It then drove 300 registered `WM_HOTKEY` show/hide cycles using synthesized Ctrl+Alt+Shift+F12 input and settled 60 seconds.
+
+| Checkpoint | Private Bytes MiB | Working Set MiB | GDI | USER | Handles | Threads | Electron |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| A idle, last-10 median | 102.22 | 161.03 | 54 | 41.5 | 853 | 29 | 0 |
+| Round 1 settle, last-10 median | 123.04 | 181.88 | 54 | 40 | 846 | 23 | 0 |
+| Round 2 settle, last-10 median | 124.96 | 183.07 | 54 | 39.5 | 839.5 | 23 | 0 |
+| Round 3 settle, last-10 median | 125.88 | 183.13 | 55 | 35 | 829 | 16 | 0 |
+| Hotkey 300 settle, last-10 median | 114.82 | 172.33 | 60 | 35 | 818 | 17 | 0 |
+
+Round 1→2 adds 1.92 MiB Private Bytes; Round 2→3 adds 0.93 MiB. The latter two settles are approximately flat rather than a repeated workload-sized increase. GDI varies between 54 and 55 during search and between 56 and 61 at hotkey checkpoints, then settles at 60; USER, handles, and threads stay bounded and do not rise monotonically. Managed heap samples (`GC.GetTotalMemory(false)`, no forced collection) are non-monotonic: idle 8.87 MiB; R1 settle 8.50 MiB; R2 18.12 MiB; R3 11.06 MiB; hotkey settle 9.07 MiB. The icon cache remains bounded at 32 entries / 21,504 bitmap bytes during query rounds.
+
+**Experiment B — UI Automation control**
+
+A separate fresh NativeHost process, same build/profile snapshot/corpus/sampler and settle durations, used the existing `UIAutomationClient` `AutomationElement`/`ValuePattern.SetValue` path on the real WPF QueryBox for 1000 updates. It then hid the window and settled for 60 seconds. No result was activated.
+
+| Checkpoint | Private Bytes MiB | Working Set MiB | GDI | USER | Handles | Threads | Electron |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| B idle, last-10 median | 128.26 | 193.40 | 54 | 44 | 869.5 | 31 | 0 |
+| Query 1000, latest checkpoint | 279.57 | 343.86 | 54 | 42 | 862 | 24 | 0 |
+| B settle, last-10 median | 278.23 | 341.69 | 54 | 36 | 855 | 20 | 0 |
+
+Managed heap was 8.87 MiB at idle, 148.83 MiB at query 1000, and 149.04 MiB after settle. The B workload increased Private Bytes by about 149.98 MiB over its own idle value. A Round 1 increased by about 20.82 MiB over its own idle; the workload-growth difference is about 129.15 MiB. Idle baselines differ between independent processes, so the attribution compares within-process deltas in addition to absolute checkpoints.
+
+**Attribution and profiling decision**
+
+- **UIA attribution: SUPPORTED (substantial contribution in this controlled run).** The large B managed-heap and Private-Bytes increase, compared with A's first-round growth and subsequent plateau, supports that UI Automation provider/tree activity materially amplified the previous UIA-only observation. This does not prove UIA explains 100% of the historical 171.89→310.39 MiB increase, does not prove every UIA allocation remains live, and does not identify an object type or GC root.
+- **Product plateau: PASS for this workload.** A completed 3000 real-WPF queries in the same PID plus 300 registered-hotkey toggles; all sample rows kept the target process present, NativeHostCount=2 as expected, Electron=0; search/render/icon work returned; Windows GUI resource counts stayed bounded; the R2→R3 settle delta was 0.25 MiB. The no-UIA run shows first-round warm-up/allocation followed by a plausible plateau. It does not claim Private Bytes returns to cold baseline.
+- **Profiling: NOT REQUIRED.** R2→R3 did not show meaningful sustained growth, so the conditional profiling trigger was not met. No `dotnet-gcdump`, `dotnet-dump`, PerfView, forced-GC diagnostic, heap snapshot, or retention-root claim was produced. Exact object-level UIA/product retention remains unknown.
+- No product runtime redesign or memory fix was made. The only runtime-source additions are strictly opt-in test instrumentation; regular startup does not enter this mode.
+
+**Artifacts outside Git**
+
+- Run directory: `external evidence archive\run-20260930-155307`
+- A process CSV: `phase4e-resource-stress-A-1-20260930-155309.csv` (545 samples)
+- A managed checkpoints: `phase4e-managed-A-1-20260930-155309.csv`
+- B process CSV: `phase4e-resource-stress-B-1-20260930-160731.csv` (230 samples)
+- B managed checkpoints: `phase4e-managed-B-1-20260930-160731.csv`
+- `run-manifest.json` records PIDs, hashes, preserved process IDs, hotkey, and final experiment status. No dumps/traces were generated.
+
+The workload and both test Hosts completed and exited normally. The first report invocation exposed two post-workload reporting defects (numeric sorting of `A-Rn-count` labels and a missing `endedAt` manifest field); neither affected sampling or workload. The scripts were fixed, then the saved A/B CSVs were revalidated without rerunning either experiment. The final resume/validation command completed with exit code 0.
 
 ### Remaining severity and final gate
 
 - **P0：0 个已确认。**
-- **P1：0 个已确认。** UI、Manager lifecycle 和迁移尚未完成运行时验收，因此这不是完整风险关闭结论。
-- **P2：** Native-only cold boot、Translation cold/warm、Manager normal close 与 30 cycles、设置同步、旧用户 profile migration、drag/focus/IME 和一致口径内存/GDI/USER 采样仍是 Phase 4E gate。
-- **P3：** DPI、多显示器及 Native/Electron 视觉差异仍待验收。
+- **P1：0 个已确认。** 核心 GUI/lifecycle、隔离迁移和真实 hotkey 冲突检查通过；没有发现明确严重缺陷。
+- **P2：0 个已确认/未关闭。** 唯一资源归因 blocker 已由独立 A/B 关闭；没有通过强制 GC 或屏蔽真实搜索/icon/Everything 工作负载来降低指标。
+- **P3 / follow-up：** Windows OS reboot、DPI、多显示器、WPF/Electron 视觉细节和长时间稳定性；它们不阻止此 Phase 4E resource closeout。
+- **仍建议人工验收但非本次阻塞：** 安装版具体 Win32/Store app launch、图标呈现、Theme 视觉、Escape/blur-hide 与 Settings 冲突错误 UI 没有在本次资源驱动中逐项验证；不将其推断为 PASS。
 
-**NOT READY FOR PHASE 4F** — 尚未证明 Native-only cold boot / 搜索期间 Electron 为 0、Translation cold/warm、Manager 正常关闭后 Electron 归零及 30 次无 orphan、设置同步、旧用户数据迁移、真实 SearchBox/TextBox 鼠标和焦点/IME 行为，以及标准化内存 plateau/GDI/USER 无持续增长。测试安装包已准备好供人工完成这些 gate；本阶段不进入 Phase 4F。
+**PHASE 4E COMPLETE — READY FOR PHASE 4F.** No-UIA repeated real-WPF workload reached a plausible plateau; the isolated UIA control substantially amplified observed growth; process safety and the required Windows resource counters remained bounded. Profiling was not triggered. **Phase 4F has NOT started.** Electron Launcher source, preload, Vue entry, legacy Main paths, and production installer remain intact. P3 OS/DPI/multi-monitor/visual/long-duration items remain follow-up work and do not reopen this Phase 4E gate.
 
 ## Q1–Q16
+
+以下问答保留初始审计版本；其中旧的验收状态已由上述 2026-09-30 Final Acceptance 矩阵取代。
 
 **Q1. Electron Launcher 有哪些用户可见能力 Native 仍然缺失？**
 源码/核心检查没有确认缺失的 search command、app/site action 或 Manager 页面入口。拖动区域已收敛到搜索栏指定非交互表面；IME、完整 mouse/keyboard、错误 UI、视觉及设置即时同步还未实机验收，不能宣称行为全等。
@@ -324,7 +489,7 @@ NativeHost 使用 .NET 10 Windows Desktop self-contained `win-x64` 发布；项�
 真实旧用户数据迁移必须通过 profile-copy 验收。拖动代码已修复，但仍要用 checklist 做真实鼠标验收；其他 GUI acceptance gaps 也必须完成，但目前它们是未知项，不是已确认产品缺陷。
 
 **Q5. Native-only cold boot 是否完全不需要 Electron？**
-实现路径不在 Native startup 或普通 SearchCore 中启动 Electron；此前进程样本为 NativeHost only。但本轮隔离安装 smoke test 没有启动 NativeHost GUI，也没有做停掉全部程序后的 cold boot，因此当前 build 的运行时答案尚未确认。
+用户于 2026-09-30 确认：退出 NativeHost 后重新启动已安装 acceptance build，启动成功且 Electron 进程数为 0。该项覆盖应用冷启动，不代表 Windows OS 重启；普通搜索期间 Electron=0 仍需另测。
 
 **Q6. 普通搜索是否仍然完全不启动 Electron？**
 SearchCore、catalog、icons 和 `.lnk` action harness 不启动 Electron；此前 idle 进程样本也没有 Electron。真实 Launcher GUI 的所有搜索前缀与当前 build 的进程数尚未端到端验证。用户报告基础搜索正常，但未提供每种模式的进程记录。
@@ -342,10 +507,10 @@ SearchCore、catalog、icons 和 `.lnk` action harness 不启动 Electron；此�
 当前 build 的 5 次独立 cold-start median 未测。前一 build 运行实例的 7 个间隔样本 median 为 113,635,328 B（108.37 MiB）；该 PID 现已退出。用户报告当前安装版 Task Manager 约 40 MB 启动，不是同一测量口径。
 
 **Q11. 1000 searches / 300 show-hide 后资源是否 plateau？**
-独立 SearchCore harness 的 1,000 查询起止 Private Bytes 没有增长（下降 36,864 B），GDI 9→9；这不是 WPF UI 查询。300 次 show/hide 未做，完整资源 plateau 未知。
+**Historical result, superseded by the isolated A/B section above.** The PID 23928 UIA-only run completed 1000 searches and 300 registered-hotkey show/hide cycles. Its Private Bytes checkpoints rose from 171.89 to 310.39 MiB; attribution was unknown at that time. The later controlled A/B supports UI Automation as a substantial contributor and the repeated No-UIA workload reached a plausible plateau. Do not treat this earlier row as the current resource gate decision.
 
 **Q12. GDI/USER 是否有可复现的单调增长？**
-此前样本未显示可复现的 GDI/USER 单调增长：NativeHost idle 30 秒样本 GDI 68→68、USER 40→40；icon cache harness 首轮 GDI 11→48，重复读取维持 48；SearchCore harness GDI 9→9、USER 13→14。用户报告重复搜索没有持续单调增长，但没有统一工具的 GDI/USER 时间序列。真实 Launcher 300 次 show/hide 与 Manager cycles 未测；不能据此前采样给当前 build 下最终无泄漏结论。
+**当前 A/B 样本：** No-UIA 搜索 settle 的 GDI 为 54–55、热键 settle 为 60；USER 从 42 降至 35，handles 从 854 降至 818，threads 从 30 降至 17。没有观察到重复 workload 或 settle 中持续单调增长。UIA control settle 的 GDI/USER/handles/threads 分别为 54/36/855/20。Manager cycles 的资源指标仍未采集；这些数据不用于声称所有场景无泄漏。
 
 **Q13. Dark/Light/System 与 Electron 的主要视觉差异是什么？**
 基础主题色值按源代码映射一致；WPF 与 Chromium 的字体抗锯齿、控件/托盘菜单、尺寸和 hover/selection 渲染可能不同。没有本轮运行时截图对照；System 动态主题切换也未手测。
@@ -357,8 +522,8 @@ SearchCore、catalog、icons 和 `.lnk` action harness 不启动 Electron；此�
 还没有足够 acceptance 证据。可以作为持续验收的候选实现，但 Manager lifecycle、migration 和 Windows UX gates 尚未通过。
 
 **Q16. 是否已经具备进入 Phase 4F — Remove Electron Launcher 的条件？**
-否。Blockers：完成 cold/warm translation、Manager 正常关闭及 30 次重开；真实旧 profile migration；冷启动与快捷键/IME/拖动/视觉/DPI 实测；完整 Native UI 内存和 GDI/USER 测量。Phase 4E acceptance 安装包已可供人工测试；Electron Launcher、preload、Vue entry、Main paths 和 production installer 均保留。
+资源 gate 已完成，Phase 4E 结论为 **READY FOR PHASE 4F**；Phase 4F 尚未开始。Windows OS reboot、额外 DPI/多显示器、长时间运行和视觉细节仍是 P3 follow-up，不是本次阻塞。Electron Launcher、preload、Vue entry、Main paths 和 production installer 均保留。
 
 ## Git / Delivery State
 
-当前分支：`codex/shared-ai-translation-2.0`。工作树含用户此前未提交的源码修改，以及 Native/docs/output/scripts 等未跟踪内容；本轮另外修改 Native 拖动区域与 Native checks，并新增 Phase 4E acceptance installer builder/NSIS 文件和人工验收清单、更新本报告。`git diff --check` 已运行；只出现 Git 关于现有文件 LF/CRLF 的提示，没有 whitespace error。没有 commit、push、PR 或 merge。
+当前分支：`codex/shared-ai-translation-2.0`，HEAD `9dbbace29f5f92e2729826be27e467dd9528ba19`，upstream `origin/codex/shared-ai-translation-2.0`。本轮改动限于本验收报告、人工清单、Native checks harness 和只读资源采样脚本；CSV 保存在 Git 外。没有修改产品代码、README 或 4A–4D 内容。没有 commit、push、PR、tag、release 或 merge。

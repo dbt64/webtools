@@ -9,15 +9,6 @@ function validTemplate(raw: string): URL {
   return url
 }
 
-export function buildSearchUrl(engine: SearchEngine, query: string): URL {
-  const normalized = query.trim()
-  if (!normalized) throw new Error('搜索内容不能为空。')
-  if (!engine.enabled) throw new Error('当前搜索引擎已停用。')
-  const url = validTemplate(engine.template)
-  const serialized = url.toString().replace('webtools-query', encodeURIComponent(normalized))
-  return new URL(serialized)
-}
-
 export function normalizeSearchEngines(value: unknown): SearchEngine[] {
   if (!Array.isArray(value)) throw new Error('搜索引擎列表无效。')
   const defaultsById = new Map(DEFAULT_SEARCH_ENGINES.map((engine) => [engine.id, engine]))

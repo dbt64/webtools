@@ -1,7 +1,7 @@
 import { NativeManagerRequestError, type NativeManagerEnvelope } from './native-manager-protocol.ts'
 
 export type NativeManagerCommand =
-  | { kind: 'open-page'; requestId: string; section: 'search' | 'entries' | 'settings' | 'translate' }
+  | { kind: 'open-page'; requestId: string; section: 'favorites' | 'entries' | 'settings' | 'translate' }
   | { kind: 'translation-prefill'; requestId: string; text: string }
   | { kind: 'shutdown-manager' }
 
@@ -10,10 +10,10 @@ export function parseNativeManagerCommand(message: NativeManagerEnvelope): Nativ
   if (!payload) throw new NativeManagerRequestError('INVALID_NATIVE_COMMAND', 'Native Host sent an invalid Manager command.')
   if (message.type === 'open-page') {
     if (typeof payload.requestId !== 'string' || payload.requestId.length === 0 || payload.requestId.length > 128
-      || !['search', 'entries', 'settings', 'translate'].includes(String(payload.section))) {
+      || !['favorites', 'entries', 'settings', 'translate'].includes(String(payload.section))) {
       throw new NativeManagerRequestError('INVALID_NATIVE_COMMAND', 'Native Host sent an invalid page request.')
     }
-    return { kind: 'open-page', requestId: message.requestId, section: payload.section as 'search' | 'entries' | 'settings' | 'translate' }
+    return { kind: 'open-page', requestId: message.requestId, section: payload.section as 'favorites' | 'entries' | 'settings' | 'translate' }
   }
   if (message.type === 'translation-prefill') {
     if (typeof payload.requestId !== 'string' || payload.requestId.length === 0 || payload.requestId.length > 128

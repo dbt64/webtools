@@ -1,17 +1,16 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
-  ChevronDown, CircleHelp, Compass, Languages, LayoutGrid, Search, Settings2, SlidersHorizontal,
+  ChevronDown, CircleHelp, Compass, Languages, LayoutGrid, Settings2, SlidersHorizontal,
 } from '@lucide/vue'
 import logoDark from '@/assets/brand/logo-dark.svg'
 import logoLight from '@/assets/brand/logo-light.svg'
-import SearchView from './features/search/SearchView.vue'
-import EntriesView from './features/entries/EntriesView.vue'
+import FavoritesView from './features/favorites/FavoritesView.vue'
 import TranslateView from './features/translate/TranslateView.vue'
 import type { TranslationPrefillRequest } from './shared/domain'
 import type { NativeManagerIntent } from './shared/ipc'
 
-type Section = 'search' | 'entries' | 'translate' | 'settings'
+type Section = 'favorites' | 'translate' | 'settings'
 
 function createSettingsLoadState(message: string, role: 'status' | 'alert') {
   return defineComponent({
@@ -35,45 +34,26 @@ const SettingsView = defineAsyncComponent({
   delay: 0,
 })
 
-const activeSection = ref<Section>('search')
+const activeSection = ref<Section>('favorites')
 const appsExpanded = ref(false)
 const translationPrefill = ref<TranslationPrefillRequest | null>(null)
-let removeTranslationPrefillListener: (() => void) | undefined
 let removeNativeManagerIntentListener: (() => void) | undefined
 const currentNativeRequestId = ref<string | null>(null)
 
-const navItems: { id: Section; label: string; icon: typeof Search }[] = [
-  { id: 'search', label: '快速搜索', icon: Search },
-  { id: 'entries', label: '网址', icon: Compass },
+const navItems: { id: Section; label: string; icon: typeof Compass }[] = [
+  { id: 'favorites', label: '网址', icon: Compass },
 ]
 
 const sectionLabel = computed(() => activeSection.value === 'translate'
   ? '翻译'
   : navItems.find((item) => item.id === activeSection.value)?.label ?? '设置')
 
-function focusSearch(): void {
-  activeSection.value = 'search'
-  requestAnimationFrame(() => document.getElementById('quick-search')?.focus())
-}
-
-function navigateFromSearch(section: Exclude<Section, 'search'>): void {
-  activeSection.value = section
-  if (section === 'translate') appsExpanded.value = true
-}
-
 onMounted(() => {
-  removeTranslationPrefillListener = window.desktop.onTranslationPrefill((request) => {
-    currentNativeRequestId.value = null
-    translationPrefill.value = request
-    activeSection.value = 'translate'
-    appsExpanded.value = true
-  })
   removeNativeManagerIntentListener = window.desktop.onNativeManagerIntent((intent) => handleNativeManagerIntent(intent))
   window.desktop.managerReady()
 })
 
 onBeforeUnmount(() => {
-  removeTranslationPrefillListener?.()
   removeNativeManagerIntentListener?.()
 })
 
@@ -87,8 +67,9 @@ function handleNativeManagerIntent(intent: NativeManagerIntent): void {
   }
 
   translationPrefill.value = null
-  activeSection.value = intent.section
-  if (intent.section === 'translate') appsExpanded.value = true
+  const targetSection: Section = intent.section === 'entries' ? 'favorites' : intent.section
+  activeSection.value = targetSection
+  if (targetSection === 'translate') appsExpanded.value = true
   void nextTick().then(() => {
     if (currentNativeRequestId.value !== intent.requestId) return
     window.desktop.acknowledgeNativeManagerIntent(intent.requestId)
@@ -98,12 +79,8 @@ function handleNativeManagerIntent(intent: NativeManagerIntent): void {
 
 function handleTranslationPrefillApplied(id: string): void {
   if (translationPrefill.value?.id !== id) return
-  if (currentNativeRequestId.value === id) {
-    window.desktop.acknowledgeNativeManagerIntent(id)
-    currentNativeRequestId.value = null
-  } else {
-    window.desktop.acknowledgeTranslationPrefill(id)
-  }
+  if (currentNativeRequestId.value === id) window.desktop.acknowledgeNativeManagerIntent(id)
+  currentNativeRequestId.value = null
   translationPrefill.value = null
 }
 
@@ -134,7 +111,6 @@ function handleTranslationPrefillApplied(id: string): void {
         >
           <component :is="item.icon" :size="17" :stroke-width="1.8" />
           <span>{{ item.label }}</span>
-          <span v-if="item.id === 'search'" class="nav-shortcut">Ctrl+Alt+Space</span>
         </button>
       </nav>
       <button class="nav-item nav-apps-trigger" :class="{ 'is-active': activeSection === 'translate' }" :aria-expanded="appsExpanded" aria-controls="apps-submenu" @click="appsExpanded = !appsExpanded">
@@ -171,20 +147,9 @@ function handleTranslationPrefillApplied(id: string): void {
         <button class="help-button" aria-label="帮助"><CircleHelp :size="17" /></button>
       </header>
 
-      <SearchView v-if="activeSection === 'search'" @navigate="navigateFromSearch" />
-      <EntriesView v-else-if="activeSection === 'entries'" class="entry-manager" />
+      <FavoritesView v-if="activeSection === 'favorites'" />
       <SettingsView v-else-if="activeSection === 'settings'" />
       <TranslateView v-else-if="activeSection === 'translate'" :prefill="translationPrefill" @settings="activeSection = 'settings'" @prefill-applied="handleTranslationPrefillApplied" />
-
-      <section v-else class="section-placeholder">
-        <div class="section-symbol">
-          <Languages :size="24" />
-        </div>
-        <p class="eyebrow">{{ sectionLabel }}</p>
-        <h1>{{ sectionLabel }}</h1>
-        <p>这里会呈现你的个人内容，先从搜索框开始使用 WebTools。</p>
-        <button class="back-search" @click="focusSearch"><Search :size="16" /> 回到快速搜索</button>
-      </section>
     </main>
   </div>
 </template>
