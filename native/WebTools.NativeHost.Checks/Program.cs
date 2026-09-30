@@ -9,9 +9,14 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Reflection;
 using System.IO;
+using System.IO.Pipes;
+using System.Security.Principal;
+using System.Text;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
+using WebTools.NativeHost.Interop;
 
 void ReportSnapshotTiming()
 {
@@ -56,9 +61,66 @@ if (args.Length == 2 && args[0] == "--verify-manager-discovery")
     }
 }
 
+static string BuildLegacyV2Profile(bool invalidOptionalDescription = false)
+{
+    var description = invalidOptionalDescription ? (object)42 : "Legacy documentation entry";
+    var profile = new
+    {
+        version = 2,
+        webEntries = new[]
+        {
+            new
+            {
+                id = "legacy-docs",
+                name = "Legacy Docs",
+                url = "https://docs.example/manual?from=legacy",
+                description,
+                favicon = "legacy-favicon-fixture-only",
+                folderIds = new[] { "legacy-folder" },
+                createdAt = 1700000000000L,
+            },
+        },
+        bookmarkFolders = new[]
+        {
+            new { id = "legacy-folder", name = "Legacy links", createdAt = 1690000000000L },
+        },
+        appSearchMemory = new Dictionary<string, object>
+        {
+            ["visualstudiocode"] = new { appId = "f000000000000001", lastUsedAt = 1700000000000L },
+        },
+        settings = new
+        {
+            searchEngines = new[]
+            {
+                new { id = "docs-custom", name = "Docs Search", template = "https://search.example/find?q=%s", builtIn = false, enabled = true, order = 0 },
+            },
+            defaultSearchEngineId = "docs-custom",
+            quickSearchShortcut = "Control+Alt+J",
+            launchOnStartup = true,
+            websiteLayout = "list",
+            everythingEnabled = true,
+            everythingEsPath = @"C:\Program Files\Everything\es.exe",
+            aiBaseUrl = "https://legacy-ai.example/v1",
+            aiModel = "legacy-model-fixture-only",
+            sharedAI = new
+            {
+                defaultProviderId = "custom",
+                providers = new { custom = new { model = "legacy-model-fixture-only", baseUrl = "https://legacy-ai.example/v1" } },
+            },
+            translation = new { engine = "mymemory", sourceLanguage = "auto", targetLanguage = "zh-CN", qwenMtModel = "qwen-mt-flash" },
+            theme = "light",
+            launcherDisplayMode = "expanded",
+        },
+    };
+    return JsonSerializer.Serialize(profile, new JsonSerializerOptions { WriteIndented = true });
+}
+
 var state = new LauncherInteractionState();
 var checks = new List<(string Name, Action Run)>
 {
+    ("Phase 4E resource test mode is opt-in and validates isolated driver arguments", VerifyPhase4EResourceDriverOptions),
+    ("update preparation protocol is available for strict validation", VerifyUpdatePreparationProtocol),
+    ("real RegisterHotKey collision preserves the current shortcut", VerifyHotkeyConflictTransaction),
     ("pinyin and initials retain Electron corpus readings", () =>
     {
         Assert(PinyinConverter.Syllables("星河编辑器").SequenceEqual(["xing", "he", "bian", "ji", "qi"]), "Chinese display name reading");
@@ -521,21 +583,151 @@ var checks = new List<(string Name, Action Run)>
         };
         Assert(!LauncherStateStore.IsValid(malformed), "A null folder ID must be rejected without throwing.");
     }),
-    ("launcher state migrates legacy data once and survives reload", () =>
+    ("legacy Electron v2 profile imports Launcher-owned settings and excludes Manager secrets", () =>
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"webtools-native-state-{Guid.NewGuid():N}");
+        var directory = Path.Combine(Path.GetTempPath(), $"webtools-native-migration-full-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         var legacyPath = Path.Combine(directory, "nook-data.json");
         var statePath = Path.Combine(directory, "launcher-state.json");
-        File.WriteAllText(legacyPath, """{"version":2,"webEntries":[{"id":"site-1","name":"Docs","url":"https://docs.example/guide","description":"Guide","folderIds":["folder-1"]}],"bookmarkFolders":[],"appSearchMemory":{"docs":{"appId":"f000000000000001","lastUsedAt":1700000000000}},"settings":{"quickSearchShortcut":"Control+Alt+J","theme":"light","launcherDisplayMode":"expanded","launchOnStartup":false,"searchEngines":[{"id":"bing","name":"Bing","template":"https://bing.com/search?q=%s","enabled":true,"builtIn":false,"order":0}],"defaultSearchEngineId":"bing","everythingEnabled":false,"everythingEsPath":""}}""");
+        var secretPath = Path.Combine(directory, "secrets.json");
+        var legacyFixture = BuildLegacyV2Profile();
+        const string fakeSecretStore = "{\"ai-api-key\":\"fixture-only-ciphertext-not-a-real-credential\",\"openai-key\":\"fixture-only-provider-ciphertext\"}";
+        File.WriteAllText(legacyPath, legacyFixture);
+        File.WriteAllText(secretPath, fakeSecretStore);
+        var legacyBefore = File.ReadAllText(legacyPath);
         try
         {
             var store = new LauncherStateStore(statePath);
             var migrated = store.LoadOrMigrate(legacyPath, out var status);
-            Assert(status == "migrated-v2-once", "First load should migrate the existing DataStore profile.");
-            Assert(migrated.Theme == "light" && migrated.DefaultSearchEngineId == "bing" && migrated.Websites[0].FolderIds.Contains("folder-1"), "Launcher-owned settings and website projection should migrate.");
+            Assert(status == "migrated-v2-once", $"The first isolated load should run the legacy v2 migration; actual status was '{status}'.");
+            Assert(migrated.SchemaVersion == 1 && migrated.QuickSearchShortcut == "Control+Alt+J", "The Native schema version and hotkey should be imported.");
+            Assert(migrated.Theme == "light" && migrated.LauncherDisplayMode == "expanded" && migrated.LaunchOnStartup, "Theme, display mode, and startup preference should be imported.");
+            Assert(migrated.DefaultSearchEngineId == "docs-custom" && migrated.SearchEngines.Single().Template == "https://search.example/find?q=%s", "The selected custom engine and template should be imported.");
+            Assert(migrated.EverythingEnabled && migrated.EverythingEsPath == @"C:\Program Files\Everything\es.exe", "The Launcher-owned Everything preference should be imported.");
+            var website = migrated.Websites.Single();
+            Assert(website.Id == "legacy-docs" && website.Name == "Legacy Docs" && website.Url == "https://docs.example/manual?from=legacy" && website.Description == "Legacy documentation entry" && website.FolderIds.SequenceEqual(["legacy-folder"]), "The website search projection should preserve supported fields.");
+            Assert(migrated.AppSearchMemory.Count == 1 && migrated.AppSearchMemory[0] == new AppSearchMemoryRecord("visualstudiocode", "f000000000000001", 1700000000000L), "Application search memory should be imported.");
+
+            var persisted = File.ReadAllText(statePath);
+            using var document = JsonDocument.Parse(persisted);
+            Assert(document.RootElement.GetProperty("schemaVersion").GetInt32() == 1, "launcher-state.json should use the current Native schema version.");
+            Assert(!persisted.Contains("aiBaseUrl", StringComparison.Ordinal) && !persisted.Contains("sharedAI", StringComparison.Ordinal) && !persisted.Contains("translation", StringComparison.Ordinal), "Manager-only AI and translation settings must not enter Native launcher state.");
+            Assert(!persisted.Contains("legacy-ai.example", StringComparison.Ordinal) && !persisted.Contains("legacy-model-fixture-only", StringComparison.Ordinal) && !persisted.Contains("fixture-only-ciphertext", StringComparison.Ordinal), "No AI endpoint, model, or SecretStore fixture data may enter Native state.");
+            Assert(!persisted.Contains("legacy-favicon-fixture-only", StringComparison.Ordinal), "The Native website projection must not copy the stored favicon payload.");
+            Assert(File.ReadAllText(legacyPath) == legacyBefore, "Migration must not rewrite the legacy Electron file.");
+            Assert(File.ReadAllText(secretPath) == fakeSecretStore, "Migration must not rewrite the isolated SecretStore fixture.");
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }),
+    ("legacy migration is idempotent on a second launch without duplicate data", () =>
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"webtools-native-migration-idempotent-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var legacyPath = Path.Combine(directory, "nook-data.json");
+        var statePath = Path.Combine(directory, "launcher-state.json");
+        var legacyFixture = BuildLegacyV2Profile();
+        File.WriteAllText(legacyPath, legacyFixture);
+        try
+        {
+            var first = new LauncherStateStore(statePath).LoadOrMigrate(legacyPath, out var firstStatus);
+            var stateAfterFirstLaunch = File.ReadAllText(statePath);
+            var second = new LauncherStateStore(statePath).LoadOrMigrate(legacyPath, out var secondStatus);
+            Assert(firstStatus == "migrated-v2-once" && secondStatus == "loaded", $"The first launch should migrate and the next launch should load Native state; statuses were '{firstStatus}' and '{secondStatus}'.");
+            Assert(second.Websites.Count == 1 && second.AppSearchMemory.Count == 1, "A repeated load must not duplicate website or app memory records.");
+            Assert(File.ReadAllText(statePath) == stateAfterFirstLaunch, "A valid Native state must not be rewritten on the second launch.");
+            Assert(File.ReadAllText(legacyPath) == legacyFixture, "Both launches must leave the legacy Electron profile byte-for-byte unchanged.");
+            Assert(first.Websites.Count == second.Websites.Count && first.AppSearchMemory.Count == second.AppSearchMemory.Count, "The imported Launcher projection should be stable across launches.");
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }),
+    ("existing valid Native state takes precedence over legacy Electron settings", () =>
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"webtools-native-migration-native-wins-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var legacyPath = Path.Combine(directory, "nook-data.json");
+        var statePath = Path.Combine(directory, "launcher-state.json");
+        var legacyFixture = BuildLegacyV2Profile();
+        File.WriteAllText(legacyPath, legacyFixture);
+        var nativeState = LauncherStateStore.CreateDefault() with
+        {
+            QuickSearchShortcut = "Control+Alt+K",
+            Theme = "dark",
+            LauncherDisplayMode = "compact",
+            SearchEngines = [new SearchEngineData("native-engine", "Native Search", "https://native.example/?q=%s", true, false, 0)],
+            DefaultSearchEngineId = "native-engine",
+            Websites = [new LauncherWebsiteRecord("native-site", "Native Site", "https://native.example/", "Native-owned entry", [])],
+            AppSearchMemory = [new AppSearchMemoryRecord("nativequery", "f000000000000002", 1700000000001L)],
+        };
+        File.WriteAllText(statePath, JsonSerializer.Serialize(nativeState, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true }));
+        var nativeBytesBefore = File.ReadAllText(statePath);
+        try
+        {
+            var loaded = new LauncherStateStore(statePath).LoadOrMigrate(legacyPath, out var status);
+            Assert(status == "loaded", $"A valid existing Native state should load without re-importing legacy settings; actual status was '{status}'.");
+            Assert(loaded.QuickSearchShortcut == "Control+Alt+K" && loaded.Theme == "dark" && loaded.LauncherDisplayMode == "compact", "Native-owned hotkey, theme, and display mode should win.");
+            Assert(loaded.DefaultSearchEngineId == "native-engine" && loaded.Websites.Single().Id == "native-site", "Native search-engine selection and website projection should win.");
+            Assert(loaded.AppSearchMemory.Single().Query == "nativequery", "Native app-search memory should win over the legacy fixture.");
+            Assert(File.ReadAllText(statePath) == nativeBytesBefore && File.ReadAllText(legacyPath) == legacyFixture, "Loading existing Native state must not rewrite either source.");
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }),
+    ("invalid optional website description is normalized without losing the migration", () =>
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"webtools-native-migration-optional-field-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var legacyPath = Path.Combine(directory, "nook-data.json");
+        var statePath = Path.Combine(directory, "launcher-state.json");
+        var legacyFixture = BuildLegacyV2Profile(invalidOptionalDescription: true);
+        File.WriteAllText(legacyPath, legacyFixture);
+        try
+        {
+            var loaded = new LauncherStateStore(statePath).LoadOrMigrate(legacyPath, out var status);
+            Assert(status == "migrated-v2-once", $"An invalid optional website description should not abort the otherwise valid legacy migration; actual status was '{status}'.");
+            Assert(loaded.Theme == "light" && loaded.DefaultSearchEngineId == "docs-custom" && loaded.Websites.Single().Id == "legacy-docs", "Valid Launcher fields should remain preserved when an optional description is invalid.");
+            Assert(loaded.Websites.Single().Description == "", "An invalid optional description should normalize to an empty description.");
+            Assert(File.ReadAllText(legacyPath) == legacyFixture, "Normalizing the optional field must not modify the legacy source.");
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }),
+    ("malformed legacy profile falls back deterministically without changing its source", () =>
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"webtools-native-migration-bad-legacy-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var legacyPath = Path.Combine(directory, "nook-data.json");
+        var statePath = Path.Combine(directory, "launcher-state.json");
+        const string malformedLegacy = "{\"version\":2,";
+        File.WriteAllText(legacyPath, malformedLegacy);
+        try
+        {
+            var loaded = new LauncherStateStore(statePath).LoadOrMigrate(legacyPath, out var status);
+            Assert(status.StartsWith("legacy-import-fallback:", StringComparison.Ordinal), "Malformed legacy JSON should report the deterministic default fallback.");
+            var defaults = LauncherStateStore.CreateDefault();
+            Assert(loaded.SchemaVersion == defaults.SchemaVersion && loaded.QuickSearchShortcut == defaults.QuickSearchShortcut && loaded.Theme == defaults.Theme && loaded.LauncherDisplayMode == defaults.LauncherDisplayMode && loaded.SearchEngines.SequenceEqual(defaults.SearchEngines) && loaded.DefaultSearchEngineId == defaults.DefaultSearchEngineId && loaded.Websites.Count == 0 && loaded.AppSearchMemory.Count == 0, "Malformed legacy input should result in the defined default Native state.");
+            Assert(File.ReadAllText(legacyPath) == malformedLegacy && File.Exists(statePath), "Fallback should preserve the legacy source and persist the Native defaults.");
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }),
+    ("corrupt existing Native state is preserved and does not trigger legacy overwrite", () =>
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"webtools-native-migration-bad-native-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var legacyPath = Path.Combine(directory, "nook-data.json");
+        var statePath = Path.Combine(directory, "launcher-state.json");
+        var legacyFixture = BuildLegacyV2Profile();
+        const string corruptNative = "{corrupt-native-state";
+        File.WriteAllText(legacyPath, legacyFixture);
+        File.WriteAllText(statePath, corruptNative);
+        try
+        {
+            var loaded = new LauncherStateStore(statePath).LoadOrMigrate(legacyPath, out var status);
+            var preservedCopies = Directory.GetFiles(directory, "launcher-state.json.corrupt-*");
+            Assert(status == "corrupt-state-defaulted", "An invalid existing Native state should follow the documented default fallback.");
+            var defaults = LauncherStateStore.CreateDefault();
+            Assert(loaded.QuickSearchShortcut == defaults.QuickSearchShortcut && loaded.Theme == defaults.Theme && loaded.LauncherDisplayMode == defaults.LauncherDisplayMode && loaded.SearchEngines.SequenceEqual(defaults.SearchEngines) && loaded.DefaultSearchEngineId == defaults.DefaultSearchEngineId && loaded.Websites.Count == 0 && loaded.AppSearchMemory.Count == 0, "Corrupt Native state should not silently re-import or overwrite from the legacy file.");
+            Assert(preservedCopies.Length == 1 && File.ReadAllText(preservedCopies[0]) == corruptNative, "The corrupt Native source should be retained for recovery.");
+            Assert(File.ReadAllText(legacyPath) == legacyFixture && File.Exists(statePath), "Native fallback must preserve the legacy profile and produce a valid new state file.");
             var reloaded = new LauncherStateStore(statePath).LoadOrMigrate(legacyPath, out var reloadStatus);
-            Assert(reloadStatus == "loaded" && reloaded.Websites[0].Url == "https://docs.example/guide", "Later loads should use Native-owned state.");
+            Assert(reloadStatus == "loaded" && reloaded.SchemaVersion == loaded.SchemaVersion && reloaded.QuickSearchShortcut == loaded.QuickSearchShortcut && reloaded.Theme == loaded.Theme && reloaded.LauncherDisplayMode == loaded.LauncherDisplayMode && reloaded.SearchEngines.SequenceEqual(loaded.SearchEngines) && reloaded.Websites.Count == loaded.Websites.Count, "The deterministic fallback state should load normally on the next launch.");
         }
         finally { Directory.Delete(directory, recursive: true); }
     }),
@@ -858,6 +1050,236 @@ static void RunOnSta(Action action)
     thread.Start();
     thread.Join();
     if (failure is not null) throw new InvalidOperationException($"STA WPF regression failed: {failure.Message}", failure);
+}
+
+static void VerifyHotkeyConflictTransaction()
+{
+    RunOnSta(VerifyHotkeyConflictTransactionOnSta);
+}
+
+static void VerifyPhase4EResourceDriverOptions()
+{
+    var optionsType = typeof(SearchCore).Assembly.GetType("WebTools.NativeHost.Diagnostics.Phase4EResourceTestOptions");
+    Assert(optionsType is not null, "The test-only resource driver options type must exist.");
+    var parse = optionsType!.GetMethod("Parse", BindingFlags.Public | BindingFlags.Static);
+    Assert(parse is not null, "The resource driver must expose a testable argument parser.");
+
+    var normal = parse!.Invoke(null, [Array.Empty<string>()]);
+    Assert(normal is null, "Normal startup arguments must not enable the resource driver.");
+
+    var root = Path.Combine(Path.GetTempPath(), "WebTools Phase4E Test");
+    var snapshot = Path.Combine(root, "catalog.v1.json");
+    var pipe = "WebTools.NativeHost.Resource.test-123";
+    var hotkey = "Control+Alt+Shift+F12";
+    var valid = parse.Invoke(null, [new[] { "--phase4e-resource-test", root, snapshot, pipe, hotkey }]);
+    Assert(valid is not null, "The explicit acceptance arguments must enable the driver.");
+    Assert((string?)optionsType.GetProperty("ProfileRoot")?.GetValue(valid) == root, "The isolated profile path must be preserved.");
+    Assert((string?)optionsType.GetProperty("CatalogSnapshotPath")?.GetValue(valid) == snapshot, "The isolated catalog path must be preserved.");
+    Assert((string?)optionsType.GetProperty("ControlPipeName")?.GetValue(valid) == pipe, "The test pipe name must be preserved.");
+    Assert((string?)optionsType.GetProperty("Hotkey")?.GetValue(valid) == hotkey, "The test hotkey must be preserved.");
+
+    var malformedRejected = false;
+    try { _ = parse.Invoke(null, [new[] { "--phase4e-resource-test", root }]); }
+    catch (TargetInvocationException error) when (error.InnerException is ArgumentException) { malformedRejected = true; }
+    Assert(malformedRejected, "Incomplete acceptance arguments must be rejected instead of silently starting normal mode.");
+
+    var unsafePipeRejected = false;
+    try { _ = parse.Invoke(null, [new[] { "--phase4e-resource-test", root, snapshot, "bad/pipe", hotkey }]); }
+    catch (TargetInvocationException error) when (error.InnerException is ArgumentException) { unsafePipeRejected = true; }
+    Assert(unsafePipeRejected, "A pipe name outside the test protocol's safe alphabet must be rejected.");
+}
+
+static void VerifyUpdatePreparationProtocol()
+{
+    var expectedPid = Environment.ProcessId;
+    var request = new UpdatePreparationRequest(1, "prepare-update", expectedPid);
+    Assert(UpdatePreparationProtocol.TryParseRequest(UpdatePreparationProtocol.SerializeRequest(request), expectedPid, out var parsed, out _)
+        && parsed == request, "The exact update operation and expected host PID should be accepted.");
+    Assert(!UpdatePreparationProtocol.TryParseRequest("{\"protocolVersion\":2,\"operation\":\"prepare-update\",\"expectedHostProcessId\":" + expectedPid + "}", expectedPid, out _, out var versionError)
+        && versionError == "PROTOCOL_VERSION", "Unsupported update protocol versions should be rejected.");
+    Assert(!UpdatePreparationProtocol.TryParseRequest("{\"protocolVersion\":1,\"operation\":\"run-command\",\"expectedHostProcessId\":" + expectedPid + "}", expectedPid, out _, out var operationError)
+        && operationError == "UNKNOWN_OPERATION", "The update pipe must reject operations other than prepare-update.");
+    Assert(!UpdatePreparationProtocol.TryParseRequest(UpdatePreparationProtocol.SerializeRequest(request), expectedPid + 1, out _, out var pidError)
+        && pidError == "HOST_PID_MISMATCH", "The update pipe must reject a request targeting another Host PID.");
+    Assert(!UpdatePreparationProtocol.TryParseRequest("{\"protocolVersion\":1,\"operation\":\"prepare-update\",\"expectedHostProcessId\":" + expectedPid + ",\"path\":\"C:\\\\unsafe\"}", expectedPid, out _, out var extraError)
+        && extraError == "INVALID_REQUEST", "The update request must reject unrecognized path/command fields.");
+    Assert(!UpdatePreparationProtocol.TryParseRequest("{\"protocolVersion\":1,\"protocolVersion\":1,\"operation\":\"prepare-update\",\"expectedHostProcessId\":" + expectedPid + "}", expectedPid, out _, out var duplicateError)
+        && duplicateError == "INVALID_REQUEST", "Duplicate protocol fields must be rejected.");
+    Assert(!UpdatePreparationProtocol.TryParseRequest("{broken", expectedPid, out _, out var malformedError)
+        && malformedError == "INVALID_REQUEST", "Malformed JSON must be rejected.");
+
+    Assert(UpdatePreparationProtocol.TryParseResponse("{\"protocolVersion\":1,\"success\":false,\"errorCode\":\"MANAGER_REFUSED\"}", out var response, out _)
+        && response is { Success: false, ErrorCode: "MANAGER_REFUSED" }, "A structured refusal response should parse.");
+    VerifyUpdatePreparationPipeRoundTrip(managerAccepts: true).GetAwaiter().GetResult();
+    VerifyUpdatePreparationPipeRoundTrip(managerAccepts: false).GetAwaiter().GetResult();
+    VerifyManagerUpdateTimeoutRefusalAsync().GetAwaiter().GetResult();
+}
+
+static async Task VerifyUpdatePreparationPipeRoundTrip(bool managerAccepts)
+{
+    var pipeName = $"WebTools.NativeHost.Update.Checks.{Guid.NewGuid():N}";
+    using var cancellation = new CancellationTokenSource();
+    var managerCalled = false;
+    var hostExit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var server = new UpdatePreparationServer(
+        pipeName,
+        (timeout, _) =>
+        {
+            managerCalled = true;
+            Assert(timeout > TimeSpan.Zero && timeout <= TimeSpan.FromSeconds(15), "Manager preparation must receive a bounded timeout.");
+            return Task.FromResult(managerAccepts);
+        },
+        () => { hostExit.TrySetResult(); return Task.CompletedTask; });
+    var serverTask = server.RunAsync(cancellation.Token);
+    try
+    {
+        using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Identification);
+        await client.ConnectAsync(5_000);
+        var request = UpdatePreparationProtocol.SerializeRequest(new UpdatePreparationRequest(1, "prepare-update", Environment.ProcessId)) + "\n";
+        await client.WriteAsync(Encoding.UTF8.GetBytes(request));
+        await client.FlushAsync();
+        using var reader = new StreamReader(client, Encoding.UTF8, leaveOpen: true);
+        var line = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert(line is not null, "The update pipe must return a protocol response.");
+        var parsedResponse = UpdatePreparationProtocol.TryParseResponse(line!, out var response, out _);
+        Assert(parsedResponse, "The update pipe must return a valid protocol response.");
+        Assert(response!.Success == managerAccepts, "The response must reflect Manager preparation success or refusal.");
+        Assert(managerCalled, "A matching Host PID must invoke Manager preparation.");
+        if (managerAccepts) await hostExit.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        else Assert(!hostExit.Task.IsCompleted, "A refused Manager shutdown must keep NativeHost running.");
+    }
+    finally
+    {
+        cancellation.Cancel();
+        try { await serverTask.WaitAsync(TimeSpan.FromSeconds(3)); }
+        catch (OperationCanceledException) { }
+    }
+}
+
+static async Task VerifyManagerUpdateTimeoutRefusalAsync()
+{
+    var pipeName = $"WebTools.NativeHost.Manager.UpdateChecks.{Guid.NewGuid():N}";
+    var directory = Path.Combine(Path.GetTempPath(), $"webtools-update-manager-check-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(directory);
+    using var cancellation = new CancellationTokenSource();
+    var stateStore = new LauncherStateStore(Path.Combine(directory, "launcher-state.json"));
+    var diagnostics = new DiagnosticsService(Stopwatch.GetTimestamp());
+    var managerPipe = new NativeManagerPipeServer(
+        pipeName,
+        stateStore,
+        _ => Task.FromResult(stateStore.Snapshot),
+        _ => Task.FromResult(stateStore.Snapshot),
+        (_, _) => Task.FromResult(stateStore.Snapshot),
+        diagnostics);
+    var pipeTask = managerPipe.RunAsync(cancellation.Token);
+    var processStart = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec") ?? Path.Combine(Environment.SystemDirectory, "cmd.exe"))
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        WindowStyle = ProcessWindowStyle.Hidden,
+    };
+    processStart.ArgumentList.Add("/d");
+    processStart.ArgumentList.Add("/c");
+    processStart.ArgumentList.Add("ping -n 30 127.0.0.1 >nul");
+    using var fakeManager = Process.Start(processStart) ?? throw new InvalidOperationException("Could not start the timeout fixture process.");
+    var controller = new ManagerController(managerPipe, new ManagerProcessLauncher(allowDevelopmentLaunch: false), diagnostics, static _ => { });
+    typeof(ManagerController).GetField("_managerProcess", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(controller, fakeManager);
+
+    try
+    {
+        using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Identification);
+        await client.ConnectAsync(5_000);
+        using var helloJson = JsonDocument.Parse("{\"processId\":" + fakeManager.Id + "}");
+        await NativePipeFrameCodec.WriteAsync(client, new NativePipeEnvelope(1, Guid.NewGuid().ToString("N"), "hello", helloJson.RootElement.Clone()));
+        var helloReply = await NativePipeFrameCodec.ReadAsync(client).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert(helloReply is { Type: "ack", Payload.ValueKind: JsonValueKind.Object }, "Fake Manager must complete the Native pipe handshake.");
+
+        var prepareTask = controller.TryPrepareForUpdateAsync(TimeSpan.FromMilliseconds(600), cancellation.Token);
+        var shutdownRequest = await NativePipeFrameCodec.ReadAsync(client).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert(shutdownRequest is { Type: "shutdown-manager" }, "Update preparation must ask the Manager to close gracefully.");
+        var prepared = await prepareTask;
+        Assert(!prepared, "A Manager that never acknowledges or exits must refuse update preparation.");
+        Assert(!fakeManager.HasExited, "A Manager timeout must not force-kill the process.");
+        var shuttingDown = (bool)typeof(ManagerController).GetField("_shuttingDown", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(controller)!;
+        Assert(!shuttingDown, "After refusal, the Manager controller must return to a usable state.");
+    }
+    finally
+    {
+        controller.Dispose();
+        cancellation.Cancel();
+        try { await pipeTask.WaitAsync(TimeSpan.FromSeconds(3)); }
+        catch (OperationCanceledException) { }
+        await managerPipe.DisposeAsync();
+        try { if (!fakeManager.HasExited) { fakeManager.Kill(entireProcessTree: true); await fakeManager.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); } }
+        catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException) { }
+        try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+    }
+}
+
+static void VerifyHotkeyConflictTransactionOnSta()
+{
+    static HwndSource CreateHiddenSource(string name) => new(new HwndSourceParameters(name)
+    {
+        Width = 0,
+        Height = 0,
+        WindowStyle = 0,
+        ExtendedWindowStyle = 0,
+    });
+
+    using var blockerWindow = CreateHiddenSource("WebTools hotkey conflict blocker");
+    using var serviceWindow = CreateHiddenSource("WebTools hotkey conflict service");
+    using var verifierWindow = CreateHiddenSource("WebTools hotkey conflict verifier");
+
+    const int blockerId = 0x7311;
+    const int probeId = 0x7312;
+    const int verifierId = 0x7313;
+    var candidates = Enumerable.Range(1, 12)
+        .Select(index => $"Control+Alt+Shift+F{index}")
+        .Select(shortcut => GlobalHotkeyService.TryParse(shortcut, out var definition) ? definition : null)
+        .Where(definition => definition is not null)
+        .Cast<HotkeyDefinition>()
+        .ToArray();
+    HotkeyDefinition? blocked = null;
+    HotkeyDefinition? original = null;
+    GlobalHotkeyService? service = null;
+
+    try
+    {
+        foreach (var candidate in candidates)
+        {
+            if (NativeMethods.RegisterHotKey(blockerWindow.Handle, blockerId, candidate.Modifiers, candidate.VirtualKey))
+            {
+                blocked = candidate;
+                break;
+            }
+        }
+        if (blocked is null)
+            throw new InvalidOperationException("No free Control+Alt+Shift+F1..F12 chord was available for the temporary collision test.");
+
+        foreach (var candidate in candidates.Where(candidate => candidate.Canonical != blocked.Canonical))
+        {
+            if (!NativeMethods.RegisterHotKey(serviceWindow.Handle, probeId, candidate.Modifiers, candidate.VirtualKey)) continue;
+            _ = NativeMethods.UnregisterHotKey(serviceWindow.Handle, probeId);
+            original = candidate;
+            break;
+        }
+        if (original is null)
+            throw new InvalidOperationException("No second free test chord was available to verify the preserved registration.");
+
+        service = new GlobalHotkeyService(serviceWindow.Handle, original.Canonical, static () => { }, new DiagnosticsService(Environment.TickCount64));
+        Assert(!service.TryReplace(blocked.Canonical, out var error), "The replacement must fail while another HWND owns the requested hotkey.");
+        Assert(!string.IsNullOrWhiteSpace(error), "A failed replacement must explain that registration was rejected.");
+        Assert(service.Shortcut == original.Canonical, "A failed replacement must keep the old canonical shortcut.");
+        Assert(!NativeMethods.RegisterHotKey(verifierWindow.Handle, verifierId, original.Modifiers, original.VirtualKey), "The original shortcut must remain registered by the service.");
+        Assert(!NativeMethods.RegisterHotKey(verifierWindow.Handle, verifierId, blocked.Modifiers, blocked.VirtualKey), "The conflicting shortcut must remain registered by the blocker.");
+    }
+    finally
+    {
+        service?.Dispose();
+        if (blocked is not null) _ = NativeMethods.UnregisterHotKey(blockerWindow.Handle, blockerId);
+        _ = NativeMethods.UnregisterHotKey(serviceWindow.Handle, probeId);
+        _ = NativeMethods.UnregisterHotKey(verifierWindow.Handle, verifierId);
+    }
 }
 
 static string? ResolvePackagedIconAsset(string packageRoot, string applicationId, int targetPixels, int preferredScale, string theme)

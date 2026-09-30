@@ -1,25 +1,46 @@
 import { randomUUID } from 'node:crypto'
-import type { WebsiteEntry, WebsiteSaveInput, WebsiteSearchEntry } from '../../src/shared/domain'
+import type { WebsiteCollection, WebsiteEntry, WebsiteOrderByCollection, WebsiteSaveInput } from '../../src/shared/domain.ts'
 import type { IpcResult } from '../../src/shared/ipc'
-import { openExternalUrl, validateExternalUrl } from './external-opener'
-import { DataStore } from './data-store'
+import { openExternalUrl, validateExternalUrl } from './external-opener.ts'
+import { DataStore } from './data-store.ts'
+import { normalizeWebsiteOrderByCollection, reorderWebsiteCollectionOrder } from './website-order.ts'
 
 function fail<T>(code: string, message: string): IpcResult<T> { return { ok: false, error: { code, message } } }
 
 export class WebsiteService {
-  constructor(private readonly store: DataStore) {}
+  private readonly store: DataStore
+
+  constructor(store: DataStore) {
+    this.store = store
+  }
 
   list(folderId?: string): WebsiteEntry[] {
     const entries = this.store.snapshot().webEntries
     return folderId ? entries.filter((entry) => entry.folderIds.includes(folderId)) : entries
   }
 
-  listForLauncher(): WebsiteSearchEntry[] {
-    return this.store.listLauncherWebsites()
+  getOrderByCollection(): WebsiteOrderByCollection {
+    const data = this.store.snapshot()
+    return normalizeWebsiteOrderByCollection(data.websiteOrderByCollection, data.webEntries, data.bookmarkFolders)
   }
 
-  getIcons(ids: string[]): Record<string, string | null> {
-    return this.store.getWebsiteFavicons(ids)
+  async reorder(collection: WebsiteCollection, orderedIds: string[]): Promise<IpcResult<WebsiteOrderByCollection>> {
+    let updatedOrder: WebsiteOrderByCollection | undefined
+    await this.store.update((data) => {
+      const nextOrder = reorderWebsiteCollectionOrder(
+        data.websiteOrderByCollection,
+        collection,
+        orderedIds,
+        data.webEntries,
+        data.bookmarkFolders,
+      )
+      if (!nextOrder) return data
+      updatedOrder = nextOrder
+      return { ...data, websiteOrderByCollection: nextOrder }
+    })
+    return updatedOrder
+      ? { ok: true, data: updatedOrder }
+      : fail('INVALID_ORDER', '网址顺序与当前收藏夹内容不匹配，请刷新后重试。')
   }
 
   async save(input: WebsiteSaveInput): Promise<IpcResult<WebsiteEntry>> {
@@ -51,7 +72,12 @@ export class WebsiteService {
           folderIds,
           createdAt: current?.createdAt ?? Date.now(),
         }
-        return { ...data, webEntries: current ? data.webEntries.map((entry) => entry.id === website.id ? website : entry) : [...data.webEntries, website] }
+        const webEntries = current ? data.webEntries.map((entry) => entry.id === website.id ? website : entry) : [...data.webEntries, website]
+        return {
+          ...data,
+          webEntries,
+          websiteOrderByCollection: normalizeWebsiteOrderByCollection(data.websiteOrderByCollection, webEntries, data.bookmarkFolders),
+        }
       })
       if (mutationFailure === 'INVALID_FOLDER') return fail('INVALID_FOLDER', '一个或多个收藏夹不存在。')
       if (mutationFailure === 'NOT_FOUND') return fail('NOT_FOUND', '找不到要编辑的网址。')
@@ -63,19 +89,51 @@ export class WebsiteService {
   }
 
   async delete(id: string): Promise<IpcResult<void>> {
-    if (!this.store.snapshot().webEntries.some((entry) => entry.id === id)) return fail('NOT_FOUND', '找不到要删除的网址。')
-    try { await this.store.update((data) => ({ ...data, webEntries: data.webEntries.filter((entry) => entry.id !== id) })); return { ok: true, data: undefined } }
+    let found = false
+    try {
+      await this.store.update((data) => {
+        const webEntries = data.webEntries.filter((entry) => entry.id !== id)
+        found = webEntries.length !== data.webEntries.length
+        if (!found) return data
+        return {
+          ...data,
+          webEntries,
+          websiteOrderByCollection: normalizeWebsiteOrderByCollection(data.websiteOrderByCollection, webEntries, data.bookmarkFolders),
+        }
+      })
+      if (!found) return fail('NOT_FOUND', '找不到要删除的网址。')
+      return { ok: true, data: undefined }
+    }
     catch (error) { return fail('DELETE_ENTRY_FAILED', error instanceof Error ? error.message : '无法删除网址。') }
   }
 
   async addWebsiteToFolders(id: string, folderIds: string[]): Promise<IpcResult<WebsiteEntry>> {
-    const data = this.store.snapshot()
-    const entry = data.webEntries.find((item) => item.id === id)
-    if (!entry) return fail('NOT_FOUND', '找不到这个网址。')
     const validIds = [...new Set(folderIds)]
-    if (validIds.some((folderId) => !data.bookmarkFolders.some((folder) => folder.id === folderId))) return fail('INVALID_FOLDER', '一个或多个收藏夹不存在。')
-    const updated = { ...entry, folderIds: validIds }
-    try { await this.store.update((current) => ({ ...current, webEntries: current.webEntries.map((item) => item.id === id ? updated : item) })); return { ok: true, data: updated } }
+    let updated!: WebsiteEntry
+    let mutationFailure: 'NOT_FOUND' | 'INVALID_FOLDER' | undefined
+    try {
+      await this.store.update((current) => {
+        const entry = current.webEntries.find((item) => item.id === id)
+        if (!entry) {
+          mutationFailure = 'NOT_FOUND'
+          return current
+        }
+        if (validIds.some((folderId) => !current.bookmarkFolders.some((folder) => folder.id === folderId))) {
+          mutationFailure = 'INVALID_FOLDER'
+          return current
+        }
+        updated = { ...entry, folderIds: validIds }
+        const webEntries = current.webEntries.map((item) => item.id === id ? updated : item)
+        return {
+          ...current,
+          webEntries,
+          websiteOrderByCollection: normalizeWebsiteOrderByCollection(current.websiteOrderByCollection, webEntries, current.bookmarkFolders),
+        }
+      })
+      if (mutationFailure === 'NOT_FOUND') return fail('NOT_FOUND', '找不到这个网址。')
+      if (mutationFailure === 'INVALID_FOLDER') return fail('INVALID_FOLDER', '一个或多个收藏夹不存在。')
+      return { ok: true, data: updated }
+    }
     catch (error) { return fail('SAVE_ENTRY_FAILED', error instanceof Error ? error.message : '无法更新网址收藏夹。') }
   }
 

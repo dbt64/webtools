@@ -1,11 +1,10 @@
 import { ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { basename, isAbsolute } from 'node:path'
 import type { DataStore } from '../services/data-store'
-import type { GlobalHotkeyService } from '../services/global-hotkey'
 import type { NativeLauncherSettingsUpdate } from '../services/native-manager-client'
 import { isValidSharedAISettings } from '../../src/shared/ai-config.ts'
 import { isValidTranslationSettings, type TranslationSettings } from '../../src/shared/translation-contracts.ts'
-import { buildSearchUrl, normalizeSearchEngines } from '../../src/shared/search-providers'
+import { normalizeSearchEngines } from '../../src/shared/search-providers'
 import type { AppSettings, ThemePreference } from '../../src/shared/domain'
 import type { IpcResult } from '../../src/shared/ipc'
 import type { IpcSenderContext } from './window-security'
@@ -15,16 +14,12 @@ function isRecord(value: unknown): value is Record<string, unknown> { return typ
 
 export function registerSettingsIpcHandlers(deps: {
   dataStore: DataStore
-  hotkeyService: GlobalHotkeyService | null
-  setOpenAtLogin: (enabled: boolean) => void
-  openExternal: (url: string) => Promise<void>
   isManagerMainFrame: (event: IpcSenderContext) => boolean
-  isAppMainFrame: (event: IpcSenderContext) => boolean
   cancelTranslations: () => void
   getSettings?: () => AppSettings
   updateNativeLauncherSettings?: (settings: NativeLauncherSettingsUpdate) => Promise<AppSettings>
 }): void {
-  const { dataStore, hotkeyService } = deps
+  const { dataStore } = deps
   let pendingSettingsUpdate: Promise<void> = Promise.resolve()
 
   ipcMain.handle('settings:get', (event: IpcMainInvokeEvent) => {
@@ -32,7 +27,7 @@ export function registerSettingsIpcHandlers(deps: {
     return deps.getSettings?.() ?? dataStore.snapshot().settings
   })
   ipcMain.handle('settings:get-theme', (event: IpcMainInvokeEvent): ThemePreference => {
-    if (!deps.isAppMainFrame(event)) throw new Error('当前窗口无权读取主题设置。')
+    if (!deps.isManagerMainFrame(event)) throw new Error('当前窗口无权读取主题设置。')
     return (deps.getSettings?.() ?? dataStore.snapshot().settings).theme
   })
   ipcMain.handle('settings:update', (event: IpcMainInvokeEvent, settings: unknown) => {
@@ -63,21 +58,7 @@ export function registerSettingsIpcHandlers(deps: {
       if (!defaultSearchEngineId) return fail('INVALID_SEARCH_ENGINES', '至少需要启用一个搜索引擎。')
 
       const nextShortcut = typeof settings.quickSearchShortcut === 'string' ? settings.quickSearchShortcut : currentSettings.quickSearchShortcut
-      const shortcutChanged = nextShortcut !== currentSettings.quickSearchShortcut
-      if (shortcutChanged && !deps.updateNativeLauncherSettings) {
-        const registration = hotkeyService?.replace(nextShortcut)
-        if (!registration?.ok) return registration ?? fail('SHORTCUT_NOT_INITIALIZED', '快捷键服务尚未初始化。')
-      }
-
       const nextLaunchOnStartup = typeof settings.launchOnStartup === 'boolean' ? settings.launchOnStartup : currentSettings.launchOnStartup
-      const startupChanged = nextLaunchOnStartup !== currentSettings.launchOnStartup
-      if (startupChanged && !deps.updateNativeLauncherSettings) {
-        try { deps.setOpenAtLogin(nextLaunchOnStartup) }
-        catch (error) {
-          if (shortcutChanged) hotkeyService?.replace(currentSettings.quickSearchShortcut)
-          return fail('UPDATE_STARTUP_FAILED', error instanceof Error ? error.message : '无法更新 Windows 登录启动设置。')
-        }
-      }
 
       const nativeUpdate: NativeLauncherSettingsUpdate = {}
       if (settings.quickSearchShortcut !== undefined) nativeUpdate.quickSearchShortcut = nextShortcut
@@ -100,7 +81,8 @@ export function registerSettingsIpcHandlers(deps: {
         }
 
         const hasManagerSettings = settings.websiteLayout !== undefined || settings.sharedAI !== undefined || settings.translation !== undefined || settings.aiBaseUrl !== undefined || settings.aiModel !== undefined
-        if (hasManagerSettings) {
+        const persistStandaloneLauncherPreferences = !deps.updateNativeLauncherSettings && Object.keys(nativeUpdate).length > 0
+        if (hasManagerSettings || persistStandaloneLauncherPreferences) {
           next = await dataStore.update((data) => ({
             ...data,
             settings: {
@@ -136,11 +118,6 @@ export function registerSettingsIpcHandlers(deps: {
           try { await deps.updateNativeLauncherSettings(previousNativeSettings) }
           catch (rollbackError) { console.warn('[settings:update] Native Launcher settings rollback failed', rollbackError) }
         }
-        if (shortcutChanged) hotkeyService?.replace(currentSettings.quickSearchShortcut)
-        if (startupChanged && !deps.updateNativeLauncherSettings) {
-          try { deps.setOpenAtLogin(currentSettings.launchOnStartup) }
-          catch (rollbackError) { console.warn('[settings:update] failed to restore Windows login startup setting', rollbackError) }
-        }
         return fail('SAVE_SETTINGS_FAILED', error instanceof Error ? error.message : '无法保存设置。')
       }
 
@@ -150,17 +127,5 @@ export function registerSettingsIpcHandlers(deps: {
 
     pendingSettingsUpdate = operation.then(() => undefined, () => undefined)
     return operation
-  })
-
-  ipcMain.handle('search:open-web', async (event: IpcMainInvokeEvent, query: unknown): Promise<IpcResult<void>> => {
-    if (!deps.isAppMainFrame(event)) return fail('UNAUTHORIZED', '当前窗口无权发起网页搜索。')
-    if (typeof query !== 'string' || !query.trim()) return fail('EMPTY_QUERY', '请输入要搜索的内容。')
-    try {
-      const settings = deps.getSettings?.() ?? dataStore.snapshot().settings
-      const engine = settings.searchEngines.find((item) => item.id === settings.defaultSearchEngineId && item.enabled)
-      if (!engine) throw new Error('没有可用的网页搜索引擎，请前往设置添加。')
-      await deps.openExternal(buildSearchUrl(engine, query).toString())
-      return { ok: true, data: undefined }
-    } catch (error) { return fail('WEB_SEARCH_FAILED', error instanceof Error ? error.message : '无法打开搜索页面。') }
   })
 }

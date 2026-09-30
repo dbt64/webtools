@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isCurrentAppMainFrame, isCurrentWindowMainFrame } from './window-security.ts'
+import { isCurrentWindowMainFrame } from './window-security.ts'
 
 function makeWindow() {
   const mainFrame = {}
@@ -15,12 +15,11 @@ test('accepts only the current window main-frame sender', () => {
   assert.equal(isCurrentWindowMainFrame({ sender: manager.webContents, senderFrame: {} }, manager.window), false)
 })
 
-test('rejects destroyed windows and accepts only current app windows', () => {
+test('rejects destroyed windows and non-manager senders', () => {
   const manager = makeWindow()
   const launcher = makeWindow()
   const event = { sender: launcher.webContents, senderFrame: launcher.mainFrame }
-  assert.equal(isCurrentAppMainFrame(event, [manager.window, launcher.window]), true)
   assert.equal(isCurrentWindowMainFrame(event, manager.window), false)
   launcher.window.isDestroyed = () => true
-  assert.equal(isCurrentAppMainFrame(event, [manager.window, launcher.window]), false)
+  assert.equal(isCurrentWindowMainFrame(event, launcher.window), false)
 })

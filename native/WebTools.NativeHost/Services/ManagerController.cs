@@ -3,7 +3,7 @@ using System.IO;
 
 namespace WebTools.NativeHost.Services;
 
-public enum ManagerPage { Search, Entries, Settings, Translation }
+public enum ManagerPage { Favorites, Entries, Settings, Translation }
 
 public sealed class ManagerController : IDisposable
 {
@@ -81,6 +81,80 @@ public sealed class ManagerController : IDisposable
             catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException) { }
         }
         finally { process.Dispose(); }
+    }
+
+    public async Task<bool> TryPrepareForUpdateAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        if (timeout <= TimeSpan.Zero) return false;
+
+        Process? process;
+        lock (_sync)
+        {
+            if (_disposed || _shuttingDown) return false;
+            process = _managerProcess;
+            if (_ensuring && (process is null || HasExitedOrUnavailable(process)))
+            {
+                _diagnostics.Record("update_manager_prepare_refused", "manager-launch-in-progress");
+                return false;
+            }
+            _shuttingDown = true;
+        }
+
+        if (process is null)
+        {
+            _diagnostics.Record("update_manager_prepare", "no-manager-running");
+            return true;
+        }
+
+        if (HasExitedOrUnavailable(process))
+        {
+            lock (_sync)
+            {
+                if (ReferenceEquals(_managerProcess, process)) _managerProcess = null;
+            }
+            process.Dispose();
+            _diagnostics.Record("update_manager_prepare", "manager-already-exited");
+            return true;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            if (!_pipeServer.IsConnected) throw new IOException("The Manager control pipe is disconnected.");
+            var requestTimeout = timeout < TimeSpan.FromSeconds(5) ? TimeSpan.FromTicks(Math.Max(1, timeout.Ticks / 2)) : TimeSpan.FromSeconds(5);
+            await _pipeServer.SendRequestAsync("shutdown-manager", new { }, requestTimeout, cancellationToken).ConfigureAwait(false);
+
+            var remaining = timeout - stopwatch.Elapsed;
+            if (remaining <= TimeSpan.Zero) throw new TimeoutException("Manager exceeded the update shutdown deadline.");
+            await process.WaitForExitAsync(cancellationToken).WaitAsync(remaining, cancellationToken).ConfigureAwait(false);
+
+            lock (_sync)
+            {
+                if (ReferenceEquals(_managerProcess, process)) _managerProcess = null;
+            }
+            process.Dispose();
+            _diagnostics.Record("update_manager_prepare", "graceful-exit-confirmed");
+            return true;
+        }
+        catch (Exception error) when (error is IOException or TimeoutException or NativeManagerRequestException or OperationCanceledException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            var exited = HasExitedOrUnavailable(process);
+            lock (_sync)
+            {
+                if (ReferenceEquals(_managerProcess, process) && exited) _managerProcess = null;
+                if (!_disposed) _shuttingDown = false;
+            }
+            if (exited) process.Dispose();
+            _diagnostics.Record("update_manager_prepare_refused", error.GetType().Name);
+            return false;
+        }
+    }
+
+    private static bool HasExitedOrUnavailable(Process process)
+    {
+        try { return process.HasExited; }
+        catch (InvalidOperationException) { return true; }
+        catch (System.ComponentModel.Win32Exception) { return true; }
     }
 
     private void QueueIntent(PendingManagerIntent intent)
@@ -178,15 +252,14 @@ public sealed class ManagerController : IDisposable
 
             try
             {
-                var result = intent switch
+                _ = await (intent switch
                 {
-                    OpenPageIntent page => await _pipeServer.SendRequestAsync("open-page", new { requestId = page.RequestId, section = PageName(page.Page) }, TimeSpan.FromSeconds(45)).ConfigureAwait(false),
-                    TranslationIntent translation => await _pipeServer.SendRequestAsync("translation-prefill", new { requestId = translation.RequestId, text = translation.Text }, TimeSpan.FromSeconds(45)).ConfigureAwait(false),
+                    OpenPageIntent page => _pipeServer.SendRequestAsync("open-page", new { requestId = page.RequestId, section = PageName(page.Page) }, TimeSpan.FromSeconds(45)),
+                    TranslationIntent translation => _pipeServer.SendRequestAsync("translation-prefill", new { requestId = translation.RequestId, text = translation.Text }, TimeSpan.FromSeconds(45)),
                     _ => throw new InvalidOperationException("Unsupported Manager intent."),
-                };
+                }).ConfigureAwait(false);
                 lock (_sync) if (ReferenceEquals(_pendingIntent, intent)) _pendingIntent = null;
                 _diagnostics.Record("manager_intent_delivered", intent.Kind);
-                if (intent is OpenPageIntent { Page: ManagerPage.Search }) _ = result;
             }
             catch (NativeManagerRequestException error)
             {
@@ -259,7 +332,7 @@ public sealed class ManagerController : IDisposable
 
     private static string PageName(ManagerPage page) => page switch
     {
-        ManagerPage.Search => "search",
+        ManagerPage.Favorites => "favorites",
         ManagerPage.Entries => "entries",
         ManagerPage.Settings => "settings",
         ManagerPage.Translation => "translate",

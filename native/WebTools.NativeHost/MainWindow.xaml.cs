@@ -11,6 +11,7 @@ using System.Windows.Media.Imaging;
 using Microsoft.Win32;
 using WebTools.NativeHost.Catalog;
 using WebTools.NativeHost.Data;
+using WebTools.NativeHost.Diagnostics;
 using WebTools.NativeHost.Files;
 using WebTools.NativeHost.Models;
 using WebTools.NativeHost.Search;
@@ -19,6 +20,7 @@ using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using Brush = System.Windows.Media.Brush;
 using Image = System.Windows.Controls.Image;
 using Orientation = System.Windows.Controls.Orientation;
+using DispatcherPriority = System.Windows.Threading.DispatcherPriority;
 
 namespace WebTools.NativeHost;
 
@@ -37,6 +39,7 @@ public partial class MainWindow : Window
     private readonly LatestSearchGeneration _fileGeneration = new();
     private readonly LauncherResultSelectionController _selection;
     private readonly LauncherDragGesture _searchBarDragGesture = new();
+    private readonly TaskCompletionSource _resourceTestReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private WebsiteSnapshot _snapshot;
     private SearchCore _search = new([], []);
     private EverythingClient _everything = new("");
@@ -45,6 +48,8 @@ public partial class MainWindow : Window
     private GlobalHotkeyService? _hotkey;
     private long _pendingShowTimestamp;
     private int _resultGeneration;
+    private Task _resourceFileSearchTask = Task.CompletedTask;
+    private Task _resourceVisibleIconTask = Task.CompletedTask;
     private bool _awaitingShowFocus;
     private bool _isDraggingSearchBar;
     private UIElement? _activeDragSurface;
@@ -54,6 +59,7 @@ public partial class MainWindow : Window
     private double _dragStartTop;
     private bool _expanded;
     private bool _catalogLoading = true;
+    private readonly bool _resourceTestMode;
     private bool _disposed;
     private string _themePreference = "system";
     private string _effectiveTheme = "dark";
@@ -61,13 +67,14 @@ public partial class MainWindow : Window
     public event Action<string>? EffectiveThemeChanged;
 
     internal MainWindow(DiagnosticsService diagnostics, LauncherStateStore stateStore, LauncherState initialState,
-        AppCatalogSnapshotStore catalogSnapshotStore, ManagerController managerController)
+        AppCatalogSnapshotStore catalogSnapshotStore, ManagerController managerController, bool resourceTestMode = false)
     {
         _diagnostics = diagnostics;
         _stateStore = stateStore;
         _snapshot = initialState.ToWebsiteSnapshot();
         _catalogSnapshotStore = catalogSnapshotStore;
         _managerController = managerController;
+        _resourceTestMode = resourceTestMode;
         _selection = new LauncherResultSelectionController(_state);
         _actions = new ResultActionExecutor(_catalog, _everything);
         _icons = new NativeIconCache(64, outcome => _diagnostics.Record("packaged_icon_lookup", outcome));
@@ -78,7 +85,7 @@ public partial class MainWindow : Window
         _search = new SearchCore([], _snapshot.Websites, initialState.AppSearchMemory);
     }
 
-    public void RegisterHotkey(IntPtr handle) => _hotkey = new GlobalHotkeyService(handle, _stateStore.Snapshot.QuickSearchShortcut, OnHotkey, _diagnostics);
+    public void RegisterHotkey(IntPtr handle, string? shortcutOverride = null) => _hotkey = new GlobalHotkeyService(handle, shortcutOverride ?? _stateStore.Snapshot.QuickSearchShortcut, OnHotkey, _diagnostics);
 
     public bool TryReplaceHotkey(string shortcut, out string error)
     {
@@ -133,6 +140,52 @@ public partial class MainWindow : Window
         _ = RefreshCatalogAsync();
     }
 
+    internal Task WaitForResourceTestReadyAsync() => _resourceTestReady.Task;
+
+    internal async Task<Phase4EResourcePresentation> SetQueryFromResourceTestAsync(string query)
+    {
+        if (!_resourceTestMode) throw new InvalidOperationException("The Phase 4E resource test driver is not enabled.");
+        if (query.Length > 300 || query.IndexOfAny(['\0', '\r', '\n']) >= 0)
+            throw new ArgumentException("The resource test query is invalid.", nameof(query));
+
+        if (!Dispatcher.CheckAccess())
+        {
+            var operation = Dispatcher.InvokeAsync(() => SetQueryFromResourceTestAsync(query));
+            var pending = await operation.Task;
+            return await pending;
+        }
+
+        QueryBox.Text = query;
+        await _resourceFileSearchTask;
+        await _resourceVisibleIconTask;
+        return await Dispatcher.InvokeAsync(CaptureResourceTestPresentation, DispatcherPriority.Render).Task;
+    }
+
+    internal async Task<Phase4EResourcePresentation> GetResourceTestPresentationAsync()
+    {
+        if (!_resourceTestMode) throw new InvalidOperationException("The Phase 4E resource test driver is not enabled.");
+        return await Dispatcher.InvokeAsync(CaptureResourceTestPresentation, DispatcherPriority.Render).Task;
+    }
+
+    private Phase4EResourcePresentation CaptureResourceTestPresentation()
+    {
+        UpdateLayout();
+        var realizedCount = 0;
+        for (var index = 0; index < ResultsList.Items.Count; index++)
+            if (ResultsList.ItemContainerGenerator.ContainerFromIndex(index) is ListBoxItem { IsVisible: true }) realizedCount++;
+
+        return new Phase4EResourcePresentation(
+            QueryBox.Text,
+            SearchCommand.Parse(QueryBox.Text).Mode.ToString(),
+            IsVisible,
+            ResultsList.Items.Count,
+            realizedCount,
+            _rows.Count(row => row.Icon is not null),
+            _icons.Count,
+            _icons.ApproximateBitmapBytes,
+            StatusText.Visibility == Visibility.Visible ? StatusText.Text : "");
+    }
+
     private async Task RefreshCatalogAsync()
     {
         var scan = Stopwatch.StartNew();
@@ -151,6 +204,7 @@ public partial class MainWindow : Window
             _diagnostics.Record("catalog_error", error.Message);
             if (_catalog.Apps.Count == 0) SetStatus("应用目录加载失败：" + error.Message);
         }
+        finally { _resourceTestReady.TrySetResult(); }
     }
 
     private async Task RebuildIndexAsync()
@@ -265,6 +319,8 @@ public partial class MainWindow : Window
         var command = SearchCommand.Parse(QueryBox.Text);
         var generation = _fileGeneration.Next();
         var iconGeneration = ++_resultGeneration;
+        _resourceFileSearchTask = Task.CompletedTask;
+        _resourceVisibleIconTask = Task.CompletedTask;
         if (command.Raw.Trim().Length == 0)
         {
             Present([]);
@@ -284,7 +340,7 @@ public partial class MainWindow : Window
             else
             {
                 SetStatus("正在搜索 Everything…");
-                _ = SearchFilesAsync(command.Query, generation.Sequence, generation.Token, iconGeneration);
+                _resourceFileSearchTask = SearchFilesAsync(command.Query, generation.Sequence, generation.Token, iconGeneration);
             }
         }
         else
@@ -336,7 +392,19 @@ public partial class MainWindow : Window
         UpdateLayoutForResults();
     }
 
-    private async void LoadVisibleIcons(int generation)
+    private void LoadVisibleIcons(int generation)
+    {
+        if (_resourceTestMode)
+        {
+            _resourceVisibleIconTask = LoadVisibleIconsAsync(generation);
+            return;
+        }
+        LoadVisibleIconsForNormalUi(generation);
+    }
+
+    private async void LoadVisibleIconsForNormalUi(int generation) => await LoadVisibleIconsAsync(generation);
+
+    private async Task LoadVisibleIconsAsync(int generation)
     {
         var websiteRows = _rows.Where(row => row.Result.Kind == ResultKind.Website).ToArray();
         if (websiteRows.Length > 0)
@@ -464,7 +532,7 @@ public partial class MainWindow : Window
     }
     private void QueryBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => CompleteShowFocusMeasurement();
 
-    private void BrandButton_Click(object sender, RoutedEventArgs e) => _managerController.OpenPage(ManagerPage.Search);
+    private void BrandButton_Click(object sender, RoutedEventArgs e) => _managerController.OpenPage(ManagerPage.Favorites);
 
     private void LoadBrandIcon()
     {

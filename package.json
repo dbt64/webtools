@@ -12,7 +12,7 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "test": "node --experimental-strip-types --test",
     "preview": "electron-vite preview",
-    "package:win": "npm run typecheck && npm run build && electron-builder --win nsis"
+    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native-production.ps1"
   },
   "dependencies": {
     "@lucide/vue": "^1.48.0",
@@ -43,25 +43,10 @@
       {
         "from": "resources/app.ico",
         "to": "brand-assets/app.ico"
-      },
-      {
-        "from": "resources/tray-32.png",
-        "to": "brand-assets/tray-32.png"
       }
     ],
     "win": {
-      "icon": "resources/app.ico",
-      "target": ["nsis"],
-      "artifactName": "WebTools-Setup-${version}.${ext}"
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "installerIcon": "resources/app.ico",
-      "uninstallerIcon": "resources/app.ico",
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "icon": "resources/app.ico"
     }
   }
 }

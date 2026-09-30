@@ -15,6 +15,6 @@ export default defineConfig({
     root: resolve(__dirname),
     resolve: { alias: { '@': resolve(__dirname, 'src') } },
     plugins: [vue()],
-    build: { rollupOptions: { input: { index: resolve(__dirname, 'index.html'), launcher: resolve(__dirname, 'launcher.html') } } },
+    build: { rollupOptions: { input: { index: resolve(__dirname, 'index.html') } } },
   },
 })

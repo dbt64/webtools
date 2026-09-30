@@ -15,6 +15,7 @@
 - [Phase 4D Acceptance 安装包](native-launcher-phase4d-acceptance-build.md)：独立 NativeHost + Manager 测试安装布局及限制。
 - [Phase 4E 功能等价性与用户验收](native-launcher-phase4e-parity.md)：当前接受状态、已验证证据和进入 Phase 4F 前的 gates。
 - [Phase 4E 人工验收清单](native-launcher-phase4e-manual-checklist.md)：冷启动、热键/IME、Manager 生命周期、设置同步、迁移和资源测量步骤。
+- [Phase 4F Electron Launcher 移除与生产生命周期](native-launcher-phase4f-removal.md)：NativeHost 生产入口、Manager-only Electron 构建、安装器迁移和最终验收状态。
 - Phase 4B PoC 和早期迁移历史：[WPF 最小 PoC](native-launcher-phase4b-poc.md)。
 
 ## 性能与生命周期
@@ -25,6 +26,8 @@
 
 ## 功能设计与实施记录
 
+- [网址工作区与安装器回归修复](website-and-installer-regression-fixes.md)：收藏夹工作区交互与覆盖安装关闭/重试行为。
+- [网址与更新安装设计](superpowers/specs/2026-09-30-websites-manager-and-update-install-design.md)、[网址工作区实施计划](superpowers/plans/2026-09-30-websites-workspace-management.md) 与 [安装器更新实施计划](superpowers/plans/2026-09-30-update-installer-auto-shutdown.md)：对应实现约束和阶段决策记录。
 - [Launcher Search Discovery 实施计划](superpowers/plans/2026-09-27-launcher-search-discovery.md)：应用发现、图标、网址命令和翻译入口。
 - [Translation Module 2.0 实施计划](superpowers/plans/2026-09-27-translation-module-2.0.md) 与 [Provider 调研](superpowers/research/2026-09-27-translation-provider-research.md)：翻译 Provider 架构和来源资料。
 - [Phase 4D Acceptance 修复计划](superpowers/plans/2026-09-29-native-launcher-phase4d-acceptance-fixes.md)：Native Manager 集成验收中的定向修复。

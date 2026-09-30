@@ -3,12 +3,23 @@ import type { WebsiteService } from '../services/website-service'
 import type { WebsiteMetadataService } from '../services/website-metadata'
 import type { BookmarkService } from '../services/bookmark-service'
 import type { IpcResult } from '../../src/shared/ipc'
+import type { WebsiteCollection } from '../../src/shared/domain'
 
 function fail<T>(code: string, message: string): IpcResult<T> { return { ok: false, error: { code, message } } }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
+function isWebsiteCollection(value: unknown): value is WebsiteCollection {
+  if (!isRecord(value)) return false
+  if (value.kind === 'unclassified') return true
+  return value.kind === 'folder' && typeof value.folderId === 'string' && value.folderId.length > 0 && value.folderId.length <= 128
+}
 
 export function registerWebsiteIpcHandlers(deps: { websiteService: WebsiteService; websiteMetadata: WebsiteMetadataService; bookmarkService: BookmarkService; onWebsitesChanged: () => void | Promise<void> }): void {
   ipcMain.handle('websites:list', (_event, folderId: unknown) => deps.websiteService.list(typeof folderId === 'string' ? folderId : undefined))
+  ipcMain.handle('websites:get-order', () => deps.websiteService.getOrderByCollection())
+  ipcMain.handle('websites:reorder', (_event, collection: unknown, orderedIds: unknown) => {
+    if (!isWebsiteCollection(collection) || !Array.isArray(orderedIds) || orderedIds.length > 10_000 || !orderedIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 128)) return fail('INVALID_ORDER', '网址顺序信息无效。')
+    return deps.websiteService.reorder(collection, orderedIds)
+  })
   ipcMain.handle('websites:save', async (_event, input: unknown) => {
     if (!isRecord(input) || typeof input.name !== 'string' || typeof input.url !== 'string' || !Array.isArray(input.folderIds) || !input.folderIds.every((value) => typeof value === 'string') || (input.id !== undefined && typeof input.id !== 'string') || (input.description !== undefined && typeof input.description !== 'string') || (input.favicon !== undefined && typeof input.favicon !== 'string')) return fail('INVALID_ENTRY', '网址信息无效。')
     const result = await deps.websiteService.save({ id: input.id as string | undefined, name: input.name, url: input.url, description: input.description as string | undefined, favicon: input.favicon as string | undefined, folderIds: input.folderIds })

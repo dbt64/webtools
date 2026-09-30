@@ -1,11 +1,12 @@
 import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type AppSettings, type BookmarkFolder, type WebsiteEntry, type WebsiteSearchEntry } from '../../src/shared/domain.ts'
+import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type AppSettings, type BookmarkFolder, type WebsiteEntry } from '../../src/shared/domain.ts'
 import { sanitizeAppSearchMemory } from '../../src/shared/app-search-memory.ts'
 import { normalizeSharedAISettings } from '../../src/shared/ai-config.ts'
 import { normalizeTranslationSettings } from '../../src/shared/translation-contracts.ts'
+import { normalizeWebsiteOrderByCollection } from './website-order.ts'
 
-type LegacyV2AppData = Omit<AppData, 'settings' | 'appSearchMemory'> & { appSearchMemory?: unknown } & {
+type LegacyV2AppData = Omit<AppData, 'settings' | 'appSearchMemory' | 'websiteOrderByCollection'> & { appSearchMemory?: unknown; websiteOrderByCollection?: unknown } & {
   settings: Omit<AppSettings, 'theme' | 'launcherDisplayMode' | 'sharedAI' | 'translation'>
     & Partial<Pick<AppSettings, 'theme' | 'launcherDisplayMode' | 'sharedAI' | 'translation'>>
 }
@@ -40,6 +41,7 @@ function validV2(value: unknown): value is LegacyV2AppData {
 function normalizeV2(input: LegacyV2AppData): AppData {
   return {
     ...input,
+    websiteOrderByCollection: normalizeWebsiteOrderByCollection(input.websiteOrderByCollection, input.webEntries, input.bookmarkFolders),
     appSearchMemory: sanitizeAppSearchMemory(input.appSearchMemory),
     settings: {
       ...input.settings,
@@ -134,19 +136,6 @@ export class DataStore {
 
   getRecoveryMessage(): string | null { return this.recoveryMessage }
   snapshot(): AppData { return structuredClone(this.data) }
-  listLauncherWebsites(): WebsiteSearchEntry[] {
-    return this.data.webEntries.map(({ id, name, url, description, folderIds }) => ({
-      id, name, url, ...(description === undefined ? {} : { description }), folderIds: [...folderIds],
-    }))
-  }
-  getWebsiteFavicons(ids: string[]): Record<string, string | null> {
-    const requested = new Set(ids)
-    const icons: Record<string, string | null> = {}
-    for (const entry of this.data.webEntries) {
-      if (requested.has(entry.id)) icons[entry.id] = entry.favicon ?? null
-    }
-    return icons
-  }
   async update(mutator: (current: AppData) => AppData): Promise<AppData> {
     const operation = this.pendingWrite.then(async () => { const next = mutator(this.snapshot()); await this.persist(next); this.data = next; return structuredClone(next) })
     this.pendingWrite = operation.then(() => undefined, () => undefined)

@@ -13,24 +13,13 @@ export interface WebsiteEntry {
   createdAt: number
 }
 
-/** Search-only website data sent to the resident Launcher renderer. */
+/** Reduced website data projected from Manager to the Native Launcher. */
 export interface WebsiteSearchEntry {
   id: string
   name: string
   url: string
   description?: string
   folderIds: string[]
-}
-
-export interface LauncherDataVersions {
-  apps: number
-  websites: number
-}
-
-export interface LauncherDataChanges {
-  versions: LauncherDataVersions
-  apps?: AppSearchEntry[]
-  websites?: WebsiteSearchEntry[]
 }
 
 export interface WebsiteSaveInput {
@@ -42,6 +31,15 @@ export interface WebsiteSaveInput {
   folderIds: string[]
 }
 
+export type WebsiteCollection =
+  | { kind: 'unclassified' }
+  | { kind: 'folder'; folderId: string }
+
+export interface WebsiteOrderByCollection {
+  unclassified: string[]
+  folders: Record<string, string[]>
+}
+
 export interface SearchEngine {
   id: string
   name: string
@@ -51,7 +49,6 @@ export interface SearchEngine {
   order: number
 }
 
-export interface AppSearchEntry { id: string; name: string; aliases: string[]; source: 'desktop' | 'packaged' | 'system'; icon?: string }
 export interface EverythingResult { id: string; name: string; locationLabel: string; kind: 'file' | 'folder' }
 export interface TranslationPrefillRequest { id: string; text: string }
 export interface AppSearchMemoryEntry { appId: string; lastUsedAt: number }
@@ -80,6 +77,7 @@ export interface AppData {
   version: 2
   webEntries: WebsiteEntry[]
   bookmarkFolders: BookmarkFolder[]
+  websiteOrderByCollection: WebsiteOrderByCollection
   settings: AppSettings
   appSearchMemory: AppSearchMemory
 }
@@ -94,6 +92,7 @@ export const DEFAULT_APP_DATA: AppData = {
   version: 2,
   webEntries: [],
   bookmarkFolders: [],
+  websiteOrderByCollection: { unclassified: [], folders: {} },
   appSearchMemory: {},
   settings: {
     searchEngines: DEFAULT_SEARCH_ENGINES,

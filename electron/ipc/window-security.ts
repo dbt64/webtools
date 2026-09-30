@@ -17,7 +17,3 @@ export function isCurrentWindowMainFrame(context: IpcSenderContext, window: Wind
   if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return false
   return context.sender === window.webContents && context.senderFrame === window.webContents.mainFrame
 }
-
-export function isCurrentAppMainFrame(context: IpcSenderContext, windows: readonly (WindowLike | null)[]): boolean {
-  return windows.some((window) => isCurrentWindowMainFrame(context, window))
-}
