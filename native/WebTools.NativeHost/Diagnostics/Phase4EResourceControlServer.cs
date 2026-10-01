@@ -3,6 +3,7 @@ using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using WebTools.NativeHost;
+using WebTools.NativeHost.Services;
 
 namespace WebTools.NativeHost.Diagnostics;
 
@@ -15,13 +16,18 @@ internal sealed record Phase4EResourcePresentation(
     int IconCount,
     int IconCacheCount,
     long IconCacheBitmapBytes,
-    string Status);
+    string Status,
+    long WindowHandle,
+    bool IsActive,
+    bool QueryHasKeyboardFocus,
+    bool EverythingEnabled,
+    IReadOnlyList<string> ResultKinds);
 
 /// <summary>
 /// Local, current-user-only control surface used only by the explicitly opted-in Phase 4E resource test process.
 /// It drives the real WPF QueryBox and never activates a result.
 /// </summary>
-internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow window)
+internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow window, string startupHotkey)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
@@ -93,6 +99,41 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
                             response = CreateQueryResponse(presentation);
                             break;
                         }
+                        case "show":
+                        {
+                            var presentation = await window.SetVisibilityFromResourceTestAsync(true);
+                            response = CreateQueryResponse(presentation, "show");
+                            break;
+                        }
+                        case "hide":
+                        {
+                            var presentation = await window.SetVisibilityFromResourceTestAsync(false);
+                            response = CreateQueryResponse(presentation, "hide");
+                            break;
+                        }
+                        case "replace-hotkey":
+                        {
+                            var shortcut = root.TryGetProperty("shortcut", out var shortcutValue) && shortcutValue.ValueKind == JsonValueKind.String
+                                ? shortcutValue.GetString()
+                                : null;
+                            if (shortcut is null || !IsAllowedHotkeyReplacement(shortcut, startupHotkey))
+                                throw new ArgumentException("The resource driver hotkey is outside the isolated test binding set.");
+
+                            var replacement = await window.Dispatcher.InvokeAsync(() =>
+                            {
+                                var success = window.TryReplaceHotkey(shortcut, out _);
+                                return (Success: success, Shortcut: shortcut);
+                            }).Task;
+                            response = new
+                            {
+                                ok = replacement.Success,
+                                type = "hotkey",
+                                shortcut = replacement.Shortcut,
+                                errorCode = replacement.Success ? null : "replacement-failed",
+                                processId = Environment.ProcessId,
+                            };
+                            break;
+                        }
                         case "exit":
                             response = new { ok = true, type = "exit", processId = Environment.ProcessId };
                             shouldExit = true;
@@ -115,6 +156,14 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
         }
     }
 
+    internal static bool IsAllowedHotkeyReplacement(string shortcut, string startupHotkey)
+    {
+        if (!GlobalHotkeyService.TryParse(shortcut, out var requested) ||
+            !GlobalHotkeyService.TryParse(startupHotkey, out var startup)) return false;
+        return requested.Canonical.Equals(startup.Canonical, StringComparison.OrdinalIgnoreCase) ||
+               requested.Canonical is "DoubleModifier:Control" or "DoubleModifier:Alt";
+    }
+
     private static object CreateSnapshotResponse(string type, Phase4EResourcePresentation presentation)
     {
         var memory = GC.GetGCMemoryInfo();
@@ -132,16 +181,21 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
             presentation.IconCacheCount,
             presentation.IconCacheBitmapBytes,
             presentation.Status,
+            presentation.WindowHandle,
+            presentation.IsActive,
+            presentation.QueryHasKeyboardFocus,
+            presentation.EverythingEnabled,
+            presentation.ResultKinds,
             managedHeapUsedBytes = GC.GetTotalMemory(forceFullCollection: false),
             managedHeapSizeBytes = memory.HeapSizeBytes,
             managedFragmentedBytes = memory.FragmentedBytes,
         };
     }
 
-    private static object CreateQueryResponse(Phase4EResourcePresentation presentation) => new
+    private static object CreateQueryResponse(Phase4EResourcePresentation presentation, string type = "query") => new
     {
         ok = true,
-        type = "query",
+        type,
         processId = Environment.ProcessId,
         presentation.Query,
         presentation.SearchMode,
@@ -151,6 +205,11 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
         presentation.IconCount,
         presentation.IconCacheCount,
         presentation.Status,
+        presentation.WindowHandle,
+        presentation.IsActive,
+        presentation.QueryHasKeyboardFocus,
+        presentation.EverythingEnabled,
+        presentation.ResultKinds,
     };
 
     private static async Task WriteAsync(StreamWriter writer, object value, CancellationToken cancellationToken)

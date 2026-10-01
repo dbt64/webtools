@@ -119,7 +119,14 @@ var state = new LauncherInteractionState();
 var checks = new List<(string Name, Action Run)>
 {
     ("Phase 4E resource test mode is opt-in and validates isolated driver arguments", VerifyPhase4EResourceDriverOptions),
+    ("Phase 4G-2 resource hotkey command accepts only its isolated chord and double modifiers", VerifyPhase4EResourceHotkeyCommand),
     ("update preparation protocol is available for strict validation", VerifyUpdatePreparationProtocol),
+    ("canonical hotkey bindings parse, format, and round-trip safely", VerifyHotkeyBindingCodec),
+    ("double modifier recognition requires safe complete taps and rejects shortcut chords", VerifyDoubleModifierRecognizer),
+    ("low-level keyboard messages normalize modifiers and include system-key events", VerifyLowLevelKeyboardMessageMapping),
+    ("passive keyboard observer chains input and releases its hook deterministically", VerifyLowLevelKeyboardObserverLifecycle),
+    ("hotkey mode transitions are transactional and reuse double-modifier observers", VerifyHotkeyModeTransactions),
+    ("hotkey mode lifecycle survives 300 complete fake-backed cycles", VerifyHotkeyModeStressCycles),
     ("real RegisterHotKey collision preserves the current shortcut", VerifyHotkeyConflictTransaction),
     ("pinyin and initials retain Electron corpus readings", () =>
     {
@@ -1057,6 +1064,408 @@ static void VerifyHotkeyConflictTransaction()
     RunOnSta(VerifyHotkeyConflictTransactionOnSta);
 }
 
+static void VerifyHotkeyBindingCodec()
+{
+    var codec = typeof(SearchCore).Assembly.GetType("WebTools.NativeHost.Services.HotkeyBindingCodec", throwOnError: false);
+    Assert(codec is not null, "The canonical hotkey binding codec must exist.");
+    var parse = codec!.GetMethod("TryParse", BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(codec.FullName, "TryParse");
+    var serialize = codec.GetMethod("Serialize", BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(codec.FullName, "Serialize");
+    var format = codec.GetMethod("FormatDisplay", BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(codec.FullName, "FormatDisplay");
+
+    var validCases = new (string Input, string Kind, string Canonical, string Display)[]
+    {
+        ("Control+Space", "Chord", "Control+Space", "Ctrl + Space"),
+        ("Ctrl+Space", "Chord", "Control+Space", "Ctrl + Space"),
+        ("Alt+Space", "Chord", "Alt+Space", "Alt + Space"),
+        ("Alt+K", "Chord", "Alt+K", "Alt + K"),
+        ("Ctrl+Alt+K", "Chord", "Control+Alt+K", "Ctrl + Alt + K"),
+        ("Ctrl+Shift+Space", "Chord", "Control+Shift+Space", "Ctrl + Shift + Space"),
+        ("Win+Shift+K", "Chord", "Shift+Super+K", "Shift + Win + K"),
+        ("Super+Shift+K", "Chord", "Shift+Super+K", "Shift + Win + K"),
+        ("F1+Alt", "Chord", "Alt+F1", "Alt + F1"),
+        ("Control+F11", "Chord", "Control+F11", "Ctrl + F11"),
+        ("Control+F12", "Chord", "Control+F12", "Ctrl + F12"),
+        ("FunctionKey:F1", "FunctionKey", "FunctionKey:F1", "F1"),
+        ("F10", "FunctionKey", "FunctionKey:F10", "F10"),
+        ("DoubleModifier:Control", "DoubleModifier", "DoubleModifier:Control", "双击 Ctrl"),
+        ("DoubleModifier:Alt", "DoubleModifier", "DoubleModifier:Alt", "双击 Alt"),
+        ("Control+Alt+Space", "Chord", "Control+Alt+Space", "Ctrl + Alt + Space"),
+    };
+
+    foreach (var (input, kind, canonical, display) in validCases)
+    {
+        var arguments = new object?[] { input, null };
+        Assert((bool)(parse.Invoke(null, arguments) ?? false), $"Expected '{input}' to parse.");
+        var binding = arguments[1] ?? throw new InvalidOperationException($"'{input}' parsed without a binding.");
+        Assert(binding.GetType().Name == kind, $"'{input}' should produce {kind}, got {binding.GetType().Name}.");
+        var actualCanonical = (string?)binding.GetType().GetProperty("Canonical")?.GetValue(binding);
+        Assert(actualCanonical == canonical, $"'{input}' should canonicalize to '{canonical}', got '{actualCanonical}'.");
+        Assert((string?)serialize.Invoke(null, [binding]) == canonical, $"'{input}' should serialize to '{canonical}'.");
+        Assert((string?)format.Invoke(null, [binding]) == display, $"'{input}' should display as '{display}'.");
+    }
+
+    foreach (var input in new[]
+    {
+        "", "Unknown:F1", "FunctionKey:F0", "FunctionKey:F11", "FunctionKey:F12", "F11", "F12",
+        "DoubleModifier:Shift", "DoubleModifier:Win", "Control+Control+K", "Control+Alt+K+J",
+        "Control+F13", "Control+VolumeUp", "Control",
+    })
+    {
+        var arguments = new object?[] { input, null };
+        Assert(!(bool)(parse.Invoke(null, arguments) ?? false), $"Unsupported/malformed hotkey '{input}' must be rejected.");
+    }
+
+    Assert(GlobalHotkeyService.TryParse("DoubleModifier:Control", out var doubleDefinition)
+        && doubleDefinition is { Modifiers: 0, VirtualKey: 0, Canonical: "DoubleModifier:Control" },
+        "Runtime compatibility validation should accept typed double-modifier bindings without registering a chord.");
+    Assert(LauncherStateStore.IsValid(LauncherStateStore.CreateDefault() with { QuickSearchShortcut = "FunctionKey:F10" }),
+        "Persisted state validation should accept supported FunctionKey modes through the shared codec.");
+    Assert(LauncherStateStore.IsValid(LauncherStateStore.CreateDefault() with { QuickSearchShortcut = "DoubleModifier:Alt" }),
+        "Persisted state validation should accept Double Alt without a schema change.");
+    Assert(LauncherStateStore.IsValid(LauncherStateStore.CreateDefault() with { QuickSearchShortcut = "Control+F12" }),
+        "Persisted state validation should preserve a legacy modified F12 chord.");
+    Assert(!LauncherStateStore.IsValid(LauncherStateStore.CreateDefault() with { QuickSearchShortcut = "FunctionKey:F11" }),
+        "Persisted state validation should reject unsupported F11.");
+}
+
+static void VerifyDoubleModifierRecognizer()
+{
+    var assembly = typeof(SearchCore).Assembly;
+    var recognizerType = assembly.GetType("WebTools.NativeHost.Services.DoubleModifierGestureRecognizer", throwOnError: false);
+    Assert(recognizerType is not null, "The deterministic double-modifier recognizer must exist.");
+    var modifierType = assembly.GetType("WebTools.NativeHost.Models.HotkeyModifier", throwOnError: true)!;
+    var process = recognizerType!.GetMethod("ProcessKeyEvent", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(recognizerType.FullName, "ProcessKeyEvent");
+
+    object New(string modifier) => Activator.CreateInstance(
+        recognizerType,
+        BindingFlags.Instance | BindingFlags.NonPublic,
+        binder: null,
+        args: [Enum.Parse(modifierType, modifier)],
+        culture: null) ?? throw new InvalidOperationException("Could not create the recognizer.");
+
+    bool Send(object instance, uint virtualKey, string? modifier, bool down, long timestamp) =>
+        (bool)(process.Invoke(instance, [virtualKey, modifier is null ? null : Enum.Parse(modifierType, modifier), down, timestamp]) ?? false);
+
+    void Tap(object instance, uint virtualKey, string modifier, long down, long up)
+    {
+        _ = Send(instance, virtualKey, modifier, true, down);
+        _ = Send(instance, virtualKey, modifier, false, up);
+    }
+
+    var ctrl = New("Control");
+    Tap(ctrl, 0x11, "Control", 0, 30);
+    Assert(!Send(ctrl, 0x11, "Control", true, 180), "The second down event alone must not trigger.");
+    Assert(Send(ctrl, 0x11, "Control", false, 210), "Two complete Ctrl taps in the interval should trigger on second release.");
+    Assert(!Send(ctrl, 0x11, "Control", false, 220), "One double tap must trigger exactly once.");
+
+    var alt = New("Alt");
+    Tap(alt, 0x12, "Alt", 0, 40);
+    Assert(!Send(alt, 0x12, "Alt", true, 200), "The second Alt down event alone must not trigger.");
+    Assert(Send(alt, 0x12, "Alt", false, 230), "Two complete Alt taps in the interval should trigger on second release.");
+    Assert(!Send(alt, 0x12, "Alt", false, 231), "The Alt trigger should not repeat after the second release.");
+
+    var held = New("Control");
+    Tap(held, 0x11, "Control", 0, 30);
+    _ = Send(held, 0x11, "Control", true, 100);
+    Assert(!Send(held, 0x11, "Control", false, 700), "A long second hold must not trigger a double tap.");
+    Tap(held, 0x11, "Control", 750, 780);
+    Assert(!Send(held, 0x11, "Control", false, 790), "A long hold must not count as a tap or double tap.");
+
+    var repeat = New("Control");
+    _ = Send(repeat, 0x11, "Control", true, 0);
+    _ = Send(repeat, 0x11, "Control", true, 40);
+    Assert(!Send(repeat, 0x11, "Control", false, 60), "Auto-repeat must invalidate the held tap.");
+    _ = Send(repeat, 0x11, "Control", true, 100);
+    Assert(!Send(repeat, 0x11, "Control", false, 120), "The repeat-invalidated tap must not become the first valid tap.");
+    _ = Send(repeat, 0x11, "Control", true, 160);
+    Assert(Send(repeat, 0x11, "Control", false, 180), "Fresh complete taps after repeat should still work.");
+
+    var timeout = New("Control");
+    Tap(timeout, 0x11, "Control", 0, 30);
+    Tap(timeout, 0x11, "Control", 600, 630);
+    Assert(!Send(timeout, 0x11, "Control", false, 640), "A second tap outside the interval must not trigger.");
+
+    var ctrlC = New("Control");
+    _ = Send(ctrlC, 0x11, "Control", true, 0);
+    _ = Send(ctrlC, 0x43, null, true, 10);
+    _ = Send(ctrlC, 0x43, null, false, 20);
+    _ = Send(ctrlC, 0x11, "Control", false, 30);
+    _ = Send(ctrlC, 0x11, "Control", true, 40);
+    _ = Send(ctrlC, 0x56, null, true, 50);
+    _ = Send(ctrlC, 0x56, null, false, 60);
+    _ = Send(ctrlC, 0x11, "Control", false, 70);
+    Assert(!Send(ctrlC, 0x11, "Control", false, 80), "Ctrl+C followed by Ctrl+V must never be recognized as Double Ctrl.");
+
+    foreach (var shortcut in new (string Target, uint ModifierKey, uint OtherKey, string OtherModifier)[]
+    {
+        ("Control", 0x11, 0x41, "Shift"), // Ctrl+A and Ctrl+Shift+A
+        ("Alt", 0x12, 0x09, "Control"),   // Alt+Tab
+        ("Alt", 0x12, 0x73, "Shift"),      // Alt+F4
+    })
+    {
+        var protectedInput = New(shortcut.Target);
+        Tap(protectedInput, shortcut.ModifierKey, shortcut.Target, 0, 20);
+        _ = Send(protectedInput, shortcut.ModifierKey, shortcut.Target, true, 40);
+        if (shortcut.OtherModifier == "Shift") _ = Send(protectedInput, 0x10, "Shift", true, 45);
+        _ = Send(protectedInput, shortcut.OtherKey, null, true, 50);
+        _ = Send(protectedInput, shortcut.OtherKey, null, false, 60);
+        if (shortcut.OtherModifier == "Shift") _ = Send(protectedInput, 0x10, "Shift", false, 65);
+        Assert(!Send(protectedInput, shortcut.ModifierKey, shortcut.Target, false, 70), $"{shortcut.Target} shortcut input must invalidate a double-tap candidate.");
+    }
+
+    var unrelated = New("Control");
+    Tap(unrelated, 0x11, "Control", 0, 20);
+    _ = Send(unrelated, 0x58, null, true, 30);
+    _ = Send(unrelated, 0x58, null, false, 40);
+    Tap(unrelated, 0x11, "Control", 60, 80);
+    Assert(!Send(unrelated, 0x11, "Control", false, 90), "A non-modifier key between taps must cancel candidacy.");
+
+    var otherModifier = New("Control");
+    Tap(otherModifier, 0x11, "Control", 0, 20);
+    Tap(otherModifier, 0x12, "Alt", 30, 40);
+    Tap(otherModifier, 0x11, "Control", 50, 70);
+    Assert(!Send(otherModifier, 0x11, "Control", false, 80), "A different modifier must cancel candidacy.");
+
+    var triple = New("Control");
+    Tap(triple, 0x11, "Control", 0, 20);
+    var firstTrigger = Send(triple, 0x11, "Control", true, 40);
+    var secondReleaseTrigger = Send(triple, 0x11, "Control", false, 60);
+    Tap(triple, 0x11, "Control", 80, 100);
+    Assert(!firstTrigger && secondReleaseTrigger, "The first double-tap should trigger only at release.");
+    Assert(!Send(triple, 0x11, "Control", false, 110), "Three taps must not cause a trigger storm.");
+}
+
+static void VerifyLowLevelKeyboardMessageMapping()
+{
+    var observerType = typeof(SearchCore).Assembly.GetType("WebTools.NativeHost.Services.LowLevelKeyboardObserver", throwOnError: false);
+    Assert(observerType is not null, "The mode-scoped low-level keyboard observer must exist.");
+    var translate = observerType!.GetMethod("TryTranslateKeyMessage", BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(observerType.FullName, "TryTranslateKeyMessage");
+
+    (bool Accepted, uint Key, string? Modifier, bool Down) Translate(int message, uint key)
+    {
+        var arguments = new object?[] { message, key, 0u, null, false };
+        var accepted = (bool)(translate.Invoke(null, arguments) ?? false);
+        var modifier = arguments[3]?.ToString();
+        return (accepted, (uint)arguments[2]!, modifier, (bool)arguments[4]!);
+    }
+
+    Assert(Translate(0x0100, 0xA2) == (true, 0x11u, "Control", true), "Left Ctrl keydown should normalize to Ctrl down.");
+    Assert(Translate(0x0105, 0xA3) == (true, 0x11u, "Control", false), "Right Ctrl system-keyup should normalize to Ctrl up.");
+    Assert(Translate(0x0104, 0xA4) == (true, 0x12u, "Alt", true), "Left Alt system-keydown should normalize to Alt down.");
+    Assert(Translate(0x0101, 0xA5) == (true, 0x12u, "Alt", false), "Right Alt keyup should normalize to Alt up.");
+    Assert(Translate(0x0104, 0x09) == (true, 0x09u, null, true), "Alt+Tab system-key events must be forwarded as non-modifier input.");
+    Assert(Translate(0x0100, 0x43) == (true, 0x43u, null, true), "Ordinary keydown must be forwarded as non-modifier input.");
+    Assert(!Translate(0x0201, 0x01).Accepted, "Non-keyboard messages must be ignored by the recognizer adapter.");
+}
+
+static void VerifyLowLevelKeyboardObserverLifecycle()
+{
+    var hookApi = new FakeLowLevelKeyboardHookApi();
+    var scheduled = new List<Action>();
+    var activations = 0;
+    using var observer = new LowLevelKeyboardObserver(HotkeyModifier.Control, () => activations++, action => scheduled.Add(action), hookApi);
+    Assert(hookApi.InstallCount == 1, "Constructing Double Ctrl should install exactly one observer.");
+
+    static IntPtr EmitTo(FakeLowLevelKeyboardHookApi target, uint key, int message)
+    {
+        var data = new NativeMethods.LowLevelKeyboardData { VirtualKey = key };
+        var pointer = Marshal.AllocHGlobal(Marshal.SizeOf<NativeMethods.LowLevelKeyboardData>());
+        try
+        {
+            Marshal.StructureToPtr(data, pointer, false);
+            return target.Emit(message, pointer);
+        }
+        finally { Marshal.FreeHGlobal(pointer); }
+    }
+
+    IntPtr Emit(uint key, int message) => EmitTo(hookApi, key, message);
+
+    void Tap(uint key, int down, int up)
+    {
+        _ = Emit(key, down);
+        _ = Emit(key, up);
+    }
+
+    Tap(NativeMethods.VkLControl, NativeMethods.WmKeyDown, NativeMethods.WmKeyUp);
+    Assert(scheduled.Count == 0, "A single modifier tap must not schedule activation.");
+    Tap(NativeMethods.VkRControl, NativeMethods.WmKeyDown, NativeMethods.WmKeyUp);
+    Assert(scheduled.Count == 1 && activations == 0, "A completed double tap should queue, not inline, activation.");
+    Assert(Emit(0x41, NativeMethods.WmKeyDown) == hookApi.CallNextResult, "Every key event must be chained to CallNextHookEx.");
+    Assert(hookApi.CallNextCount == 5, "Every observed event must call the next hook.");
+
+    observer.SetModifier(HotkeyModifier.Alt);
+    Assert(hookApi.InstallCount == 1, "Changing Ctrl to Alt must reuse the existing observer hook.");
+    scheduled[0]();
+    Assert(activations == 0, "A queued activation from the previous binding must be discarded after reconfiguration.");
+
+    Tap(NativeMethods.VkLMenu, NativeMethods.WmSysKeyDown, NativeMethods.WmSysKeyUp);
+    Tap(NativeMethods.VkRMenu, NativeMethods.WmSysKeyDown, NativeMethods.WmSysKeyUp);
+    Assert(scheduled.Count == 2, "Double Alt must queue activation after reusing the observer.");
+    scheduled[1]();
+    Assert(activations == 1, "The active binding's queued activation should run exactly once.");
+
+    Assert(observer.TryDispose(out var errorCode) && errorCode == 0, "A successful unhook should report disposal success.");
+    Assert(observer.TryDispose(out _) && hookApi.UninstallCount == 1, "Observer disposal must be idempotent.");
+
+    var retryApi = new FakeLowLevelKeyboardHookApi { UninstallSucceeds = false };
+    var retryObserver = new LowLevelKeyboardObserver(HotkeyModifier.Control, static () => { }, static _ => { }, retryApi);
+    Assert(!retryObserver.TryDispose(out var error) && error == retryApi.UninstallErrorCode, "Failed unhook must remain observable and retryable.");
+    retryApi.UninstallSucceeds = true;
+    Assert(retryObserver.TryDispose(out _) && retryApi.UninstallCount == 2, "A later unhook retry should release the hook.");
+
+    var throwingApi = new FakeLowLevelKeyboardHookApi();
+    using var throwingObserver = new LowLevelKeyboardObserver(HotkeyModifier.Control, static () => { }, static _ => throw new InvalidOperationException("fixture"), throwingApi);
+    _ = EmitTo(throwingApi, 0x11, NativeMethods.WmKeyDown);
+    _ = EmitTo(throwingApi, 0x11, NativeMethods.WmKeyUp);
+    _ = EmitTo(throwingApi, 0x11, NativeMethods.WmKeyDown);
+    _ = EmitTo(throwingApi, 0x11, NativeMethods.WmKeyUp);
+    Assert(throwingApi.CallNextCount == 4, "A scheduling exception must not cross the native boundary or skip hook chaining.");
+}
+
+static void VerifyHotkeyModeTransactions()
+{
+    RunOnSta(() =>
+    {
+        using var source = new HwndSource(new HwndSourceParameters("WebTools hotkey transition check")
+        {
+            Width = 0,
+            Height = 0,
+            WindowStyle = 0,
+            ExtendedWindowStyle = 0,
+        });
+        var registrations = new FakeHotkeyRegistrationApi();
+        var observers = new FakeHotkeyKeyboardObserverFactory();
+        var service = new GlobalHotkeyService(
+            source.Handle,
+            "Control+Alt+Space",
+            static () => { },
+            new DiagnosticsService(Environment.TickCount64),
+            registrations,
+            observers.Create);
+        try
+        {
+            Assert(registrations.Active.Values.SequenceEqual(["Control+Alt+Space"]), "Initial chord should be registered once.");
+            Assert(service.TryReplace("Control+Space", out _), "Chord to chord should replace successfully.");
+            Assert(registrations.Operations.TakeLast(2).Select(item => item.Split(':')[0]).SequenceEqual(["register", "unregister"]), "Chord replacement should register before releasing the old chord.");
+            Assert(registrations.Active.Values.SequenceEqual(["Control+Space"]), "Chord replacement should leave one registration.");
+
+            registrations.FailCanonical.Add("Alt+Space");
+            Assert(!service.TryReplace("Alt+Space", out _) && service.Shortcut == "Control+Space", "A conflicting replacement must preserve the active chord.");
+            Assert(registrations.Active.Values.SequenceEqual(["Control+Space"]), "Failed registration must not leak a second chord.");
+            registrations.FailCanonical.Clear();
+
+            var failedCandidateId = registrations.Active.Keys.Single();
+            registrations.FailUnregisterIds.Add(failedCandidateId);
+            Assert(!service.TryReplace("DoubleModifier:Control", out _) && service.Shortcut == "Control+Space", "Failure to release the old chord must preserve it during chord-to-double transition.");
+            Assert(observers.Created.Count == 1 && observers.Created[0].Disposed, "A double-modifier observer acquired for a failed transition must be rolled back.");
+            Assert(registrations.Active.Values.SequenceEqual(["Control+Space"]), "Failed chord release must leave only the prior registration.");
+            registrations.FailUnregisterIds.Clear();
+
+            Assert(service.TryReplace("DoubleModifier:Control", out _), "Chord to Double Ctrl should succeed.");
+            Assert(registrations.Active.Count == 0 && observers.Created.Count == 2, "Double Ctrl should replace RegisterHotKey with exactly one observer.");
+            var sharedObserver = observers.Created[1];
+            Assert(service.TryReplace("DoubleModifier:Alt", out _), "Double Ctrl to Double Alt should succeed.");
+            Assert(observers.Created.Count == 2 && sharedObserver.Modifier == HotkeyModifier.Alt && !sharedObserver.Disposed, "Double modifier changes should reset and reuse one observer.");
+
+            Assert(service.TryReplace("FunctionKey:F1", out _), "Double Alt to function key should succeed.");
+            Assert(sharedObserver.Disposed && registrations.Active.Values.SequenceEqual(["FunctionKey:F1"]), "Function key mode should release the observer and use one modifier-free registration.");
+            Assert(registrations.LastDefinition is { Modifiers: NativeMethods.ModNoRepeat, VirtualKey: 0x70 }, "Function key registration should have no Ctrl/Alt/Shift/Win modifier.");
+            Assert(service.TryReplace("Alt+Space", out _), "Function key to chord should succeed.");
+            Assert(service.TryReplace("F10", out _), "Chord to function key should succeed.");
+            Assert(service.TryReplace("DoubleModifier:Control", out _), "Function key to Double Ctrl should succeed.");
+
+            var activeObserver = observers.Created[^1];
+
+            activeObserver.FailDispose = true;
+            Assert(!service.TryReplace("Control+Space", out _) && service.Shortcut == "DoubleModifier:Control", "A failed hook removal must preserve the prior Double Ctrl binding.");
+            Assert(registrations.Active.Count == 0, "Failed observer disposal must roll back the newly registered chord.");
+            activeObserver.FailDispose = false;
+            Assert(service.TryReplace("Control+Space", out _), "The same transition should succeed after hook removal recovers.");
+            Assert(activeObserver.Disposed && registrations.Active.Values.SequenceEqual(["Control+Space"]), "Successful retry should leave only the chord active.");
+
+            observers.ThrowNext = true;
+            Assert(!service.TryReplace("DoubleModifier:Alt", out _) && service.Shortcut == "Control+Space", "Hook installation failure must preserve the current chord.");
+            Assert(registrations.Active.Values.SequenceEqual(["Control+Space"]), "Hook installation failure must not release the previous registration.");
+        }
+        finally { service.Dispose(); }
+
+        Assert(registrations.Active.Count == 0, "NativeHost disposal must release its current RegisterHotKey registration.");
+
+        using var doubleSource = new HwndSource(new HwndSourceParameters("WebTools double hotkey dispose check")
+        {
+            Width = 0,
+            Height = 0,
+            WindowStyle = 0,
+            ExtendedWindowStyle = 0,
+        });
+        var doubleObservers = new FakeHotkeyKeyboardObserverFactory();
+        using (var doubleService = new GlobalHotkeyService(
+            doubleSource.Handle,
+            "DoubleModifier:Alt",
+            static () => { },
+            new DiagnosticsService(Environment.TickCount64),
+            new FakeHotkeyRegistrationApi(),
+            doubleObservers.Create))
+        {
+            Assert(doubleObservers.Created.Count == 1, "Starting in a stored Double Alt mode should install one observer.");
+        }
+        Assert(doubleObservers.Created.Single().Disposed, "NativeHost disposal must remove the observer for a double-modifier mode.");
+    });
+}
+
+static void VerifyHotkeyModeStressCycles()
+{
+    RunOnSta(() =>
+    {
+        using var source = new HwndSource(new HwndSourceParameters("WebTools hotkey stress check")
+        {
+            Width = 0,
+            Height = 0,
+            WindowStyle = 0,
+            ExtendedWindowStyle = 0,
+        });
+        var registrations = new FakeHotkeyRegistrationApi();
+        var observers = new FakeHotkeyKeyboardObserverFactory();
+        const string chord = "Control+Alt+Space";
+        using var service = new GlobalHotkeyService(
+            source.Handle,
+            chord,
+            static () => { },
+            new DiagnosticsService(Environment.TickCount64),
+            registrations,
+            observers.Create);
+
+        for (var cycle = 0; cycle < 300; cycle++)
+        {
+            Assert(service.TryReplace("DoubleModifier:Control", out _) && service.Shortcut == "DoubleModifier:Control",
+                $"Cycle {cycle + 1}: chord to Double Ctrl should succeed.");
+            Assert(registrations.Active.Count == 0 && observers.Created.Count == cycle + 1 && !observers.Created[^1].Disposed,
+                $"Cycle {cycle + 1}: exactly one live observer should replace the chord.");
+
+            var observer = observers.Created[^1];
+            Assert(service.TryReplace("DoubleModifier:Alt", out _) && service.Shortcut == "DoubleModifier:Alt",
+                $"Cycle {cycle + 1}: Double Ctrl to Double Alt should succeed.");
+            Assert(observers.Created.Count == cycle + 1 && ReferenceEquals(observer, observers.Created[^1]) && observer.Modifier == HotkeyModifier.Alt,
+                $"Cycle {cycle + 1}: the double-modifier observer should be reused.");
+
+            Assert(service.TryReplace(chord, out _) && service.Shortcut == chord,
+                $"Cycle {cycle + 1}: Double Alt to the startup chord should succeed.");
+            Assert(observer.Disposed && registrations.Active.Count == 1 && registrations.Active.Values.Single() == chord,
+                $"Cycle {cycle + 1}: the observer must be disposed and one chord registration restored.");
+        }
+
+        service.Dispose();
+        Assert(registrations.Active.Count == 0, "Disposal after stress must release the final RegisterHotKey registration.");
+        Assert(observers.Created.Count == 300 && observers.Created.All(observer => observer.Disposed),
+            "Every observer created across the 300 cycles must be disposed.");
+    });
+}
+
 static void VerifyPhase4EResourceDriverOptions()
 {
     var optionsType = typeof(SearchCore).Assembly.GetType("WebTools.NativeHost.Diagnostics.Phase4EResourceTestOptions");
@@ -1087,6 +1496,26 @@ static void VerifyPhase4EResourceDriverOptions()
     try { _ = parse.Invoke(null, [new[] { "--phase4e-resource-test", root, snapshot, "bad/pipe", hotkey }]); }
     catch (TargetInvocationException error) when (error.InnerException is ArgumentException) { unsafePipeRejected = true; }
     Assert(unsafePipeRejected, "A pipe name outside the test protocol's safe alphabet must be rejected.");
+}
+
+static void VerifyPhase4EResourceHotkeyCommand()
+{
+    var type = typeof(SearchCore).Assembly.GetType("WebTools.NativeHost.Diagnostics.Phase4EResourceControlServer", throwOnError: false);
+    Assert(type is not null, "The existing isolated resource control server must exist.");
+    var allow = type!.GetMethod("IsAllowedHotkeyReplacement", BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(type.FullName, "IsAllowedHotkeyReplacement");
+
+    bool IsAllowed(string candidate, string startupHotkey) =>
+        (bool)(allow.Invoke(null, [candidate, startupHotkey]) ?? false);
+
+    const string startupHotkey = "Control+Alt+Shift+F12";
+    Assert(IsAllowed(startupHotkey, startupHotkey), "The test host's unique startup chord must be restorable.");
+    Assert(IsAllowed("DoubleModifier:Control", startupHotkey), "Double Ctrl must be available for the isolated mode cycle.");
+    Assert(IsAllowed("DoubleModifier:Alt", startupHotkey), "Double Alt must be available for the isolated mode cycle.");
+    Assert(!IsAllowed("Control+Space", startupHotkey), "The test command must not change to an arbitrary user hotkey.");
+    Assert(!IsAllowed("DoubleModifier:Shift", startupHotkey), "The test command must reject unsupported double modifiers.");
+    Assert(!IsAllowed("FunctionKey:F1", startupHotkey), "The test command must reject unrelated hotkey modes.");
+    Assert(!IsAllowed("Control+Alt+Shift+F11", startupHotkey), "The test command must not register a second chord besides its unique startup chord.");
 }
 
 static void VerifyUpdatePreparationProtocol()
@@ -1331,4 +1760,120 @@ internal sealed class TestResultRow(string title) : System.ComponentModel.INotif
         set { _icon = value; PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Icon))); }
     }
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+}
+
+internal sealed class FakeLowLevelKeyboardHookApi : ILowLevelKeyboardHookApi
+{
+    private NativeMethods.LowLevelKeyboardProc? _callback;
+    internal int InstallCount { get; private set; }
+    internal int UninstallCount { get; private set; }
+    internal int CallNextCount { get; private set; }
+    internal bool UninstallSucceeds { get; set; } = true;
+    internal int UninstallErrorCode { get; set; } = 5;
+    internal IntPtr CallNextResult { get; } = new(0x1234);
+
+    public IntPtr Install(NativeMethods.LowLevelKeyboardProc callback)
+    {
+        InstallCount++;
+        _callback = callback;
+        return new IntPtr(0x5678);
+    }
+
+    public bool Uninstall(IntPtr hook, out int errorCode)
+    {
+        UninstallCount++;
+        errorCode = UninstallSucceeds ? 0 : UninstallErrorCode;
+        return UninstallSucceeds;
+    }
+
+    public IntPtr CallNext(IntPtr hook, int code, IntPtr wParam, IntPtr lParam)
+    {
+        CallNextCount++;
+        return CallNextResult;
+    }
+
+    internal IntPtr Emit(int message, IntPtr dataPointer) =>
+        (_callback ?? throw new InvalidOperationException("No hook callback was installed."))(0, new IntPtr(message), dataPointer);
+}
+
+internal sealed class FakeHotkeyRegistrationApi : IGlobalHotkeyRegistrationApi
+{
+    internal Dictionary<int, string> Active { get; } = [];
+    internal List<string> Operations { get; } = [];
+    internal HashSet<string> FailCanonical { get; } = new(StringComparer.OrdinalIgnoreCase);
+    internal HashSet<int> FailUnregisterIds { get; } = [];
+    internal HotkeyDefinition? LastDefinition { get; private set; }
+
+    public bool Register(IntPtr windowHandle, int id, HotkeyDefinition definition, out int errorCode)
+    {
+        Operations.Add($"register:{id}:{definition.Canonical}");
+        LastDefinition = definition;
+        if (FailCanonical.Contains(definition.Canonical) || Active.ContainsKey(id))
+        {
+            errorCode = 1409;
+            return false;
+        }
+        Active[id] = definition.Canonical;
+        errorCode = 0;
+        return true;
+    }
+
+    public bool Unregister(IntPtr windowHandle, int id, out int errorCode)
+    {
+        Operations.Add($"unregister:{id}");
+        if (FailUnregisterIds.Contains(id) || !Active.Remove(id))
+        {
+            errorCode = 1419;
+            return false;
+        }
+        errorCode = 0;
+        return true;
+    }
+}
+
+internal sealed class FakeHotkeyKeyboardObserverFactory
+{
+    internal List<FakeHotkeyKeyboardObserver> Created { get; } = [];
+    internal bool ThrowNext { get; set; }
+
+    internal IHotkeyKeyboardObserver Create(HotkeyModifier modifier, Action onActivated)
+    {
+        if (ThrowNext)
+        {
+            ThrowNext = false;
+            throw new InvalidOperationException("Simulated hook installation failure.");
+        }
+        var observer = new FakeHotkeyKeyboardObserver(modifier);
+        Created.Add(observer);
+        return observer;
+    }
+}
+
+internal sealed class FakeHotkeyKeyboardObserver(HotkeyModifier modifier) : IHotkeyKeyboardObserver
+{
+    public HotkeyModifier Modifier { get; private set; } = modifier;
+    internal bool FailDispose { get; set; }
+    internal bool Disposed { get; private set; }
+    internal bool Deactivated { get; private set; }
+
+    public void SetModifier(HotkeyModifier next)
+    {
+        if (Disposed) throw new ObjectDisposedException(nameof(FakeHotkeyKeyboardObserver));
+        Modifier = next;
+    }
+
+    public void Deactivate() => Deactivated = true;
+
+    public bool TryDispose(out int errorCode)
+    {
+        errorCode = FailDispose ? 5 : 0;
+        if (FailDispose) return false;
+        Disposed = true;
+        return true;
+    }
+
+    public void Dispose()
+    {
+        if (!TryDispose(out var errorCode)) throw new InvalidOperationException($"Fake unhook failed: {errorCode}.");
+    }
 }

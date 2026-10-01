@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Interop;
 using Microsoft.Win32;
 using WebTools.NativeHost.Catalog;
 using WebTools.NativeHost.Data;
@@ -167,6 +168,22 @@ public partial class MainWindow : Window
         return await Dispatcher.InvokeAsync(CaptureResourceTestPresentation, DispatcherPriority.Render).Task;
     }
 
+    internal async Task<Phase4EResourcePresentation> SetVisibilityFromResourceTestAsync(bool visible)
+    {
+        if (!_resourceTestMode) throw new InvalidOperationException("The Phase 4E resource test driver is not enabled.");
+
+        if (!Dispatcher.CheckAccess())
+        {
+            var operation = Dispatcher.InvokeAsync(() => SetVisibilityFromResourceTestAsync(visible));
+            var pending = await operation.Task;
+            return await pending;
+        }
+
+        if (visible) ShowLauncher();
+        else HideLauncher("resource-test");
+        return await Dispatcher.InvokeAsync(CaptureResourceTestPresentation, DispatcherPriority.Render).Task;
+    }
+
     private Phase4EResourcePresentation CaptureResourceTestPresentation()
     {
         UpdateLayout();
@@ -183,7 +200,12 @@ public partial class MainWindow : Window
             _rows.Count(row => row.Icon is not null),
             _icons.Count,
             _icons.ApproximateBitmapBytes,
-            StatusText.Visibility == Visibility.Visible ? StatusText.Text : "");
+            StatusText.Visibility == Visibility.Visible ? StatusText.Text : "",
+            new WindowInteropHelper(this).Handle.ToInt64(),
+            IsActive,
+            QueryBox.IsKeyboardFocused,
+            _snapshot.EverythingEnabled,
+            _rows.Select(row => row.Result.Kind.ToString()).ToArray());
     }
 
     private async Task RefreshCatalogAsync()

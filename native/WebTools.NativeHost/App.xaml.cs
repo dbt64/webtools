@@ -142,7 +142,7 @@ public partial class App : WpfApplication
             _diagnostics.RecordStartupReady();
             if (resourceTest is not null)
             {
-                _phase4eResourceControl = new Phase4EResourceControlServer(resourceTest.ControlPipeName, _launcherWindow);
+                _phase4eResourceControl = new Phase4EResourceControlServer(resourceTest.ControlPipeName, _launcherWindow, resourceTest.Hotkey);
                 _phase4eResourceControlTask = _phase4eResourceControl.RunAsync(_hostCancellation.Token);
             }
             _ = _launcherWindow.InitializeSearchAsync();
