@@ -36,6 +36,8 @@ const translationEngineOptions = [
 ] as const
 const recordingShortcut = ref(false)
 const savingShortcut = ref(false)
+const pendingShortcut = ref<string | null>(null)
+const shortcutMessage = ref('')
 const savingTheme = ref(false)
 const savingLauncherMode = ref(false)
 const everythingStatus = ref<{ executablePath?: string; running: boolean; version?: string }>()
@@ -50,35 +52,84 @@ const selectedProviderConfig = computed(() => {
   return { ...saved, model: saved?.model || selectedProviderDescriptor.value?.defaultModel || '' }
 })
 const translationEngineLabel = computed(() => ({ mymemory: 'MyMemory 免费翻译', ai: 'WebTools AI', 'qwen-mt': 'Qwen-MT' })[settings.value.translation.engine])
+const shortcutPresets = [
+  { value: 'Alt+Space', label: 'Alt + Space' },
+  { value: 'Control+Space', label: 'Ctrl + Space' },
+] as const
+const doubleModifierPresets = [
+  { value: 'DoubleModifier:Control', label: '双击 Ctrl' },
+  { value: 'DoubleModifier:Alt', label: '双击 Alt' },
+] as const
+const functionKeyPresets = Array.from({ length: 10 }, (_, index) => {
+  const number = index + 1
+  return { value: `FunctionKey:F${number}`, label: `F${number}` }
+})
+const displayedShortcut = computed(() => formatShortcut(pendingShortcut.value ?? settings.value.quickSearchShortcut))
+
+function formatShortcut(value: string): string {
+  if (value === 'DoubleModifier:Control') return '双击 Ctrl'
+  if (value === 'DoubleModifier:Alt') return '双击 Alt'
+  if (value.startsWith('FunctionKey:')) return value.slice('FunctionKey:'.length)
+  const modifierLabels: Record<string, string> = { Control: 'Ctrl', Super: 'Win' }
+  return value.split('+').map((part) => modifierLabels[part] ?? part).join(' + ')
+}
 
 function markSaved(): void { saved.value = true; window.setTimeout(() => { saved.value = false }, 1800) }
 
-async function updateShortcut(shortcut: string): Promise<void> {
-  savingShortcut.value = true
-  const result = await window.desktop.updateSettings({ quickSearchShortcut: shortcut })
-  savingShortcut.value = false
-  if (!result.ok) { errorMessage.value = result.error.message; recordingShortcut.value = false; return }
-  settings.value = result.data
-  errorMessage.value = ''
+function stageShortcut(shortcut: string): void {
+  pendingShortcut.value = shortcut === settings.value.quickSearchShortcut ? null : shortcut
   recordingShortcut.value = false
-  markSaved()
+  shortcutMessage.value = ''
+}
+
+function beginShortcutCapture(): void {
+  recordingShortcut.value = true
+  shortcutMessage.value = ''
+}
+
+function cancelPendingShortcut(): void {
+  pendingShortcut.value = null
+  recordingShortcut.value = false
+  shortcutMessage.value = ''
+}
+
+async function applyPendingShortcut(): Promise<void> {
+  if (!pendingShortcut.value || savingShortcut.value) return
+  savingShortcut.value = true
+  shortcutMessage.value = ''
+  try {
+    const result = await window.desktop.updateSettings({ quickSearchShortcut: pendingShortcut.value })
+    if (!result.ok) {
+      shortcutMessage.value = '无法应用此快捷键，可能与 Windows 或其他应用冲突。当前快捷键保持不变。'
+      return
+    }
+    settings.value = result.data
+    pendingShortcut.value = null
+    shortcutMessage.value = ''
+    markSaved()
+  } catch {
+    shortcutMessage.value = '无法应用此快捷键，可能与 Windows 或其他应用冲突。当前快捷键保持不变。'
+  } finally {
+    savingShortcut.value = false
+  }
 }
 
 function handleShortcutKeydown(event: KeyboardEvent): void {
   if (!recordingShortcut.value) return
   event.preventDefault()
   event.stopPropagation()
-  if (event.key === 'Escape') { recordingShortcut.value = false; return }
+  if (event.key === 'Escape') { recordingShortcut.value = false; shortcutMessage.value = ''; return }
+  if (event.repeat) return
   if (['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) return
   const modifiers = [event.ctrlKey ? 'Control' : '', event.altKey ? 'Alt' : '', event.shiftKey ? 'Shift' : '', event.metaKey ? 'Super' : ''].filter(Boolean)
   if (!modifiers.length) return
   const names: Record<string, string> = { ' ': 'Space', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', PageUp: 'PageUp', PageDown: 'PageDown' }
   const key = names[event.key] ?? (/^[a-z]$/i.test(event.key) ? event.key.toUpperCase() : event.key)
   if (!/^[A-Z0-9]$/.test(key) && !/^F(?:[1-9]|1[0-2])$/.test(key) && !['Space', 'Up', 'Down', 'Left', 'Right', 'PageUp', 'PageDown', 'Home', 'End', 'Insert', 'Delete', 'Backspace', 'Tab', 'Enter'].includes(key)) {
-    errorMessage.value = '此按键不能用作全局快捷键，请尝试字母、数字或功能键。'
+    shortcutMessage.value = '该组合键不受支持。请使用 Ctrl、Alt、Shift 或 Win 加字母、数字、方向键等按键。'
     return
   }
-  void updateShortcut([...modifiers, key].join('+'))
+  stageShortcut([...modifiers, key].join('+'))
 }
 
 async function toggleStartup(): Promise<void> {
@@ -297,8 +348,38 @@ onBeforeUnmount(() => { isMounted = false })
       </div>
     </div>
     <div class="settings-group shortcut-settings">
-      <div class="settings-group-heading"><span class="settings-group-icon"><Keyboard :size="17" /></span><div><strong>快速搜索快捷键</strong><p>在其他应用中按下快捷键显示 WebTools 搜索框</p></div></div>
-      <div class="shortcut-row"><div><strong>唤起搜索框</strong><small>快捷键会在后台全局生效</small></div><button class="shortcut-recorder" :class="{ recording: recordingShortcut }" :disabled="savingShortcut" @click="recordingShortcut = true" @keydown="handleShortcutKeydown">{{ recordingShortcut ? '按下组合键…（Esc 取消）' : settings.quickSearchShortcut.replace('Control', 'Ctrl').replace('Super', 'Win') }}<span v-if="!recordingShortcut">⌨</span></button></div>
+      <div class="settings-group-heading"><span class="settings-group-icon"><Keyboard :size="17" /></span><div><strong>快速搜索快捷键</strong><p>选择一个唤起方式，应用后会在后台全局生效</p></div></div>
+      <div class="hotkey-options-group">
+        <strong>常用组合</strong>
+        <div class="hotkey-options" role="group" aria-label="常用组合">
+          <button v-for="option in shortcutPresets" :key="option.value" type="button" class="hotkey-option" :class="{ selected: (pendingShortcut ?? settings.quickSearchShortcut) === option.value, pending: pendingShortcut === option.value }" :aria-pressed="(pendingShortcut ?? settings.quickSearchShortcut) === option.value" :disabled="savingShortcut" @click="stageShortcut(option.value)">
+            <span>{{ option.label }}</span><Check v-if="(pendingShortcut ?? settings.quickSearchShortcut) === option.value" :size="14" />
+          </button>
+        </div>
+      </div>
+      <div class="hotkey-options-group">
+        <strong>快速触发</strong>
+        <div class="hotkey-options" role="group" aria-label="快速触发">
+          <button v-for="option in doubleModifierPresets" :key="option.value" type="button" class="hotkey-option" :class="{ selected: (pendingShortcut ?? settings.quickSearchShortcut) === option.value, pending: pendingShortcut === option.value }" :aria-pressed="(pendingShortcut ?? settings.quickSearchShortcut) === option.value" :disabled="savingShortcut" @click="stageShortcut(option.value)">
+            <span>{{ option.label }}</span><Check v-if="(pendingShortcut ?? settings.quickSearchShortcut) === option.value" :size="14" />
+          </button>
+        </div>
+      </div>
+      <div class="hotkey-options-group">
+        <strong>功能键</strong>
+        <div class="hotkey-options function-key-options" role="group" aria-label="功能键 F1 到 F10">
+          <button v-for="option in functionKeyPresets" :key="option.value" type="button" class="hotkey-option" :class="{ selected: (pendingShortcut ?? settings.quickSearchShortcut) === option.value, pending: pendingShortcut === option.value }" :aria-pressed="(pendingShortcut ?? settings.quickSearchShortcut) === option.value" :disabled="savingShortcut" @click="stageShortcut(option.value)">
+            <span>{{ option.label }}</span><Check v-if="(pendingShortcut ?? settings.quickSearchShortcut) === option.value" :size="14" />
+          </button>
+        </div>
+      </div>
+      <div class="hotkey-options-group">
+        <strong>高级自定义</strong>
+        <div class="custom-hotkey-row"><span>录制 Ctrl、Alt、Shift 或 Win 组合键</span><button type="button" class="secondary-button shortcut-recorder" :class="{ recording: recordingShortcut }" :disabled="savingShortcut" :aria-pressed="recordingShortcut" @click="beginShortcutCapture" @keydown="handleShortcutKeydown">{{ recordingShortcut ? '按下组合键…（Esc 取消）' : '录制组合键' }}<Keyboard v-if="!recordingShortcut" :size="14" /></button></div>
+      </div>
+      <div class="hotkey-binding-status" aria-live="polite"><span>当前生效</span><kbd>{{ formatShortcut(settings.quickSearchShortcut) }}</kbd><span v-if="pendingShortcut" class="hotkey-pending-label">待应用：{{ displayedShortcut }}</span></div>
+      <div v-if="pendingShortcut" class="hotkey-pending-actions"><button type="button" class="primary-button" :disabled="savingShortcut" @click="applyPendingShortcut">{{ savingShortcut ? '应用中…' : '应用' }}</button><button type="button" class="secondary-button" :disabled="savingShortcut" @click="cancelPendingShortcut">取消</button></div>
+      <p v-if="shortcutMessage" class="inline-error hotkey-error" role="alert">{{ shortcutMessage }}</p>
       <div class="shortcut-row"><div><strong>登录 Windows 时启动</strong><small>启动到托盘，随时可用全局快捷键</small></div><button class="toggle-switch" :class="{ enabled: settings.launchOnStartup }" role="switch" :aria-checked="settings.launchOnStartup" @click="toggleStartup"><span /></button></div>
     </div>
     <div class="settings-group everything-settings">
@@ -351,5 +432,26 @@ onBeforeUnmount(() => { isMounted = false })
 .preference-option-described { min-height: 58px; }
 .preference-option-described > span { display: grid; gap: 5px; }
 .preference-option small { color: var(--muted); font-size: 9px; line-height: 1.4; }
+.shortcut-settings { display: grid; gap: 18px; }
+.shortcut-settings > .settings-group-heading { margin-bottom: -4px; }
+.hotkey-options-group { display: grid; gap: 8px; }
+.hotkey-options-group > strong { color: var(--text); font-size: 10px; font-weight: 650; }
+.hotkey-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 7px; }
+.function-key-options { grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); }
+.hotkey-option { display: flex; min-width: 0; min-height: 38px; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--surface-raised); font: inherit; font-size: 10px; text-align: left; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease; }
+.hotkey-option:hover:not(:disabled) { border-color: var(--accent); background: var(--hover); }
+.hotkey-option.selected { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.hotkey-option.pending { border-style: dashed; }
+.hotkey-option:focus-visible, .shortcut-recorder:focus-visible, .hotkey-pending-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hotkey-option:disabled { cursor: wait; opacity: .7; }
+.custom-hotkey-row, .hotkey-binding-status, .hotkey-pending-actions { display: flex; align-items: center; gap: 8px; }
+.custom-hotkey-row { justify-content: space-between; flex-wrap: wrap; color: var(--muted); font-size: 10px; }
+.shortcut-recorder { display: inline-flex; min-width: 120px; justify-content: center; align-items: center; gap: 7px; }
+.shortcut-recorder.recording { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.hotkey-binding-status { min-height: 32px; flex-wrap: wrap; color: var(--muted); font-size: 10px; }
+.hotkey-binding-status kbd { padding: 3px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: var(--surface-raised); font: inherit; }
+.hotkey-pending-label { color: var(--accent); }
+.hotkey-pending-actions .primary-button, .hotkey-pending-actions .secondary-button { min-width: 82px; }
+.hotkey-error { margin: -10px 0 0; }
 @media (max-width: 680px) { .theme-options, .launcher-mode-options { grid-template-columns: 1fr; } }
 </style>
