@@ -38,6 +38,23 @@ public sealed class ManagerController : IDisposable
         QueueIntent(intent);
     }
 
+    internal object CaptureLifecycleForResourceTest()
+    {
+        lock (_sync)
+        {
+            return new
+            {
+                processId = _managerProcess is { } process && !HasExitedOrUnavailable(process) ? process.Id : (int?)null,
+                connected = _pipeServer.IsConnected,
+                rendererReady = _rendererReadiness.IsReady,
+                ensuring = _ensuring,
+                intentGeneration = _intentGeneration,
+                pendingRequestId = _pendingIntent?.RequestId,
+                pendingKind = _pendingIntent?.Kind,
+            };
+        }
+    }
+
     public void OpenTranslation(string exactText)
     {
         if (string.IsNullOrWhiteSpace(exactText) || exactText.Length > 20_000)
@@ -188,7 +205,7 @@ public sealed class ManagerController : IDisposable
                     {
                         _rendererReadiness.MarkNotReady();
                     }
-                    var launched = _processLauncher.Start(NativeManagerPipeServer.DefaultPipeName);
+                    var launched = _processLauncher.Start(_pipeServer.PipeName);
                     launched.Exited += (_, _) => OnManagerExited(launched);
                     lock (_sync) _managerProcess = launched;
                     _diagnostics.Record("manager_launch", $"pid={launched.Id};mode={(_processLauncher.DevelopmentMode ? "development" : "packaged")}");

@@ -93,7 +93,7 @@ public partial class App : WpfApplication
                 _diagnostics);
             _pipeTask = _pipeServer.RunAsync(_hostCancellation.Token);
 
-            var processLauncher = new ManagerProcessLauncher(allowDevelopmentManager);
+            var processLauncher = new ManagerProcessLauncher(allowDevelopmentManager, resourceTest?.ProfileRoot);
             _managerController = new ManagerController(_pipeServer, processLauncher, _diagnostics, ShowManagerError);
             if (resourceTest is null)
             {
@@ -142,7 +142,7 @@ public partial class App : WpfApplication
             _diagnostics.RecordStartupReady();
             if (resourceTest is not null)
             {
-                _phase4eResourceControl = new Phase4EResourceControlServer(resourceTest.ControlPipeName, _launcherWindow, resourceTest.Hotkey);
+                _phase4eResourceControl = new Phase4EResourceControlServer(resourceTest.ControlPipeName, _launcherWindow, resourceTest.Hotkey, _managerController);
                 _phase4eResourceControlTask = _phase4eResourceControl.RunAsync(_hostCancellation.Token);
             }
             _ = _launcherWindow.InitializeSearchAsync();

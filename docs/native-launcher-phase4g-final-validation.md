@@ -625,3 +625,264 @@ The A warm-baseline row is from the four-block warm convergence run; the exact o
 - Working tree is **DIRTY** with the above work and existing Hotkey System 2.0 documentation/UI/model changes. No commit, push, PR, merge, tag, release, or Phase 4G-3 work occurred.
 
 **PHASE 4G-2 COMPLETE — NATIVE LAUNCHER STRESS / RESOURCE STABILITY PASS — READY FOR PHASE 4G-3**
+
+## Phase 4G-3 — Manager Lifecycle & Process Stability
+
+### Test Identity
+
+- Runtime evidence: 2026-10-02, approximately 23:40–23:47, Asia/Hong_Kong. Documentation closeout: 2026-10-03.
+- Windows 11 Pro `10.0.22631`, x64; build SDK `.NET 10.0.401`; Electron `44.4.5`.
+- Branch: `codex/shared-ai-translation-2.0`; source checkpoint: `55bb7b29e2dac933780500ee20d125833e1f3b51`. The task attachment's differently spelled hash is a transcription error; actual Git is authoritative.
+- Initial working tree: clean. Tested source is that checkpoint plus the explicitly isolated acceptance infrastructure listed below. No installer was built or run.
+- Evidence/build directory: `D:\系统缓存\WebTools Phase4G3 验收-20261002-233226`.
+- Real self-contained .NET 10 `win-x64` NativeHost: `Native\WebTools.NativeHost.exe` under that directory.
+- Real electron-builder unpacked Manager: `manager-build\win-unpacked\WebTools.exe`, with its production `resources\app.asar`. This is a real Release application group, not a synthetic Manager fixture.
+
+| Artifact | SHA-256 |
+|---|---|
+| NativeHost EXE | `479D87A39C69145ABB260718A3693E2FCCD99A7A18A0C4B21CDDE0DAC1D32C44` |
+| NativeHost DLL | `0600499AC9D738C6E8DD6DCE790CF1725A616AEA0A2714844318802CC495ACC0` |
+| Manager EXE | `DB0A928D2D3CC63A35CB1F209D4E256607366D26B9249CA55EAB26B910755EE2` |
+| Manager app.asar | `83C69EBB48AAD446B5CFF20F03021D2F80722A5ED41B5367455A3657FE520491` |
+
+A final NativeHost publish matched both tested EXE/DLL hashes. The archived Electron Main matched the final build byte-for-byte (SHA-256 `A51AD5F799006A87BC6CC30968A6EF2C68F056F6EDF18F768346FC855FCEF4C5`). Test-driver-only review fixes did not change those runtime artifacts.
+
+### Test Environment and Safety
+
+- Both Native state and Manager DataStore/SecretStore/Chromium user data use a disposable `profile` under the current user's TEMP. Fictional folder/site records and an empty catalog snapshot were seeded; no real catalog, websites, credentials, or tokens were copied.
+- Existing explicit `--phase4e-resource-test` supplies the isolated Native mutex, profile, pipe and `Control+Alt+Shift+F12` binding. It omits the test tray/update server and disables login-startup registry application. This acceptance does not claim a new tray/hotkey test.
+- Packaged Manager uses `--phase4g-manager-test`, a validated TEMP profile and the corresponding unique Native pipe. A loopback CDP port is added only by this explicitly isolated launch path. Normal production profiles, window preferences, sandbox/context isolation, and service ownership remain unchanged.
+- Driver requests use the real `ManagerController` → `ManagerProcessLauncher` → packaged Electron Main → real Vue/preload/BrowserWindow chain. Normal close is a Windows `WM_CLOSE` message to the identified Manager window, exercising the production close/destroy/quit handlers; it is not pipe-owner shutdown or a forced normal exit.
+- Process identity combines canonical executable path, PID, creation timestamp and ancestry. All Chromium children are scoped to this unpacked Manager directory, excluding other Electron apps. Scenario F terminates the confirmed isolated Main only, without terminating its children.
+- Real installation `D:\webtools` was not launched, stopped, updated or modified. Original before/after inventories both show NativeHost PID `12556`, creation time `2026-10-02T14:23:02.623567+08:00`, same executable path, and no Manager. Real Nook data/state hashes matched before/after; `secrets.json` remained absent. On the next-day resume the user installation was observed at PID `13284`; it was only observed and not operated on.
+- No startup setting was changed. There was no forced GC, working-set trim, UIA workload, Phase 4G-1 baseline rerun, Phase 4G-2 stress rerun, dependency change, or installer rebuild.
+
+### Audit of the Production Lifecycle
+
+- `App.xaml.cs` creates one Manager pipe server/controller. Tray/page requests call `OpenPage`; Launcher Translation actions call `OpenTranslation`. The control driver delegates to those same paths.
+- `ManagerController` serializes launch, tracks its real process and renderer-ready generation, queues latest-wins intents and waits for acknowledgement. `Exited` clears the process reference; disconnect resets readiness without stopping NativeHost.
+- One audit correction passes `_pipeServer.PipeName` to the process launcher instead of always passing the production constant. The normal pipe name is unchanged; isolated Hosts now cannot accidentally send their Manager to the live Host.
+- Native-managed Electron relies on this Native launch gate rather than acquiring another Electron single-instance lock. The runtime reuse test verifies that ownership, rather than assuming a second Electron lock exists.
+- Electron connects/handshakes before creating Manager, accepts renderer-ready only from its current main frame and sends the route/prefill intent with its request ID. `App.vue` applies the route; Translation acknowledges after exact prefill application.
+- Normal BrowserWindow close destroys the Manager window, cancels active requests and quits Electron. `before-quit` closes the pipe client. Native disconnect/exit handling leaves the resident Host alive and permits a future launch.
+- Translation currently auto-translates after an input debounce; that is established product behavior and was not changed. The isolated profile selects AI with no credentials, so these local UI/handoff scenarios cannot call a provider. No external-provider acceptance is claimed.
+
+### Scenario A — Cold Start & Normal Exit
+
+**REAL RELEASE RUNTIME PASS: 5/5 opens and normal closes.** Each ready group had one Main, one Renderer, one GPU and one Utility process. Each completed close reached Electron=0 with its NativeHost alive.
+
+Timing begins immediately before the Native production-open request. Process time ends at the first identity-verified Main observation; window time at its single visible top-level HWND; ready time after Vue DOM, a successful preload `getVersion()` IPC, expected page heading and Native intent acknowledgement. These timings include driver polling/observation overhead and are not physical mouse/keyboard latency measurements.
+
+| Run | Native PID | Main PID | Process observed | Window visible | Renderer/IPC ready | Group exit |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 11360 | 24116 | 171.97 ms | 632.65 ms | 660.28 ms | 368.76 ms |
+| 2 | 11360 | 7536 | 246.18 ms | 618.20 ms | 625.68 ms | 365.63 ms |
+| 3 | 11360 | 10524 | 185.09 ms | 366.37 ms | 371.27 ms | 289.56 ms |
+| 4 | 11360 | 23412 | 244.07 ms | 432.00 ms | 436.72 ms | 289.03 ms |
+| 5 | 11084 | 26044 | 192.01 ms | 407.51 ms | 432.32 ms | 295.96 ms |
+
+The first driver's Windows console encoding failed before A. A subsequent exited-child metric race interrupted the first attempted fifth close after four completed samples; that attempt is retained but is not counted. Only run 5 was supplemented after the test-tool correction. Therefore A is not represented as one uninterrupted five-run Native PID.
+
+### Scenario B — Single Instance & Reuse
+
+**REAL RELEASE RUNTIME PASS: 20/20 requests.** Native PID `11084`, Manager Main PID `26152`, HWND `1836952` stayed the same. Each acknowledged Entries/Favorites request had one independent Main and the same single visible Manager HWND. Normal close left the NativeHost running and the entire Manager group absent.
+
+### Scenario C — 30 Open/Close Cycles
+
+**REAL RELEASE RUNTIME PASS: 30/30 cycles on Native PID `11084`.** Every cycle began with Electron=0, loaded the real isolated Favorites data, had one Manager Main/window and ended after normal `WM_CLOSE` with Electron=0 and the released Native Manager state. No Main/child orphan, duplicate instance, Native crash or hang was observed.
+
+| Metric | Minimum | Median | Maximum |
+|---|---:|---:|---:|
+| Main process observed | 141.94 ms | 174.07 ms | 226.90 ms |
+| Visible window observed | 311.79 ms | 349.94 ms | 387.52 ms |
+| Renderer/IPC ready | 317.66 ms | 353.69 ms | 391.53 ms |
+| Normal group exit | 254.25 ms | 271.39 ms | 390.36 ms |
+
+### Scenario D — Close During Active Operations
+
+**REAL RELEASE RUNTIME PASS: four representative cases.** Settings loaded and an isolated `theme=light` change was verified in Native persisted state; Favorites closed with a real new-folder dialog and unsaved input; Translation closed with local source text and an unconfigured AI provider; a fourth Manager switched Favorites → Settings → Favorites → Translation → Favorites before close. Every case released the Renderer/group and Native pipe session; no observed renderer exception or lingering process remained.
+
+CDP inserted text in the real renderer and observed actual DOM/preload results. Physical keyboard/mouse operation and in-flight external-provider cancellation were not exercised here; this is local-UI lifecycle acceptance, not provider end-to-end acceptance.
+
+### Scenario E — Handoff & Recovery
+
+**REAL RELEASE RUNTIME PASS.** The real WPF query/result path activated Translation with exact original text `  Phase G test don't alter text  `, including its leading/trailing spaces. The resulting source textarea matched exactly and the matching request was acknowledged. A warm replacement `Second handoff exact text` arrived once, retained the same Manager Main and replaced the input.
+
+Manager normal close returned to Native-only; opening Settings again established a new acknowledged IPC session; that Manager also closed normally. Native Launcher subsequently showed, found the isolated website through `/Phase4G3`, hid and cleared its query. The server remained operational. No product translation behavior was changed for this test.
+
+### Scenario F — Unexpected Exit Recovery
+
+**REAL RELEASE RUNTIME PASS on independent Native PID `25960`.** Manager Main `25604` was identity-verified and terminated alone. Its Renderer/GPU/Utility children disappeared without test cleanup. The Native controller reported no process, disconnected/not-ready state and no ensuring operation. NativeHost stayed alive; replacement Main `12316` launched normally as one instance and then closed normally (group-exit observation 380.95 ms).
+
+The earlier F attempt was refused before termination because the test compared CIM microsecond timestamps to Process API 100-nanosecond timestamps as exact strings. The corrected driver retains exact CIM identity/path checks and corroborates the newly acquired handle's start time within the known precision difference. Only F was supplemented; B/C/D/E were not repeated.
+
+### Resource Summary
+
+MiB denotes 1,048,576 bytes. Scenario C checkpoints are taken after ten seconds of natural idle following each fifth close, without GC/trim. These are short lifecycle observations, not a new long-duration memory benchmark.
+
+| Checkpoint | Native PID | PB MiB | WS MiB | Handles | Threads | GDI | USER | Electron |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| B complete | 11084 | 74.85 | 134.48 | 778 | 28 | 12 | 25 | 0 |
+| C 5 | 11084 | 74.79 | 135.46 | 779 | 26 | 12 | 25 | 0 |
+| C 10 | 11084 | 75.33 | 137.12 | 777 | 26 | 12 | 25 | 0 |
+| C 15 | 11084 | 71.90 | 133.09 | 773 | 22 | 12 | 25 | 0 |
+| C 20 | 11084 | 72.61 | 134.05 | 773 | 22 | 12 | 25 | 0 |
+| C 25 | 11084 | 72.61 | 134.09 | 774 | 22 | 12 | 25 | 0 |
+| C 30 | 11084 | 78.73 | 142.14 | 774 | 22 | 12 | 25 | 0 |
+| D complete | 11084 | 74.37 | 137.65 | 776 | 23 | 12 | 25 | 0 |
+| E complete | 11084 | 86.44 | 155.23 | 832 | 26 | 19 | 42 | 0 |
+| F crash recovered | 25960 | 70.59 | 128.36 | 775 | 29 | 12 | 24 | 0 |
+| F normal close | 25960 | 73.11 | 131.97 | 777 | 29 | 12 | 24 | 0 |
+
+C does not show cycle-correlated monotonic PB/WS/Handles/Threads accumulation; GDI/USER are constant. PB/WS fluctuate, and PB falls again after C30. E includes the first explicit WPF Launcher show/search and has higher first-use UI counters; that single different workload is not extrapolated into a leakage trend. F is a separate PID and is not compared as a continuation of C's memory curve.
+
+Evidence files: `report.json`, `events.jsonl` (361 events), `process-samples.jsonl` (139 periodic samples), preserved `attempt1-*`, `attempt2-*`, `attempt3-*` records and regression/build logs. The one-second sampler captured only part of the principal run before an exited-process metric exception; uninterrupted one-second coverage is **NOT CLAIMED**. Independent identity-verified per-operation inventories and all six C checkpoints remain present. The correction records transient unavailable metrics rather than discarding a still-visible process. No already-valid workload was rerun to repair the collector/report wrapper.
+
+### Final Regression and Review
+
+- `npm run typecheck` — **PASS**.
+- `npm test` — **PASS, 98/98**, including new profile-isolation and incomplete-evidence validation checks.
+- `npm run build` — **PASS**.
+- NativeHost Checks — **PASS, 55/55**; one new isolated Manager launch contract check.
+- UpdateHelper Checks — **PASS, 10/10**.
+- Native self-contained Release publish and source/artifact identity comparison — **PASS**; final Manager build/archive comparison — **MATCH**.
+- PowerShell AST parsing and Node driver syntax check — **PASS**.
+- `git diff --check` — **PASS** after the report update.
+- Read-only independent review found no changed product lifecycle/isolation defect. The first reviewer was unavailable; a second reviewer completed the scoped review. It independently cross-checked 43 completed normal-close events, Manager ancestry, C checkpoint continuity and real profile/process protection.
+- Review identified test-only resume defects: a partial D could be skipped; partial C could span a new Host; completed F could repeat; an old sampler stop marker could prevent resumed sampling. Completeness validation now rejects partial/mixed-PID evidence, incomplete C cannot resume on a new Host, D must contain all four cases, and completed acceptance returns without any new runtime workload. A failing-then-passing validator test and a real completed-report resume smoke cover this correction.
+
+### Final Architecture Gate
+
+| State (isolated installation only) | Result |
+|---|---|
+| Native idle | Native=1, Manager Main=0, Electron group=0 — **PASS** |
+| Manager ready | Native=1, Main=1, one Renderer and Chromium children as required — **PASS** |
+| Normal Manager close | Native=1, Manager/Electron=0, disconnected session — **PASS** |
+| Unexpected Main exit | Native=1, no orphan/stale Manager; replacement launches and closes — **PASS** |
+| Test cleanup | Isolated Native exits through its acknowledged test pipe; only the untouched real installation remains — **PASS** |
+
+No Electron Launcher/tray/global-hotkey ownership was reintroduced. No always-running Manager remains. No production window lifecycle redesign or data schema change was made.
+
+### Findings and Remaining Scope
+
+- **P0: 0. P1: 0. Unresolved blocking P2: 0.** No reproducible product lifecycle defect was found.
+- **Non-blocking measurement limitations:** segmented A sampling, separate F Host, incomplete periodic sampler coverage, observation overhead and no physical UI/provider-network acceptance in this pass. They are explicitly distinguished from completed real process/window/IPC assertions.
+- Existing Phase 4G-1 measurements, Hotkey System 2.0 user acceptance and Phase 4G-2 resource conclusions remain unchanged. No large historical workload was reopened.
+
+### Files and Git
+
+- `electron/main.ts`, `electron/services/manager-test-options.ts` and its test: fail-closed explicit disposable Manager profile selection; production default unchanged.
+- Native `App.xaml.cs`, `ManagerProcessLauncher.cs`, `NativeManagerPipeServer.cs`, `ManagerController.cs`: forward isolated profile/pipe and expose a read-only lifecycle snapshot for the existing test control surface.
+- Native `MainWindow.xaml.cs` and `Diagnostics/Phase4EResourceControlServer.cs`: test-gated production page opening, lifecycle observation and real Translation action activation.
+- `native/WebTools.NativeHost.Checks/Program.cs`: isolated packaged launch contract regression.
+- `native/scripts/Measure-Phase4G3Processes.ps1`, `scripts/verify-manager-lifecycle.mjs`, `scripts/lib/manager-lifecycle-evidence.mjs`, `tests/manager-lifecycle-evidence.test.mjs`: process/window evidence, normal/controlled exit driver and completeness guard.
+- At the time of the original Phase 4G-3 closeout, the worktree was **DIRTY** with that task's changes; no staging, commit, push, PR, merge, tag, installer or release action had occurred yet. Raw profiles/artifacts/evidence remained outside Git. The subsequent checkpoint review and Git actions are recorded below.
+
+### Phase 4G-3 Closeout
+
+**PHASE 4G-3 COMPLETE**
+
+**MANAGER LIFECYCLE / PROCESS STABILITY PASS**
+
+**READY FOR PHASE 4G-4**
+
+Stop here. Phase 4G-4 has not started.
+
+## Phase 4G-3 — Post-Acceptance Checkpoint Review
+
+### Review Scope
+
+- Reviewed the complete Phase 4G-3 worktree diff against checkpoint `55bb7b29e2dac933780500ee20d125833e1f3b51`, including NativeHost/Manager lifecycle wiring, the explicit runtime-test boundary, profile isolation, process sampler, evidence driver/validator, and this report.
+- The real `D:\webtools` installation, its running NativeHost, startup registration, and real Nook profile were not operated on. The acceptance runtime used separate Release artifacts and a disposable profile below TEMP.
+- No A/B/C/E/F workload or Phase 4G-2 stress workload was repeated. Only Scenario D was run as a targeted supplement because the archived report omitted durable operation-level evidence.
+
+### Finding 1 — Profile Isolation
+
+The review confirmed that earlier checks relied on lexical path containment in the Manager acceptance profile, NativeHost resource-test profile, and PowerShell process-sampler output root. A junction could therefore make a TEMP-looking path resolve into a protected location; the process sampler also needed explicit artifact roots when evidence and Release builds lived in separate directories.
+
+The profile boundaries now require an explicit test opt-in, Manager-only mode, absolute paths, an existing strict TEMP descendant, valid isolated pipe names, and no reparse-point traversal. The Manager independently resolves and checks its profile against the real Nook profile and the full packaged install root (including the parent of the `Manager` subdirectory). NativeHost rejects overlap with Nook and its own install directory before reading test data. The process sampler independently validates its evidence/artifact directories under TEMP and rejects reparse points before it writes output. Failures are closed before profile or sampler writes; ordinary launches continue using the established profile.
+
+**Verification:** Manager profile isolation 2/2, including a real Windows junction to Nook; NativeHost Checks 55/55, including an actual temporary junction and explicit Nook/install-root cases; process-sampler PowerShell AST parse and isolated scan PASS; direct sampler invocation through a TEMP junction into Nook was rejected before sampling output.
+
+### Finding 2 — Evidence Validation
+
+The prior validator could treat complete-looking records as a pass without checking the key success facts for every scenario. It now checks each A–F scenario against matching raw runtime events, process identity, process-group membership, ready/normal-close state, NativeHost continuity, and the scenario-specific lifecycle assertions. Scenario D additionally requires one matching `manager-operation` event between the corresponding ready and normal-close events; a stored operation name by itself is insufficient. Known superseded harness errors are recognized only at their recorded scenario/cycle, while other failure records block PASS.
+
+`--resume` now validates a completed report and its manifest/event bytes before launching a Host or creating profile data. The real driver entry was tested with an incomplete completed-looking report; it exited nonzero and created neither `profile` nor `stage.json`.
+
+### Historical Evidence Revalidation
+
+- The original `report.json` and `events.jsonl` were read-only throughout this review. Their SHA-256 values are respectively `f69badfebe27c3f3f03be3bbacf48120d28586ff095e95a293039683970c6b66` and `d767c6844757dcdfd3b6097396bdba6f5de9ca314fe33b85cf3ea7d1b1a6ab95`.
+- The archived report contains A=5, B=20, C=30, D=4, E=1, F=1 lifecycle records. Its on-disk NativeHost EXE/DLL, Manager EXE, and `app.asar` hashes were recomputed and match the values in the historical report.
+- Revalidation found one actual evidence gap: the historical Scenario D JSON rows did not retain their operation proofs/events. The report narrative described those actions, but the stricter validator correctly returned `EVIDENCE INCOMPLETE` for the archived files alone. No historical data was edited to conceal this gap.
+- A derived manifest was created only in memory for the unchanged historical report. The independent current-build D supplement below was then validated separately and combined with the historical A–F evidence. The combined result is **PASS**; the revalidation manifest, both raw-file hashes, and recomputed artifact hashes are preserved outside Git at `D:\系统缓存\WebTools Phase4G3 D ManagerOnly Retry 20261003\historical-revalidation.json`.
+- The historical event log has exactly two superseded test-infrastructure failures: A/5 (`GetGuiResources` null `IntPtr`) and F/0 (CIM/Process timestamp precision mismatch). Both are followed by independently matching successful acceptance evidence. These classifications are now restricted to those exact scenario/cycle locations. No unclassified failure remains.
+
+### Scenario D — Independent Current Release Supplement
+
+**REAL RELEASE RUNTIME PASS — 4/4 representative cases.** The self-contained NativeHost and electron-builder Windows unpacked Manager were freshly built from the reviewed worktree at `D:\系统缓存\WebTools Phase4G3 Rebuild 20261003`. The real packaged Manager, Vue renderer, preload, IPC, WPF control pipe, and Native `ManagerController`/`ManagerProcessLauncher` chain were exercised with a disposable TEMP profile and an isolated pipe. The recorded Manager command line includes both `--manager-only` and `--phase4g-manager-test`, and the packaged Main requires Manager-only mode before accepting the test profile. The test used renderer/CDP observation, not physical mouse or keyboard input; it did not call a translation provider.
+
+| Case | Observed action | Normal Manager close |
+|---|---|---:|
+| Settings | Changed theme to Light and confirmed it persisted in the isolated Native state | PASS; group returned to zero |
+| Favorites | Opened the actual new-folder dialog and entered `unsaved local state` | PASS; group returned to zero |
+| Translation | Entered `local unsent test`; confirmed provider was unconfigured | PASS; group returned to zero |
+| Page switching | Verified Settings → Favorites → Translation → Favorites headings in the live renderer | PASS; group returned to zero |
+
+All four Manager Main processes were children of the same isolated NativeHost PID `19384`; each recorded exactly one visible HWND and one Renderer in its ready group. Normal close waited for the Electron group to reach zero and for the Native Manager controller to disconnect before recording success. A subsequent exact-path scan found no remaining process from this acceptance build. Real Nook hashes for `nook-data.json` and `launcher-state.json` were identical before/after; `secrets.json` remained absent.
+
+Current Release identity:
+
+| Artifact | SHA-256 |
+|---|---|
+| NativeHost EXE | `479d87a39c69145abb260718a3693e2fccd99a7a18a0c4b21cdde0dac1d32c44` |
+| NativeHost DLL | `badccbefcd6d2d669a6e27e488ed98f3a506d577f0c6cd198b9eb11c516fe5b6` |
+| Manager EXE | `2fbacdec06a0cb890b8a4571ab2ddc38335e77db9efdc38d2e7e756e6ebd616a` |
+| Manager `app.asar` | `8eecbb5fc34fca43e83921cb4a77fe8af07ebdd4610315d4b15152af81a3c285` |
+
+Two D supplement attempts stopped before starting an isolated NativeHost or taking any scenario action: the first supplied the evidence directory instead of the separate artifact root, and the second supplied already-nested `Native`/`win-unpacked` roots that the driver then joined again. Both were harness argument mistakes, not product failures; their evidence directories were retained. The completed D result above is from a fresh root with the corrected artifact-root arguments and matching process identities. Its raw `report.json` and `events.jsonl` SHA-256 values are `697434ba000fd0a012c2f823a8083424da4fae420ee8b860ed77075eefbf8403` and `0bca1cb3bdf474e9749d15b74da26f4fd1ff7140ce296c7dfba70c282207a5a8`; the existing A–F report and event files remain unchanged.
+
+### Regression Tests Added
+
+- Manager test-profile opt-in, mandatory Manager-only mode, absolute/existing TEMP profile, real-profile/install-root overlap, missing pipe, and junction escape checks.
+- NativeHost profile/catalog canonicalization, TEMP-prefix confusion, real Nook/install-root overlap, and junction rejection checks.
+- Evidence-semantic tests for A–F successes/failures, process identities, manifest/raw event mismatch, D operation-event ordering, independent D supplement, and exact classification of known harness failures.
+- A subprocess test invokes the actual `--resume` entry and confirms incomplete evidence is rejected before profile/process setup.
+
+### Manager Lifecycle / Production Boundary Review
+
+- The regular NativeHost startup still owns tray, hotkey, and the production Manager pipe. The isolated resource-test mode is opt-in only, uses a derived mutex/Manager pipe and CurrentUserOnly control pipe, and omits tray, update pipe, and login-startup registry application. The command surface accepts only fixed Manager page names, bounded translation text, lifecycle snapshots, and existing query/show/hide test commands.
+- Packaged Manager test-profile selection occurs before Electron readiness and is accepted only when the explicit test flag, absolute isolated profile, and isolated Native pipe are present. Normal Manager launch removes the test-profile environment override and passes the unchanged production pipe. Renderer isolation/sandbox and preload boundaries remain unchanged; no filesystem path or Node API is exposed to the renderer.
+- Native still owns the Manager process lifecycle; repeated opens are routed through its single controller, and normal Manager close/disconnect leaves NativeHost alive. The only product startup change is choosing the full installation root for the acceptance-profile exclusion check; normal profile selection is unchanged.
+- No data schema, provider, Translation behavior, Favorites behavior, or production window lifecycle was redesigned.
+
+### Final Regression
+
+- `npm run typecheck` — **PASS**.
+- `npm test` — **PASS, 118/118**, including the new evidence and isolation regressions.
+- `npm run build` — **PASS**.
+- NativeHost Checks — **PASS, 55/55**.
+- UpdateHelper Checks — **PASS, 10/10**.
+- Node lifecycle driver syntax check — **PASS**.
+- PowerShell AST parse, isolated process scan, and junction rejection — **PASS**.
+- Current NativeHost self-contained `win-x64` Release publish and real electron-builder `--dir` Manager package — **PASS**; the packaged runtime artifacts above were hash-verified against their reports.
+- `git diff --check` — **PASS** after the final report update.
+
+### Repository Hygiene and Findings
+
+- The worktree contains only Phase 4G-3 production/test/documentation changes. Native/Electron build output, logs, raw evidence, profiles, derived manifests, and revalidation sidecar are outside Git; no credentials or user data are included.
+- P0: 0. P1: 0. P2: 0. P3: 0. The two isolation/evidence findings and the sampler root mismatch were fixed; the only historical failure events are the two explicitly classified superseded harness attempts.
+
+### Final Checkpoint Decision
+
+**CHECKPOINT REVIEW PASS**
+
+**P0 = 0**
+
+**P1 = 0**
+
+**P2 = 0**
+
+**PHASE 4G-3 COMPLETE — MANAGER LIFECYCLE / PROCESS STABILITY PASS — READY FOR PHASE 4G-4**
+
+Phase 4G-4 has not started. This review does not start it.

@@ -6,11 +6,13 @@ namespace WebTools.NativeHost.Services;
 public sealed class ManagerProcessLauncher
 {
     private readonly bool _allowDevelopmentLaunch;
+    private readonly string? _testProfileRoot;
 
-    public ManagerProcessLauncher(bool allowDevelopmentLaunch)
+    public ManagerProcessLauncher(bool allowDevelopmentLaunch, string? testProfileRoot = null)
     {
         _allowDevelopmentLaunch = allowDevelopmentLaunch;
         DevelopmentMode = allowDevelopmentLaunch;
+        _testProfileRoot = testProfileRoot;
     }
 
     public bool DevelopmentMode { get; }
@@ -20,7 +22,7 @@ public sealed class ManagerProcessLauncher
         var developmentRoot = _allowDevelopmentLaunch ? FindDevelopmentRoot() : null;
         var start = developmentRoot is not null
             ? CreateDevelopmentStartInfo(developmentRoot, pipeName)
-            : CreatePackagedStartInfo(ResolvePackagedManagerExecutable(), pipeName);
+            : CreatePackagedStartInfo(ResolvePackagedManagerExecutable(), pipeName, _testProfileRoot);
         var process = Process.Start(start) ?? throw new InvalidOperationException("Windows could not start the WebTools Manager process.");
         process.EnableRaisingEvents = true;
         return process;
@@ -77,7 +79,7 @@ public sealed class ManagerProcessLauncher
         return start;
     }
 
-    private static ProcessStartInfo CreatePackagedStartInfo(string executablePath, string pipeName)
+    private static ProcessStartInfo CreatePackagedStartInfo(string executablePath, string pipeName, string? testProfileRoot = null)
     {
         var start = new ProcessStartInfo(executablePath)
         {
@@ -88,6 +90,17 @@ public sealed class ManagerProcessLauncher
         start.ArgumentList.Add("--manager-only");
         start.Environment["WEBTOOLS_MANAGER_ONLY"] = "1";
         start.Environment["WEBTOOLS_NATIVE_PIPE"] = pipeName;
+        start.Environment.Remove("WEBTOOLS_MANAGER_TEST_PROFILE");
+        if (testProfileRoot is not null)
+        {
+            start.ArgumentList.Add("--phase4g-manager-test");
+            start.Environment["WEBTOOLS_MANAGER_TEST_PROFILE"] = testProfileRoot;
+            if (int.TryParse(Environment.GetEnvironmentVariable("WEBTOOLS_MANAGER_TEST_DEBUG_PORT"), out var port) && port is >= 1024 and <= 65535)
+            {
+                start.ArgumentList.Add($"--remote-debugging-port={port}");
+                start.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
+            }
+        }
         return start;
     }
 

@@ -41,6 +41,7 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
     }
 
     public bool IsConnected => _session is not null;
+    public string PipeName => _pipeName;
     public event Action? ManagerConnected;
     public event Action? ManagerDisconnected;
     public event Action? RendererReady;

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, type WebContents } from 'electron'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { IPC_CHANNELS } from '../src/shared/ipc'
 import { DataStore } from './services/data-store'
 import { SecretStore } from './services/secret-store'
@@ -27,14 +27,23 @@ import { NativeManagerClient, parseNativeLauncherState, type NativeLauncherSetti
 import { NativeManagerRequestError, type NativeManagerEnvelope } from './services/native-manager-protocol'
 import { parseNativeManagerCommand } from './services/native-manager-commands'
 import { overlayNativeLauncherSettings, projectWebsitesForNative } from './services/native-launcher-settings'
+import { resolveManagerTestProfile } from './services/manager-test-options'
 
 const isDevelopment = !app.isPackaged
 const nativeManaged = app.isPackaged || isNativeManagerOnly(process.argv, process.env)
 const nativePipeName = process.env.WEBTOOLS_NATIVE_PIPE ?? 'WebTools.NativeHost.Manager.v1'
+const managerDirectory = dirname(process.execPath)
+const managerTestInstallRoot = app.isPackaged
+  ? basename(managerDirectory).toLowerCase() === 'manager' ? dirname(managerDirectory) : managerDirectory
+  : undefined
 if (isDevelopment) app.setName('webtools-desktop-dev')
 
 // Keep the established profile path: the Native Host migration and Manager share it.
-app.setPath('userData', join(app.getPath('appData'), isDevelopment ? 'WebTools-Dev' : 'Nook'))
+const appDataPath = app.getPath('appData')
+app.setPath('userData', resolveManagerTestProfile(process.argv, process.env, {
+  userProfilePath: join(appDataPath, 'Nook'),
+  installRoot: managerTestInstallRoot,
+}) ?? join(appDataPath, isDevelopment ? 'WebTools-Dev' : 'Nook'))
 
 let dataStore: DataStore
 let secretStore: SecretStore

@@ -25,9 +25,9 @@ internal sealed record Phase4EResourcePresentation(
 
 /// <summary>
 /// Local, current-user-only control surface used only by the explicitly opted-in Phase 4E resource test process.
-/// It drives the real WPF QueryBox and never activates a result.
+/// It drives the real WPF QueryBox and explicit Manager requests, never application/website launches.
 /// </summary>
-internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow window, string startupHotkey)
+internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow window, string startupHotkey, ManagerController? managerController = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
@@ -76,6 +76,35 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
                         : null;
                     switch (type)
                     {
+                        case "manager-open":
+                        {
+                            if (managerController is null) throw new InvalidOperationException("Manager driver is not available.");
+                            var section = root.GetProperty("section").GetString();
+                            var page = section switch
+                            {
+                                "favorites" => ManagerPage.Favorites,
+                                "entries" => ManagerPage.Entries,
+                                "settings" => ManagerPage.Settings,
+                                "translate" => ManagerPage.Translation,
+                                _ => throw new ArgumentException("Unsupported Manager section."),
+                            };
+                            await window.Dispatcher.InvokeAsync(() => window.OpenManagerPage(page));
+                            response = new { ok = true, type, processId = Environment.ProcessId };
+                            break;
+                        }
+                        case "manager-translation":
+                        {
+                            if (managerController is null) throw new InvalidOperationException("Manager driver is not available.");
+                            var text = root.GetProperty("text").GetString();
+                            if (string.IsNullOrWhiteSpace(text) || text.Length > 300) throw new ArgumentException("Invalid test prefill.");
+                            await window.ActivateTranslationFromResourceTestAsync(text);
+                            response = new { ok = true, type, processId = Environment.ProcessId };
+                            break;
+                        }
+                        case "manager-state":
+                            if (managerController is null) throw new InvalidOperationException("Manager driver is not available.");
+                            response = new { ok = true, type, processId = Environment.ProcessId, manager = managerController.CaptureLifecycleForResourceTest() };
+                            break;
                         case "query":
                         {
                             var query = root.TryGetProperty("query", out var queryValue) && queryValue.ValueKind == JsonValueKind.String
