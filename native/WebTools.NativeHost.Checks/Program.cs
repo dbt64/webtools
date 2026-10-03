@@ -118,6 +118,7 @@ static string BuildLegacyV2Profile(bool invalidOptionalDescription = false)
 var state = new LauncherInteractionState();
 var checks = new List<(string Name, Action Run)>
 {
+    ("isolated Manager launch uses its configured pipe and disposable profile", VerifyIsolatedManagerLaunch),
     ("Phase 4E resource test mode is opt-in and validates isolated driver arguments", VerifyPhase4EResourceDriverOptions),
     ("Phase 4G-2 resource hotkey command accepts only its isolated chord and double modifiers", VerifyPhase4EResourceHotkeyCommand),
     ("update preparation protocol is available for strict validation", VerifyUpdatePreparationProtocol),
@@ -1466,6 +1467,23 @@ static void VerifyHotkeyModeStressCycles()
     });
 }
 
+static void VerifyIsolatedManagerLaunch()
+{
+    var property = typeof(NativeManagerPipeServer).GetProperty("PipeName");
+    Assert(property is not null, "Manager controller must be able to pass the actual server pipe, not the production default.");
+    var factory = typeof(ManagerProcessLauncher).GetMethod("CreatePackagedStartInfo", BindingFlags.Static | BindingFlags.NonPublic)!;
+    Assert(factory.GetParameters().Length == 3, "Packaged launch must support an explicitly isolated Manager profile.");
+    var profile = Path.Combine(Path.GetTempPath(), "WebTools Phase4G3 检查", "profile");
+    var pipe = "WebTools.NativeHost.Manager.v1.Phase4E.G3Checks123";
+    var isolated = (ProcessStartInfo)factory.Invoke(null, [@"C:\test\Manager\WebTools.exe", pipe, profile])!;
+    Assert(isolated.Environment["WEBTOOLS_NATIVE_PIPE"] == pipe, "The child must connect to the test Host, never the live Host.");
+    Assert(isolated.Environment["WEBTOOLS_MANAGER_TEST_PROFILE"] == profile && isolated.ArgumentList.Contains("--phase4g-manager-test"),
+        "The real packaged Manager must explicitly opt into its disposable profile.");
+    var normal = (ProcessStartInfo)factory.Invoke(null, [@"C:\test\Manager\WebTools.exe", NativeManagerPipeServer.DefaultPipeName, null])!;
+    Assert(!normal.ArgumentList.Contains("--phase4g-manager-test") && !normal.Environment.ContainsKey("WEBTOOLS_MANAGER_TEST_PROFILE"),
+        "Normal production launch must not enable the test profile or inherit a test override.");
+}
+
 static void VerifyPhase4EResourceDriverOptions()
 {
     var optionsType = typeof(SearchCore).Assembly.GetType("WebTools.NativeHost.Diagnostics.Phase4EResourceTestOptions");
@@ -1476,26 +1494,76 @@ static void VerifyPhase4EResourceDriverOptions()
     var normal = parse!.Invoke(null, [Array.Empty<string>()]);
     Assert(normal is null, "Normal startup arguments must not enable the resource driver.");
 
-    var root = Path.Combine(Path.GetTempPath(), "WebTools Phase4E Test");
-    var snapshot = Path.Combine(root, "catalog.v1.json");
+    var root = Path.Combine(Path.GetTempPath(), $"WebTools Phase4E Test {Guid.NewGuid():N}");
+    Directory.CreateDirectory(root);
     var pipe = "WebTools.NativeHost.Resource.test-123";
     var hotkey = "Control+Alt+Shift+F12";
-    var valid = parse.Invoke(null, [new[] { "--phase4e-resource-test", root, snapshot, pipe, hotkey }]);
-    Assert(valid is not null, "The explicit acceptance arguments must enable the driver.");
-    Assert((string?)optionsType.GetProperty("ProfileRoot")?.GetValue(valid) == root, "The isolated profile path must be preserved.");
-    Assert((string?)optionsType.GetProperty("CatalogSnapshotPath")?.GetValue(valid) == snapshot, "The isolated catalog path must be preserved.");
-    Assert((string?)optionsType.GetProperty("ControlPipeName")?.GetValue(valid) == pipe, "The test pipe name must be preserved.");
-    Assert((string?)optionsType.GetProperty("Hotkey")?.GetValue(valid) == hotkey, "The test hotkey must be preserved.");
+    var profileRoot = Path.Combine(root, "profile");
+    Directory.CreateDirectory(profileRoot);
+    var snapshot = Path.Combine(profileRoot, "catalog.v1.json");
+    File.WriteAllText(snapshot, "{}");
+    var userProfile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Nook");
+    var junctionTarget = Directory.Exists(userProfile)
+        ? userProfile
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), $"WebTools Protected Profile {Guid.NewGuid():N}");
+    var ownsJunctionTarget = !Directory.Exists(userProfile);
+    if (ownsJunctionTarget) Directory.CreateDirectory(junctionTarget);
+    var junction = Path.Combine(root, "profile-junction");
 
-    var malformedRejected = false;
-    try { _ = parse.Invoke(null, [new[] { "--phase4e-resource-test", root }]); }
-    catch (TargetInvocationException error) when (error.InnerException is ArgumentException) { malformedRejected = true; }
-    Assert(malformedRejected, "Incomplete acceptance arguments must be rejected instead of silently starting normal mode.");
+    bool Rejected(string[] arguments)
+    {
+        try { _ = parse.Invoke(null, [arguments]); return false; }
+        catch (TargetInvocationException error) when (error.InnerException is ArgumentException or InvalidOperationException) { return true; }
+    }
 
-    var unsafePipeRejected = false;
-    try { _ = parse.Invoke(null, [new[] { "--phase4e-resource-test", root, snapshot, "bad/pipe", hotkey }]); }
-    catch (TargetInvocationException error) when (error.InnerException is ArgumentException) { unsafePipeRejected = true; }
-    Assert(unsafePipeRejected, "A pipe name outside the test protocol's safe alphabet must be rejected.");
+    try
+    {
+        var valid = parse.Invoke(null, [new[] { "--phase4e-resource-test", profileRoot, snapshot, pipe, hotkey }]);
+        Assert(valid is not null, "The explicit acceptance arguments must enable the driver.");
+        Assert((string?)optionsType.GetProperty("ProfileRoot")?.GetValue(valid) == Path.GetFullPath(profileRoot), "The isolated profile path must be preserved.");
+        Assert((string?)optionsType.GetProperty("CatalogSnapshotPath")?.GetValue(valid) == Path.GetFullPath(snapshot), "The isolated catalog path must be preserved.");
+        Assert((string?)optionsType.GetProperty("ControlPipeName")?.GetValue(valid) == pipe, "The test pipe name must be preserved.");
+        Assert((string?)optionsType.GetProperty("Hotkey")?.GetValue(valid) == hotkey, "The test hotkey must be preserved.");
+        Assert(Rejected(["--phase4e-resource-test", "relative-profile", snapshot, pipe, hotkey]), "A relative profile must be rejected.");
+        Assert(Rejected(["--phase4e-resource-test", Path.Combine(root, "missing"), snapshot, pipe, hotkey]), "An unresolved profile must be rejected.");
+        Assert(Rejected(["--phase4e-resource-test", Path.Combine(Path.TrimEndingDirectorySeparator(Path.GetTempPath()) + "-outside", "profile"), snapshot, pipe, hotkey]), "A temp-prefix lookalike outside TEMP must be rejected.");
+        var userProfileRejectedExplicitly = false;
+        try { _ = parse.Invoke(null, [new[] { "--phase4e-resource-test", userProfile, snapshot, pipe, hotkey }]); }
+        catch (TargetInvocationException error) when (error.InnerException is ArgumentException argumentError)
+        {
+            userProfileRejectedExplicitly = argumentError.Message.Contains("real WebTools user profile", StringComparison.Ordinal);
+        }
+        Assert(userProfileRejectedExplicitly, "The real Nook profile must be explicitly rejected before the TEMP-path check or any write.");
+        var installDirectory = Path.GetDirectoryName(Environment.ProcessPath ?? AppContext.BaseDirectory)!;
+        var installRejectedExplicitly = false;
+        try { _ = parse.Invoke(null, [new[] { "--phase4e-resource-test", installDirectory, snapshot, pipe, hotkey }]); }
+        catch (TargetInvocationException error) when (error.InnerException is ArgumentException argumentError)
+        {
+            installRejectedExplicitly = argumentError.Message.Contains("installation directory", StringComparison.Ordinal);
+        }
+        Assert(installRejectedExplicitly, "The active application install directory must be explicitly rejected.");
+        Assert(Rejected(["--phase4e-resource-test", profileRoot, userProfile, pipe, hotkey]), "A catalog snapshot outside the test profile must be rejected.");
+        Assert(Rejected(["--phase4e-resource-test", profileRoot, snapshot, "bad/pipe", hotkey]), "A pipe name outside the test protocol's safe alphabet must be rejected.");
+
+        using var junctionProcess = Process.Start(new ProcessStartInfo
+        {
+            FileName = Environment.GetEnvironmentVariable("ComSpec") ?? Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+            Arguments = $"/d /c mklink /J \"{junction}\" \"{junctionTarget}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+        }) ?? throw new InvalidOperationException("Could not create the isolated junction escape fixture.");
+        junctionProcess.WaitForExit();
+        Assert(junctionProcess.ExitCode == 0 && Directory.Exists(junction), "The junction fixture must be created successfully, not skipped.");
+        Assert(Rejected(["--phase4e-resource-test", junction, Path.Combine(junction, "catalog.v1.json"), pipe, hotkey]),
+            "A junction to the real user profile (or isolated protected root) must be rejected before profile access.");
+    }
+    finally
+    {
+        if (Directory.Exists(junction)) Directory.Delete(junction);
+        Directory.Delete(root, recursive: true);
+        if (ownsJunctionTarget && Directory.Exists(junctionTarget)) Directory.Delete(junctionTarget, recursive: true);
+    }
 }
 
 static void VerifyPhase4EResourceHotkeyCommand()

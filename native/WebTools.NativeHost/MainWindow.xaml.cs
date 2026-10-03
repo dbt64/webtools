@@ -143,6 +143,17 @@ public partial class MainWindow : Window
 
     internal Task WaitForResourceTestReadyAsync() => _resourceTestReady.Task;
 
+    internal async Task ActivateTranslationFromResourceTestAsync(string text)
+    {
+        await SetQueryFromResourceTestAsync(text);
+        await Dispatcher.InvokeAsync(() =>
+        {
+            var result = _state.Results.FirstOrDefault(item => item.Action is OpenTranslationAction);
+            if (result is null) throw new InvalidOperationException("Test query has no Translation action.");
+            ActivateResult(result);
+        });
+    }
+
     internal async Task<Phase4EResourcePresentation> SetQueryFromResourceTestAsync(string query)
     {
         if (!_resourceTestMode) throw new InvalidOperationException("The Phase 4E resource test driver is not enabled.");
