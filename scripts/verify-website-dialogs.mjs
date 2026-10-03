@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import electron from 'electron'
 import { createDefaultAppData } from '../src/shared/domain.ts'
 
-// Run after npm run build. All CRUD below uses a disposable, independent profile.
+// Run after pnpm run build. All CRUD below uses a disposable, independent profile.
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const fixture = await mkdtemp(join(tmpdir(), 'webtools-dialog-regression-'))
 const profile = join(fixture, 'profile')

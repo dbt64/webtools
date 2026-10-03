@@ -58,37 +58,49 @@ Launcher 与 Manager 分工运行：NativeHost 提供轻量的 Windows 常驻入
 
 ## 开发与验证
 
-开发 Native-first 应用需要 Windows、Node.js/npm 和 .NET 10 SDK。Everything 是可选组件；AI 翻译需要用户自行配置受支持 Provider 的凭据。
+开发 Native-first 应用需要 Windows、Node.js、pnpm 9.15.9 和 .NET 10 SDK。项目通过 `packageManager` 固定 pnpm 版本。Everything 是可选组件；AI 翻译需要用户自行配置受支持 Provider 的凭据。
+
+如果 Node.js 附带 Corepack，可先启用 pnpm 命令：
+
+```powershell
+corepack enable pnpm
+```
+
+如果没有 Corepack，可安装固定版本的 pnpm：
+
+```powershell
+npm install --global pnpm@9.15.9
+```
 
 在仓库根目录安装 JavaScript 依赖：
 
 ```powershell
-npm install
+pnpm install --frozen-lockfile
 ```
 
 启动 Native-first 应用：
 
 ```powershell
-npm run native:dev
+pnpm run native:dev
 ```
 
 开发时可单独启动 Electron Manager：
 
 ```powershell
-npm run electron:dev
+pnpm run electron:dev
 ```
 
 常用检查与构建命令：
 
 ```powershell
-npm run typecheck
-npm test
-npm run build
+pnpm run typecheck
+pnpm test
+pnpm run build
 dotnet build .\native\WebTools.NativeHost\WebTools.NativeHost.csproj --configuration Release
 dotnet run --project .\native\WebTools.NativeHost.Checks\WebTools.NativeHost.Checks.csproj --configuration Release
 ```
 
-`npm run build` 构建 Electron Manager renderer、Main 和 preload。`npm run native:dev` 启动 NativeHost 并按需启动 Manager；`npm run electron:dev` 仅用于单独调试 Manager。`npm run package:win` 生成 NativeHost 为入口、Electron Manager 单独安装在 `Manager/` 下的 Windows 安装包，并执行独立路径安装/卸载 smoke 验证。
+`pnpm run build` 构建 Electron Manager renderer、Main 和 preload。`pnpm run native:dev` 启动 NativeHost 并按需启动 Manager；`pnpm run electron:dev` 仅用于单独调试 Manager。`pnpm run package:win` 生成 NativeHost 为入口、Electron Manager 单独安装在 `Manager/` 下的 Windows 安装包，并执行独立路径安装/卸载 smoke 验证。
 
 ## 当前状态
 

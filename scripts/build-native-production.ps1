@@ -30,16 +30,20 @@ if (-not $NodeExe) {
 }
 if (-not $NodeExe -or -not (Test-Path -LiteralPath $NodeExe)) { throw "Node.js executable not found. Pass -NodeExe <path>." }
 
-$npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
-if ($npmCommand) {
-    $env:Path = "$(Split-Path $npmCommand.Source);$env:Path"
-    $npmExe = $npmCommand.Source
-} elseif (Test-Path -LiteralPath "C:\Program Files\nodejs\npm.cmd") {
-    $env:Path = "C:\Program Files\nodejs;$env:Path"
-    $npmExe = "C:\Program Files\nodejs\npm.cmd"
+$pnpmCommand = Get-Command pnpm.cmd -ErrorAction SilentlyContinue
+if ($pnpmCommand) {
+    $env:Path = "$(Split-Path $pnpmCommand.Source);$env:Path"
+    $pnpmExe = $pnpmCommand.Source
 } else {
-    throw "npm.cmd was not found on PATH."
+    throw "pnpm.cmd was not found. Enable Corepack or install pnpm@9.15.9."
 }
+# Corepack sets this marker for its own dispatch. Clear it so direct pnpm child processes
+# (including electron-builder's dependency collector) can honor packageManager as well.
+Remove-Item Env:COREPACK_ROOT -ErrorAction SilentlyContinue
+$pnpmVersion = ((& $pnpmExe --version) | Out-String).Trim()
+$pnpmExitCode = $LASTEXITCODE
+if ($pnpmExitCode -ne 0) { throw "Could not query pnpm version (exit code $pnpmExitCode)." }
+if ($pnpmVersion -ne "9.15.9") { throw "Expected pinned pnpm 9.15.9, found $pnpmVersion." }
 
 New-Item -ItemType Directory -Path $hostStage, $managerStage, $updaterStage -Force | Out-Null
 
@@ -76,9 +80,9 @@ function Invoke-Nsis {
     if ($process.ExitCode -ne 0) { throw "Process failed with exit code $($process.ExitCode): $FilePath" }
 }
 
-Invoke-Checked $npmExe @("run", "typecheck")
-Invoke-Checked $npmExe @("test")
-Invoke-Checked $npmExe @("run", "build")
+Invoke-Checked $pnpmExe @("run", "typecheck")
+Invoke-Checked $pnpmExe @("test")
+Invoke-Checked $pnpmExe @("run", "build")
 Invoke-Checked $DotnetExe @(
     "run", "--project", "native\WebTools.UpdateHelper.Checks\WebTools.UpdateHelper.Checks.csproj",
     "--configuration", "Release"
