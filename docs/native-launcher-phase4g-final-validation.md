@@ -1083,3 +1083,212 @@ Stop here. Phase 4G-5 has not started.
 **PHASE 4G-4 CHECKPOINT REVIEW PASS**
 
 **READY FOR PHASE 4G-5**
+
+## Phase 4G-5 — Windows Environment Final Acceptance
+
+> **Status history:** the initial matrix and 2026-10-03 desktop supplement below preserve their contemporaneous results. The authoritative current decision is `Phase 4G-5 Final Acceptance Closeout — 2026-10-04` at the end of this section. User confirmation closes the manual gates without rewriting earlier machine evidence.
+
+### Acceptance Plan and Gate
+
+The independent acceptance plan and user-operable manual matrix are in [`docs/superpowers/plans/2026-10-03-native-launcher-phase4g5-windows-final-acceptance.md`](superpowers/plans/2026-10-03-native-launcher-phase4g5-windows-final-acceptance.md). This is the first recorded Phase 4G-5 execution. Lack of earlier 4G-5 evidence is not treated as a product failure.
+
+The required predecessor states were rechecked:
+
+| Prerequisite | Evidence | Result |
+|---|---|---|
+| Phase 4G-1 | Five cold-start samples and later user confirmation of tray presence, hotkey show, and hide leaving NativeHost alive | **PASS / COMPLETE** |
+| Phase 4G-2 | 3 × 1,000 search rounds, 300 same-window show/hide cycles, six query-clear checkpoints, real/fake hotkey lifecycle | **PASS / COMPLETE** |
+| Phase 4G-3 | Real Release Manager lifecycle, process-group close/reopen, page routes and exact Translation handoff | **PASS / COMPLETE** |
+| Phase 4G-4 | Two 90-minute scenarios, final evidence review, stable checkpoint `1f68fe0`; local HEAD and upstream match | **PASS / COMPLETE** |
+| npm → pnpm migration | Fixed pnpm, frozen lock install, tests/build and current Windows package smoke | **PASS / COMPLETE for exercised checks** |
+| Phase 4G-5 | Independent plan and current evidence recorded below | **IN PROGRESS; manual gate remains** |
+
+### Git / Source Identity
+
+- Branch: `codex/shared-ai-translation-2.0`.
+- HEAD and upstream: `1f68fe0ccc916e33197a9ec19d42b58ef5da5161`; `origin/codex/shared-ai-translation-2.0` is identical (`0` ahead / `0` behind).
+- The working tree already contained the uncommitted pnpm migration when Phase 4G-5 began. This phase added only this report section and the independent acceptance plan; it made no product-code or installer-configuration changes.
+- The pnpm working-tree changes are: README workflow, fixed `packageManager`, imported `pnpm-lock.yaml`, removal of root `package-lock.json`, package-builder script invocation/version guard, and one updated developer-command comment. No new dependency, workspace, or `.npmrc` was added.
+- `git diff --check` passes; Git prints only its existing LF-to-CRLF conversion notices for three modified text files.
+
+### Windows / Tool Environment
+
+- Windows 11 x64, build `22631`.
+- Node `v24.21.0`, pnpm `9.15.9`, .NET SDK `10.0.401`.
+- Electron `44.4.5`; electron-builder `26.15.3`.
+- Node package remains a single root package. `pnpm-lock.yaml` is lockfile v9; prior normalized comparison against the removed npm lock found 363 package names with identical version sets and no additions, removals, or version-set differences.
+
+### Runtime / Build Identity
+
+Current pnpm-built candidate:
+
+| Artifact | Path | Size | SHA-256 |
+|---|---|---:|---|
+| Windows installer | `release/native-production-20261003-220039/WebTools-Setup-0.1.0.exe` | 191,374,341 bytes | `98C43D2235D44F98A0C7BC8E7D9DB208466368041CEF123DD94F001135C91547` |
+| NativeHost EXE | `release/native-production-20261003-220039/stage/host/WebTools.NativeHost.exe` | 162,304 bytes | `1D9C148BA6D8D20085E36625B2ED49C5E129F587008D00602A9C836F99D1A044` |
+| NativeHost DLL | `release/native-production-20261003-220039/stage/host/WebTools.NativeHost.dll` | 532,992 bytes | `EC880FB0BEA214617C9FF144037A0D536DD56E3436527B1501B314314E76CA2A` |
+| Manager EXE | `release/native-production-20261003-220039/manager-build/win-unpacked/WebTools.exe` | — | `6CC9ADF56A6FC709C3C718B72EFB740FEE923FD2C956DA9CE632937C1E222E6C` |
+| Manager ASAR | `release/native-production-20261003-220039/manager-build/win-unpacked/resources/app.asar` | 34,148,918 bytes | `4CE0632DCB30D985DB8EF80CE36F97DF48BAE734AEC0B208886DD7EE2DEBC309` |
+
+The final installer was produced by `corepack pnpm run package:win`; the package script published a self-contained .NET `win-x64` NativeHost and UpdateHelper and built the Electron Manager. The current NativeHost EXE/DLL, Manager EXE, and ASAR hashes exactly match the artifacts in the isolated packaged-runtime Manager smoke at `D:\系统缓存\webtools-pnpm-manager-smoke-final-8f07b1bddc1c4bd08c7a1307c6535ff4`. Therefore the smoke is applicable to these exact runtime files, though not to the installer’s visible shortcuts or normal tray/startup registration.
+
+### Production Layout and Installer Evidence
+
+The package contains a self-contained `stage/host` NativeHost runtime and Electron `manager-build/win-unpacked` with `resources/app.asar`. The existing NSIS configuration stages `WebTools.NativeHost.exe` as the application entry, places the Manager under `Manager/`, uses `app.ico`, and targets both Start Menu and Desktop shortcuts at the NativeHost executable.
+
+**Current candidate isolated installer smoke — PASS:** `package:win` created the installer, completed the same-directory cover-install fixture with old-uninstaller ordering, resolved the installed Manager executable under a path containing spaces and Chinese characters, and completed install/self-uninstall smoke. This did not launch or modify `D:\webtools`, use the primary `%APPDATA%\Nook`, visually inspect the shortcuts, or verify real website/settings retention across an installed upgrade.
+
+An earlier Phase 4F candidate is still available locally at `release/native-production-20260930-224223/WebTools-Setup-0.1.0.exe`, SHA-256 `1872CCA579F8A6D425515A4576751917ADD3BE9205600B348EC24330B0F09FF4`. The current pnpm installer differs from that candidate; the final user-data upgrade gate must be tested only in a disposable Windows account/profile.
+
+### Current Packaged Runtime Smoke
+
+Existing isolated evidence records `D SUPPLEMENT PASS`, uses source HEAD `1f68fe0ccc916e33197a9ec19d42b58ef5da5161`, and includes the four exact current artifact hashes listed above. It uses a real packaged NativeHost in explicit `--phase4e-resource-test` mode, a unique test pipe, a disposable profile, and the real packaged Manager/ASAR.
+
+- Initial isolated state: one test NativeHost; Manager Main/Electron group `0`.
+- Four Manager sessions opened the real renderer, reached IPC/renderer readiness, and normally closed: Settings (persisted local theme change), Favorites (real new-folder dialog and unsaved local input), Translation (local unsent text; no provider credential), and page switching.
+- Each close recorded the Manager process group exit; NativeHost stayed available for the next request. The isolated host was later shut down using its test-only control path.
+- The smoke report records identical before/after hashes for `nook-data.json` and `launcher-state.json`; `secrets.json` was absent. It did not use AI credentials or invoke a translation provider.
+- This is a real packaged Manager lifecycle result, not a production-tray or physical-keyboard result: the explicit test mode omits login-startup registry application and the normal tray/update path.
+
+### Scenario A–G Evidence Matrix
+
+| Requirement | Historical evidence | Evidence version / build identity | Current verification | Manual verification | Result | Remaining gap |
+|---|---|---|---|---|---|---|
+| A — NativeHost startup, single instance, idle Electron=0, NativeHost survives Launcher hide and exits normally | 4G-1 five installed cold launches had Electron=0; user later confirmed tray presence, hotkey show and hide leaving Host alive. 4G-4 includes normal isolated Host exit. | 4G-1 installed candidate and 4G-4 checkpoint runtime; current staged Host hash above | Exact current packaged Host was exercised in isolated test mode; idle state and Manager lifecycle were observed there. | Launch the current candidate in a disposable Windows account; verify normal entry, tray, hide, and tray Exit. | **MANUAL VERIFICATION REQUIRED** | Test mode does not exercise normal production tray/startup wiring. |
+| B — Launcher display/hide, focus, app/Chinese/pinyin/initials/site/`?`/`/`/`file:` search and transient clearing | 4G-2 real-WPF mixed search and lifecycle suite; 4G-4 same-PID Launcher search/hide checkpoints. | Historical Release evidence; current product search code unchanged by pnpm migration. | Reused historical search evidence; NativeHost current checks pass 55/55, including search contract and hide reset. No stress rerun. | Physical hotkey-to-focus and keyboard typing in the current disposable install. | **MANUAL VERIFICATION REQUIRED** | No current physical-keyboard observation in this session. |
+| C — Hotkey System 2.0 default/custom Apply/Cancel/conflict and mode replacement/release | Full prior user manual matrix is `USER CONFIRMED PASS`; 4G-2 completed 300 fake cycles, 10 real mode cycles and registration probes. | Hotkey product code has no changes in the pnpm diff; current NativeHost checks 55/55. | Real registration-collision check and mode/state checks passed in NativeHost suite; prior full manual matrix remains applicable. | Brief current default/custom chord activation and Cancel behavior, as required by this phase. | **MANUAL VERIFICATION REQUIRED** | No physical chord operation observed in this session. |
+| D — Tray menu actions/Exit and login-startup persistence/no duplicate Run value | 4G-1 user confirmed tray presence; palette/layout automated checks pass. G1 recorded LaunchOnStartup false and Run value absent after runs, but did not capture the registry value before the run. | `LoginStartupService` unchanged; current settings code does not receive a new test-mode path. | Static code review confirms a single stable `WebTools` Run value name; automation was not allowed to write the primary account registry. | Inspect menu and exercise startup enable/restart/disable only in a disposable account, recording/restoring its initial Run value. | **MANUAL VERIFICATION REQUIRED** | Primary-account registry must remain untouched. |
+| E — On-demand Manager, reuse, normal close to Electron=0, NativeHost continues, reopen | 4G-3 real Release lifecycle and 4G-4 six open/normal-close Manager groups. | Current packaged Host/Manager/ASAR hashes exactly match isolated runtime smoke. | Four current packaged Manager sessions rendered and normally closed; Settings/Favorites/Translation/page-switch paths passed, with isolated NativeHost persistence. | No additional manual lifecycle cycle required beyond verifying current tray/request action in M-A/M-D. | **PASS** | Automated smoke does not substitute for visible tray interaction. |
+| F — Websites/Favorites, Settings, Translation handoff exact prefill/no auto provider | 4G-3 current-source lifecycle supplement plus prior Phase 4F user-confirmed Websites/Favorites UI; 4G-3 exact Launcher-to-Translation prefill with no provider credentials. | Current Manager/ASAR exact-hash match; prior 4G3 handoff path remains unchanged by pnpm-only changes. | Current Manager smoke verified Favorites/Settings/Translation route rendering and local state; existing real packaged handoff evidence is reused. No provider was configured or invoked. | No paid-provider or real-token check; fake data only. | **PASS** | User can additionally smoke current visible UI in M-E/M-F, but no provider test is needed. |
+| G — Installer layout/Manager path, shortcut/icon, upgrade/data retention, target-only uninstall | Phase 4F user-confirmed old-to-current upgrade and Websites/Favorites; earlier automated installer/UpdateHelper evidence. | Current pnpm candidate installer SHA above differs from locked Phase 4F installer SHA. | Current `package:win` isolated cover-install, old-uninstaller ordering, Manager discovery, Unicode/space path, and self-uninstall passed; NSIS target paths/icon were statically inspected. | Inspect visible Start Menu/Desktop shortcuts/icon; install/upgrade old candidate to current candidate in the disposable account; verify fake data and target-only uninstall. | **MANUAL VERIFICATION REQUIRED** | No visible shortcut or current-candidate data-preservation UI upgrade performed. |
+
+### Automated Regression
+
+Freshly run for this acceptance:
+
+| Command | Result |
+|---|---|
+| `pnpm install --frozen-lockfile` | **PASS**, lockfile up to date, pnpm 9.15.9 |
+| `pnpm run typecheck` | **PASS** |
+| `pnpm test` | **PASS, 118/118**; existing `MODULE_TYPELESS_PACKAGE_JSON` reparsing warnings only |
+| `pnpm run build` | **PASS**, Electron Main, Preload and Vue Renderer |
+| `dotnet run --project native\WebTools.NativeHost.Checks\WebTools.NativeHost.Checks.csproj --configuration Release` | **PASS, 55/55** |
+| `dotnet run --project native\WebTools.UpdateHelper.Checks\WebTools.UpdateHelper.Checks.csproj --configuration Release` | **PASS, 10/10** |
+| `node --check scripts\verify-manager-lifecycle.mjs` | **PASS** |
+| PowerShell AST parse of `scripts/build-native-production.ps1` | **PASS** |
+| `corepack pnpm run package:win` | **PASS** for this exact candidate before this report: .NET publish, electron-builder, cover-install, Manager discovery, and Unicode/space path install/uninstall smoke |
+| `git diff --check` | **PASS** after report update; Git emitted line-ending conversion notices only |
+
+No new permanent automated test or product code was added. Existing check suites and exact-hash packaged runtime evidence provide the automated coverage; UI-interactive gates remain manual.
+
+### Security and Data Isolation
+
+- No action in this phase launched, closed, updated, or modified the real `D:\webtools` installation. No phase test wrote to the primary `%APPDATA%\Nook`, Favorites, Settings, SecretStore, startup registry, or AI token store.
+- Packaged-runtime smoke used a disposable profile, unique named pipe, exact binary path/PID/creation-time process checks, and no credentials. Its before/after profile hashes match and `secrets.json` was absent.
+- Normal NativeHost mode applies `LaunchOnStartup` to the current account's Run key; therefore normal tray/startup acceptance is explicitly deferred to the disposable-account manual checklist. The Phase 4E test mode skips that registry application.
+- Installer path/Manager discovery uses the test package directory; no process-name batch termination was performed.
+
+### Findings, Gaps, and Decision
+
+- P0: **0 observed**.
+- P1: **0 observed**.
+- P2: **0 blocking product defects observed**. Remaining items are required unobserved Windows acceptance, not a confirmed product failure.
+- P3: **0 product findings**; one test-evidence limitation (initial snapshot collection failure) is recorded in the desktop supplement below.
+- No production code changed. Current pnpm package and automated regression evidence remains applicable. The desktop supplement below now verifies real Manager UI and representative custom-hotkey settings behavior; normal installed Launcher/tray/startup and GUI upgrade gates remain open.
+
+### Windows Desktop Execution Supplement — 2026-10-03
+
+The preceding matrix records the initial evidence position; this supplement is the latest execution state. No historical Phase 4G-1 through 4G-4 measurements were changed, and no stress workload or installer build was repeated.
+
+#### Environment, identity, and capabilities
+
+- Evidence root: `D:\系统缓存\webtools-phase4g5-ui-1d8b2e702590485a97907f3c5cd61476`.
+- Runtime: `Native/WebTools.NativeHost.exe` and `Manager/WebTools.exe` under that root, including the real packaged `Manager/resources/app.asar`; all four runtime hashes match the current pnpm candidate table above.
+- Disposable profile: the separate sibling `D:\系统缓存\webtools-phase4g5-ui-1d8b2e702590485a97907f3c5cd61476-profile`. No credential was provided.
+- Host: PID **33580**, creation **2026-10-03T22:48:57.973426+08:00**, resource pipe `WebTools.NativeHost.Resource.G58bf367c3cf4c47aabb5e07d0734f8915`. Successful run was 14:48:58–15:10:50 UTC. Each control response was checked against its isolated Host PID.
+- Current source remains `1f68fe0ccc916e33197a9ec19d42b58ef5da5161`; branch/upstream unchanged. Host ran in explicit `--phase4e-resource-test` mode, Manager in isolated Manager-only test mode, with no CDP port. Tray, login-startup application, and normal update pipe are omitted by this mode.
+- Windows desktop automation could enumerate, capture, click and type into the real packaged Manager. It did not enumerate the transparent WPF Launcher window, even when the resource pipe reported it visible; no synthetic Window object or guessed HWND was used to target it.
+- Session is non-elevated. Windows Sandbox executable, Hyper-V `Get-VM` and VMMS service are unavailable. No disposable account/VM was created, so no installer GUI, login/logout, or startup registry mutation was attempted in the primary account.
+
+#### M-A through M-G actual execution
+
+| Item | Actual operation and observation | Evidence mode | Result / remaining gap |
+|---|---|---|---|
+| M-A | Exact candidate runtime copied outside the repository; initial Host=1 and target Electron=0. Isolated single-instance second invocation exited while its original Host remained. Final successful Host exited with code 0 through its test control path. | **AUTOMATED RUNTIME VERIFIED** | **MANUAL VERIFICATION REQUIRED** for normal installed entry/single-instance/tray exit; test-mode mutex and control exit are not production installation evidence. |
+| M-B | Native pipe queries `visual`, `控制面板`, `kongzhimianban`, `kzmb`, `/Phase4G5 UI`, `/example.com`, `?test`, `file:test` exercised live WPF search/presentation. App/Chinese/pinyin/initials and saved-site results appeared; hide cleared query/results and retained icon cache. Native HWND stayed 199264. `file:test` verified the deliberately disabled Everything branch only. | **AUTOMATED RUNTIME VERIFIED**, plus **HISTORICAL EVIDENCE REUSED** for prior actual Everything search | **MANUAL VERIFICATION REQUIRED** for default physical hotkey, normal typing/visible results, Escape and blur in the installed Launcher. Pipe state is not mouse/keyboard acceptance. |
+| M-C | Real Settings recorder used Ctrl+Alt+Shift+F12 → F11: Cancel preserved F12, Apply persisted F11, and recorder/Apply restored F12. Desktop SendInput F11 activated Native after Apply; cancelled F11 and released old F12 did not activate it. Native visibility/focus was observed by pipe. Settings displayed restored F12 after reopening. | **REAL WINDOWS UI VERIFIED** for recorder/Apply/Cancel; SendInput + **AUTOMATED RUNTIME VERIFIED** for activation, not physical keyboard | **MANUAL VERIFICATION REQUIRED** for brief normal/default physical chord smoke. Full Hotkey 2.0 historical acceptance and collision/mode checks remain reused; no full matrix rerun. |
+| M-D | Test mode intentionally creates no tray and applies no login-startup Run value. Primary registry was read only. | **HISTORICAL EVIDENCE REUSED**; new tray/login actions **NOT TESTED** | **MANUAL VERIFICATION REQUIRED**: tray actions/Exit and startup enable → relogin → disable in a disposable account, recording/restoring its Run value. |
+| M-E | Pipe opened the real Manager; actual window rendered Favorites, Settings, Translation. Repeated intent reused Main PID 16380. Native handoff supplied exact text `  don't stop  this exact handoff  `; selecting the real Translation source field exposed exactly that text, including leading/trailing/double spaces. Result remained empty. Actual titlebar X closed the first group; reopened Main PID 30648 rendered persisted data; second actual X closed its group. Both exact-path Electron groups reached 0 while Host 33580 remained. | **REAL WINDOWS UI VERIFIED** for rendering/text/window close; **AUTOMATED RUNTIME VERIFIED** for initiation, IPC/reuse/process gates | **PASS** for Manager coverage. Actual Launcher Translation click/tray initiation is not claimed and remains in M-B/M-D. No network capture was performed; prior provider-invocation=0 evidence is reused for the unchanged handoff path. |
+| M-F | Actual UI created/renamed/deleted a fake folder, created/edited/deleted a fake HTTPS website, selected Baidu as default engine, closed/reopened Manager, and observed renamed folder/edited website/Baidu restored. After delete, new-folder input accepted text; Cancel left no saved folder. Native `/Phase4G5 UI` changed from one website result before deletion to zero afterward. | **REAL WINDOWS UI VERIFIED** for CRUD/settings/restore; **AUTOMATED RUNTIME VERIFIED** for Native projection/persistence files | **PASS**. Only disposable data was used; no AI connection test or translation submission. |
+| M-G | Rehashed both current and previous installers; both still match their recorded SHA-256. Reused current pnpm package/isolated install smoke and historical 4F upgrade evidence. No visible installer or uninstall action was run. | **HISTORICAL EVIDENCE REUSED** | **MANUAL VERIFICATION REQUIRED** for previous-candidate → pnpm-candidate GUI upgrade, fake-data retention, shortcut target/icon and target-only uninstall in a disposable account. |
+
+#### Evidence and process protection
+
+- `ui-observations.jsonl` holds **61** timestamped observations; **60** actual desktop screenshots are retained. `control-events.jsonl` records requests, PID-checked responses and their timestamps. `launch.json`, `process-start.json`, `process-manager-reuse.json`, `process-normal-close-1.json`, `process-normal-close-2.json`, and `runner-events.jsonl` retain process/build/exit identity.
+- `test-data-persisted.json` / `test-state-persisted.json` preserve saved fake data before deletion. `test-data-after-delete.json` / `test-state-after-delete.json` prove test folder/site deletion, Cancel non-persistence, Baidu default and restored F12. Native settings are persisted in launcher-state; the old default value in nook-data is not the authority for Native-owned settings.
+- `execution-summary.json` independently checks exact Translation selection, both deletion outcomes, Cancel absence, final target process count **0**, and environment comparisons. `evidence-sha256.json` records evidence hashes. Raw screenshots/profiles/logs remain outside Git.
+- Unrelated production Host **29924**, creation **2026-10-03T22:08:43.401675+08:00**, remained at `D:\webtools\WebTools.NativeHost.exe`; it was not messaged, stopped or replaced. Final production EXE/DLL/Manager/ASAR hashes equal current candidate hashes. Primary Nook data/state hashes equal the prior packaged-smoke before/after hashes, and `secrets.json` remains absent; no secret contents were read or printed.
+- **Collection limitation:** the initial `environment-before.json` is `null` because the external snapshot wrapper failed. It is retained, not repaired into invented evidence. Independent full-run initial install/registry hashes are unavailable. `environment-final-before-cleanup.json` and `environment-after.json` prove recorded file hashes, absent Run value, and production process identity remained identical during final cleanup only; historical profile comparison supplies separate earlier evidence. This is not a complete filesystem mutation audit.
+- Setup-only failures are preserved: an initial runner did not keep its child alive, and a first profile placed beneath the inferred install root was correctly rejected by the Manager overlap guard. The rejected isolated Manager was cleaned by exact path/PID/creation-time verification; that forced cleanup is **not** counted as a successful normal Manager close. The corrected profile is a separate sibling. These are test preparation issues, not confirmed product defects.
+
+#### Remaining minimal Windows checklist
+
+Use one disposable Windows account or VM, never the production installation/profile. Existing Manager CRUD/handoff/reopen and full historical stress/hotkey suites do not need repetition.
+
+1. **Normal installation + Native keyboard smoke (M-A/M-B/M-C):** install the current candidate to a new path; launch once and again, observe one Host and Electron=0. Use the default physical chord and one unused custom chord, type representative English/Chinese/pinyin/initial/site/`?`/`/`/`file:` queries, observe results and focus, hide via Escape and blur. Verify Cancel/Apply once if confirming physical custom activation, restore the original test binding. Record visible behavior and exact-path process counts.
+2. **Tray + login startup (M-D):** exercise Launcher/Websites/Settings/Translation/Exit menu entries. Record test-account Run value, enable startup, relogin once (one Host, Electron=0), disable, and restore original value. Record PASS/FAIL and initial/final Run values.
+3. **GUI upgrade/uninstall (M-G):** install the previous locked 4F candidate to a separate test path; create fake folder/site/setting. Cover-install the rehashed current pnpm candidate in that path, inspect NativeHost shortcut target/icon and retained data, uninstall only that installation, and check retained profile policy/unrelated process survival. Record paths, hashes and PASS/FAIL.
+
+### Execution Decision — 2026-10-03 (Historical)
+
+P0=0 observed, P1=0 observed, blocking product P2=0 observed. One non-blocking evidence limitation is the failed initial environment snapshot; it has not been represented as a full-run PASS. No product code changed. Real Manager UI and runtime supplements passed, but required normal installed Launcher/tray/login/GUI upgrade operations are still unobserved. The stage cannot close or proceed to 4G-6 on auxiliary evidence alone.
+
+**PHASE 4G-5 INCOMPLETE — MANUAL VERIFICATION REQUIRED**
+
+### Phase 4G-5 Final Acceptance Closeout — 2026-10-04
+
+#### User confirmation and evidence classification
+
+The user explicitly confirmed in this conversation: **剩余人工操作全部测试通过，没有发现问题。** This closes the three remaining manual groups listed above. The date is the date this confirmation was recorded (Asia/Hong_Kong), not a reconstructed time of test execution.
+
+| Evidence class | Applicable evidence | Scope / limit |
+|---|---|---|
+| Historical phase evidence | Phase 4F installation/upgrade acceptance; Phase 4G-1 to 4G-4 and Hotkey System 2.0 records | Unchanged production behavior; original measurements and decisions remain intact. No stress, cold-start or Soak rerun. |
+| Current automated verification | Frozen pnpm install, typecheck, Node 118/118, build, NativeHost 55/55, UpdateHelper 10/10, current package/isolated smoke and exact artifact hashes | Existing results reused for unchanged package/tooling/product sources. This closeout does not claim new build or runtime tests. |
+| Current real Manager desktop verification | 2026-10-03 real packaged Manager screenshots/observations, CRUD/settings persistence, exact Translation text, actual titlebar close and process-group checks | M-E/M-F PASS; native action initiation/process checks retain their separate runtime evidence labels. |
+| User-confirmed Windows manual acceptance | This user's explicit confirmation of all three remaining groups | **USER CONFIRMED PASS**, not Codex automation or independently observed Windows operations. No new per-operation machine record was supplied. |
+
+#### Final M-A through M-G matrix
+
+| Item | Final result | Evidence / covered acceptance | Remaining gap |
+|---|---|---|---|
+| M-A | **PASS — USER CONFIRMED PASS** | Normal installation/startup, NativeHost single instance, idle Electron=0; prior isolated runtime evidence supplements the user confirmation. | None blocking; user's install path/PID/log were not supplied. |
+| M-B | **PASS — USER CONFIRMED PASS** | Physical hotkey activation, English/Chinese/pinyin/initials and search modes, input focus, Escape and blur hide; prior WPF search/reset evidence remains applicable. | None blocking; no new keyboard screenshots or per-query logs supplied. |
+| M-C | **PASS — USER CONFIRMED PASS** | Custom shortcut Apply/Cancel and restoration of the original binding; prior real Settings UI, runtime registration and full Hotkey 2.0 acceptance supplement it. | None blocking; no new exact tested chord or operation time supplied. |
+| M-D | **PASS — USER CONFIRMED PASS** | Tray icon/menu, Launcher/Websites/Settings/Translation entries, tray Exit, startup enable/login/disable; user reports no duplicate startup or abnormal behavior. | None blocking; no test-account identity or initial/final registry-value machine record supplied. |
+| M-E | **PASS** | Existing **REAL WINDOWS UI VERIFIED** + **AUTOMATED RUNTIME VERIFIED** evidence for on-demand Manager/reuse, pages, exact prefill, normal close to Electron=0, Host survival and reopen. User-confirmed M-B/M-D covers the remaining entry interactions. | None blocking. |
+| M-F | **PASS** | Existing **REAL WINDOWS UI VERIFIED** + **AUTOMATED RUNTIME VERIFIED** website/folder CRUD, settings/data persistence, Cancel non-persistence and Native website projection evidence; unchanged local handoff/provider evidence reused. | None blocking. |
+| M-G | **PASS — USER CONFIRMED PASS** | Previous version → current pnpm candidate GUI upgrade, test data retained, shortcut target/icon, target uninstall, no observed effect on unrelated applications or production installation. | None blocking; no new install path, installer log or screenshot supplied. |
+
+The confirmation is accepted as user acceptance evidence; no substantive contradiction with the preserved automated/desktop results was found. It does not establish independently audited installation/account identity or an exhaustive environment mutation audit.
+
+#### Evidence review, scope, and limitations
+
+- Rechecked the retained desktop evidence SHA-256 manifest, summary/process/data records, packaged-runtime smoke identity, and candidate artifact hashes before checkpoint. Original evidence remains outside Git; no test profile, screenshot, raw log, user data, credential or build artifact is included in these commits.
+- The original `environment-before.json` collection failure remains documented. User confirmation **does not** supply or repair missing independent full-run filesystem/registry snapshots. Final-cleanup comparisons and historical profile hashes retain only their previously stated scope.
+- No user PID, install path, screenshot, registry original value, exact operation timestamp or installer log has been invented. User-confirmed tests are not labelled `CODEX AUTOMATED PASS` or `INDEPENDENTLY VERIFIED`.
+- pnpm review: fixed `pnpm@9.15.9`, imported lockfile, removed npm lockfile, equivalent workflow/script invocations; dependencies, script names, builder/Vite settings and product sources unchanged. No workspace, monorepo, hoist configuration or dependency upgrade.
+- This closeout changes only the two Phase 4G-5 documents. The already approved six pnpm migration files are committed separately from the two acceptance documents. Full build/lifecycle/Soak tests and installer generation are not repeated.
+- P0: **0**. P1: **0**. Blocking P2: **0**. P3: **1 non-blocking evidence limitation**, the preserved failed initial snapshot and consequent comparison limit; **0 product defects found**.
+- Checkpoint scope: current branch `codex/shared-ai-translation-2.0`, based on reviewed HEAD `1f68fe0ccc916e33197a9ec19d42b58ef5da5161`; separate `build: migrate node package management to pnpm` and `test: complete phase 4g5 windows acceptance` commits. Exact resulting SHAs and push/worktree state are reported after Git commands, not predicted here.
+- pnpm migration checkpoint: `9965f285207385085a3b3cb9f4ffed6f0226b1a5` (`build: migrate node package management to pnpm`), containing only the six approved migration files. The acceptance document commit follows it; its own SHA and push outcome are reported externally after completion.
+
+#### Final Phase Decision
+
+All required M-A through M-G acceptance has supporting evidence from the four classes above. There are no unresolved blocking acceptance items or known P0/P1/blocking P2 findings. The non-blocking snapshot limitation remains visible. Phase 4G-6 is ready for user approval only; it is not started by this closeout.
+
+**PHASE 4G-5 COMPLETE**
+
+**WINDOWS ENVIRONMENT FINAL ACCEPTANCE PASS**
+
+**READY FOR PHASE 4G-6**
