@@ -886,3 +886,200 @@ Two D supplement attempts stopped before starting an isolated NativeHost or taki
 **PHASE 4G-3 COMPLETE — MANAGER LIFECYCLE / PROCESS STABILITY PASS — READY FOR PHASE 4G-4**
 
 Phase 4G-4 has not started. This review does not start it.
+
+## Phase 4G-4 — Long-Running / Soak Stability
+
+### Phase 4G-3 Checkpoint
+
+- The stable checkpoint is commit 926c8bf799ee36deb6898865a78399af85991035 on codex/shared-ai-translation-2.0.
+- At Phase 4G-4 start, HEAD matched origin/codex/shared-ai-translation-2.0 and the worktree was clean. At the implementation closeout before this final review, the Phase 4G-4 test-only changes and report were intentionally left uncommitted and unpushed.
+- No merge, PR, tag, release, or installer action was performed for Phase 4G-4. The later stable checkpoint commit/push is a separate closeout action, not part of the soak workload.
+
+### 1. Source and Build Identity
+
+The acceptance runtime was built from the checkpoint above. NativeHost was published as .NET 10.0.401, self-contained win-x64, with the app host enabled and trimming disabled. Manager was built by electron-vite and packaged by electron-builder 26.15.3 for Electron 44.4.5 using the Windows x64 unpacked directory target. Node was 24.21.0. No installer was created.
+
+Build commands:
+
+- dotnet publish native\WebTools.NativeHost\WebTools.NativeHost.csproj --configuration Release --runtime win-x64 --self-contained true -p:UseAppHost=true -p:PublishSingleFile=false -p:PublishTrimmed=false
+- npm run build
+- node node_modules\electron-builder\cli.js --win --x64 --dir --config.directories.output=<TEMP>\manager-build
+
+Runtime layout was D:\系统缓存\WebTools Phase4G4 Soak 20261003-160332\runtime\WebTools.NativeHost.exe and the corresponding runtime\Manager\WebTools.exe plus Manager\resources\app.asar.
+
+| Artifact | SHA-256 |
+|---|---|
+| WebTools.NativeHost.exe | 1932AFABF294014A23074522EC644DD242AF96391B70059360395CCB72905A8F |
+| WebTools.NativeHost.dll | F47EAB3C08E4EC05497A9EAFE699B81D5F356A4740538BE90CA16665C8A94A38 |
+| Manager\WebTools.exe | 2FBACDEC06A0CB890B8A4571AB2DDC38335E77DB9EFDC38D2E7E756E6EBD616A |
+| Manager\resources\app.asar | 8EECBB5FC34FCA43E83921CB4A77FE8AF07EBDD4610315D4B15152AF81A3C285 |
+| Soak driver | A83268BE4CFC05013B59F9CDAFEFC1E5046EFB7D60FC3E260CF8178958EDF2BA |
+| Process sampler | 69FE4C9E412B37E95A58818CFF6ABD29261C6416CDE4B79B8454468303409E6F |
+
+### 2. Test Environment and Isolation
+
+- Formal soak evidence: D:\系统缓存\WebTools Phase4G4 Soak 20261003-160332\soak
+- Isolated runtime: D:\系统缓存\WebTools Phase4G4 Soak 20261003-160332\runtime
+- Disposable test profile: soak\profile
+- The run used a unique test-only named pipe and exact executable-path/process-creation-time checks. It did not connect to the production pipe or pass real favorites, settings, credentials, or AI provider tokens to the test processes. The preservation witness reads `nook-data.json` and `launcher-state.json` only as bytes to compute SHA-256 before and after; it would also hash `secrets.json` if present. It does not parse or log those contents and does not write to the real profile. `secrets.json` was absent during this run.
+- The real installation witness before and after was the same NativeHost PID 13284 at D:\webtools\WebTools.NativeHost.exe. nook-data.json remained SHA-256 003e9b2c2a4a5ef26d430f32b85f8d84b01df01be607cd1864a98804079eeb2f; launcher-state.json remained 825251a8db09e3e7774f25dac7111282adc1b7660e8f2c854accc03a5c036538; secrets.json remained absent. The manifest records liveProductionUnchanged=true.
+- Preflight attempts that stopped before formal soak because of harness input/JSON BOM handling were retained in separate evidence directories. The corrected preflight-confirmed run passed; failed preflight attempts were not included in formal A/B statistics.
+
+### 3. Preflight
+
+**PREFLIGHT PASS** at 2026-10-03 08:10:42 UTC.
+
+The isolated Release NativeHost started with Manager/Electron at zero, accepted its test pipe, showed/searched/hid the Native Launcher, opened Favorites, Settings, and Translation in turn, acknowledged renderer readiness, and normally closed each Manager process group. Translation prefill was local-only and providerInvocations was zero. Four incremental sampler samples were written, errors.json was empty, and the isolated host exited through its control pipe with no remaining target processes. The successful preflight used its own profile and evidence directory; it was not mixed into the formal soak.
+
+### 4. Scenario A — 90-Minute NativeHost-only Soak
+
+Scenario A ran continuously for 5,400,150 ms from 08:14:02.957 to 09:44:03.108 UTC. It used NativeHost PID 18496. The seven 15-minute checkpoints all observed the same PID and Launcher HWND 1116180, Manager Main=0, Electron process group=0, a responsive NativeHost, and a responsive pipe. Pipe round trips were 96–120 ms. No restart, crash, or hang occurred.
+
+### 5. Scenario B — 90-Minute Intermittent Usage Soak
+
+Scenario B immediately followed Scenario A without restarting NativeHost and ran 5,400,149 ms from 09:44:03.114 to 11:14:03.263 UTC, again on PID 18496. Six usage groups ran at 15-minute intervals and rotated Favorites, Settings, Translation, Favorites, Settings, Translation.
+
+Each group displayed the same Launcher HWND, searched the fixed local Control Panel query, cleared and hid the Launcher, opened one Manager, waited for renderer acknowledgement, then normally closed the Manager and waited for the target Electron group to reach zero. The Launcher was then queried and hidden again. All 12 searches and all 12 hidden-state checks were recorded. Every group completed, the NativeHost remained responsive, and the Manager controller disconnected before the next group.
+
+| Group | Page | Manager Main PID | Ready (ms) | Recorded members | Normal close | Electron=0 |
+|---:|---|---:|---:|---:|---|---|
+| 1 | Favorites | 10768 | 378 | 4 | PASS | PASS |
+| 2 | Settings | 25416 | 321 | 4 | PASS | PASS |
+| 3 | Translation | 1320 | 342 | 4 | PASS | PASS |
+| 4 | Favorites | 3576 | 339 | 4 | PASS | PASS |
+| 5 | Settings | 26148 | 368 | 4 | PASS | PASS |
+| 6 | Translation | 2572 | 346 | 4 | PASS | PASS |
+
+All six Main PIDs were distinct. Each ready group had one Manager Main plus its Renderer, GPU, and Utility process. Translation handoff text was acknowledged exactly by the local renderer; no provider was invoked. Six normal-close events and six Electron-zero events were recorded.
+
+### 6. Resource Trend Analysis
+
+The sampler produced 2,160 records over 3.002 hours. There were 2,158 NativeHost metric samples (99.84% coverage); the two records without NativeHost metrics are the process-start and normal-exit boundaries. Median sample interval was 5.01 seconds, maximum 5.272 seconds, with no intervals over 15 seconds.
+
+| Scenario A checkpoint | Private MiB | Working Set MiB | Handles | Threads | GDI | USER | Pipe ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| A-00 | 70.08 | 125.58 | 773 | 29 | 12 | 24 | 102 |
+| A-15 | 69.40 | 123.93 | 759 | 18 | 12 | 22 | 102 |
+| A-30 | 69.41 | 124.02 | 768 | 17 | 12 | 22 | 120 |
+| A-45 | 69.42 | 124.03 | 690 | 18 | 12 | 23 | 102 |
+| A-60 | 69.46 | 97.73 | 702 | 19 | 12 | 23 | 96 |
+| A-75 | 68.20 | 96.93 | 706 | 17 | 12 | 22 | 104 |
+| A-90 | 69.48 | 98.37 | 715 | 18 | 12 | 22 | 117 |
+
+| Scenario B checkpoint | Private MiB | Working Set MiB | Handles | Threads | GDI | USER | Pipe ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| B-00 | 82.14 | 136.18 | 781 | 25 | 56 | 40 | 122 |
+| B-15 | 90.05 | 151.36 | 716 | 23 | 55 | 38 | 125 |
+| B-30 | 90.34 | 154.72 | 735 | 23 | 57 | 37 | 137 |
+| B-45 | 91.11 | 159.28 | 704 | 22 | 55 | 37 | 101 |
+| B-60 | 95.19 | 165.27 | 729 | 23 | 57 | 38 | 128 |
+| B-75 | 94.52 | 163.77 | 715 | 22 | 54 | 37 | 138 |
+| B-90 | 88.67 | 158.68 | 719 | 17 | 54 | 34 | 110 |
+
+| Metric across 2,158 NativeHost samples | Minimum | Median | Maximum | First | Last |
+|---|---:|---:|---:|---:|---:|
+| Private Bytes (MiB) | 68.51 | 70.07 | 95.32 | 75.05 | 88.48 |
+| Working Set (MiB) | 97.33 | 126.52 | 165.43 | 128.00 | 158.52 |
+| Handles | 672 | 710 | 782 | 744 | 706 |
+| Threads | 13 | 14 | 29 | 24 | 14 |
+| GDI | 12 | 12 | 57 | 12 | 54 |
+| USER | 20 | 24 | 39 | 22 | 32 |
+
+The A checkpoint Private Bytes median was 69.40 MiB; the B checkpoint median was 90.34 MiB. These are different workload phases: Scenario B includes the first real Launcher display and six Manager open/close groups. The first-use GDI/USER increase was bounded: after B-00, GDI remained 54–57 and USER 34–38, rather than increasing with each group. Private Bytes peaked at B-60, then declined at B-75 and B-90; handles and threads fluctuated and ended below their initial values. The time series does not show sustained monotonic or unrecovered per-cycle growth. No absolute memory threshold was used. The first-use retained-resource pattern is consistent with bounded UI/runtime warm-up; this test does not claim separate allocator-level attribution.
+
+### 7. Manager Process-group Analysis
+
+The manager-processes.csv contains 64 identity-checked process records: 12 each for Manager Main, Renderer, GPU, and Utility across two runtime snapshots per each of the six Manager groups, plus NativeHost observations. Every Manager executable path resolved under the isolated runtime root. The six Main PIDs were unique, each ready process group contained exactly one Main, and the process group returned to zero after each normal close. No target Manager/Electron orphan was found.
+
+### 8. IPC and Responsiveness
+
+All 14 formal checkpoints reported responsive=true. Pipe round trips were 96–138 ms across A and B without a rising latency trend. All six Manager sessions completed renderer acknowledgement and disconnected normally. Native search remained usable after each Manager close, and the Launcher was hidden with query cleared at every formal checkpoint.
+
+### 9. Evidence Integrity
+
+- Scenario A: PASS, seven checkpoints, 90 minutes.
+- Scenario B: PASS, seven checkpoints and six completed usage groups, 90 minutes.
+- NativeHost PID was 18496 at all 14 checkpoints; process creation time remained 2026-10-03T08:13:46.0005130Z.
+- Formal event counts: 14 checkpoints, 179 heartbeats, 6 Manager ready, 6 normal close, 6 Electron-zero, 12 Launcher search, 12 Launcher hidden, zero errors.
+- The evidence manifest reports SOAK EVIDENCE COMPLETE — REVIEW PENDING; its final architecture and production-witness fields were checked against the raw event and process evidence before this report was closed.
+
+SHA-256 of the final raw evidence:
+
+| Evidence | SHA-256 |
+|---|---|
+| manifest.json | 9D8335EDB252CAE5434D862FB355CA6F155FEF62CAA1AB8014E51E3B807F3C56 |
+| checkpoints.json | 559BEC9CF9AE9D0AD63C158395EDEC1AA3B26B4F7C87B07A30D9B42B8A77E2A0 |
+| errors.json | 37517E5F3DC66819F61F5A7BB8ACE1921282415F10551D2DEFA5C3EB0985B570 |
+| lifecycle-events.jsonl | 9A4C6B7591C452A423A15EE67C8209DD2C257F5D6642A07AAC7C393DA5069825 |
+| manager-processes.csv | F1ADB40224B7F449419F43D646F8C3E2FCCBC40E50E915EC7E2F5CDDBF13CEAF |
+| process-samples.jsonl | 11B962ECD7E36CF5B3EE05E838B2342E8BE8D5A629DEAFA76EDF735B8920AB89 |
+
+Raw evidence and disposable profiles remain outside the repository.
+
+### 10. Final Architecture Gate
+
+Immediately before normal exit: isolated NativeHost=1 (PID 18496), Manager Main=0, Electron process group=0, test pipe responsive, Launcher hidden, and query cleared. The NativeHost then exited through the acknowledged isolated control pipe with exit code 0. The post-exit exact-path scan found NativeHost=0, Manager=0, Electron=0 for the acceptance runtime. The unrelated real installation remained running and its recorded profile hashes were unchanged.
+
+### 11. Final Regression
+
+Freshly run after the soak:
+
+- npm run typecheck — PASS.
+- npm test — PASS, 118/118. Node emitted existing MODULE_TYPELESS_PACKAGE_JSON performance warnings while reparsing TypeScript test modules; there were no test failures.
+- npm run build — PASS.
+- dotnet run --project native/WebTools.NativeHost.Checks/WebTools.NativeHost.Checks.csproj --configuration Release — PASS, 55/55.
+- dotnet run --project native/WebTools.UpdateHelper.Checks/WebTools.UpdateHelper.Checks.csproj --configuration Release — PASS, 10/10.
+- Node syntax check for scripts/verify-phase4g4-soak.mjs — PASS.
+- PowerShell AST parse for native/scripts/Measure-Phase4G3Processes.ps1 — PASS.
+- Release artifact hashes matched build-identity.json — PASS.
+- git diff --check — PASS after this report update.
+
+No product code was changed for this phase. The sampler interval remains configurable with a default of one second, preserving its Phase 4G-3 behavior; the soak driver uses five-second process samples.
+
+### 12. Findings
+
+- P0: 0.
+- P1: 0.
+- Unresolved blocking P2: 0.
+- P3: one non-blocking observation — after the first real Launcher display, GDI/USER counts remained at a higher but bounded plateau through the rest of Scenario B. They did not climb with repeated groups, and the final counts were below the B-00 values. No defect was confirmed.
+- Scope limit: this finite three-hour isolated soak does not prove indefinite stability and did not collect per-renderer JavaScript heap metrics. It provides OS process resource and real lifecycle evidence for the tested Release build.
+
+### 13. Files Changed and Git
+
+- native/scripts/Measure-Phase4G3Processes.ps1 — added a bounded SampleIntervalSeconds parameter with the original one-second default.
+- scripts/verify-phase4g4-soak.mjs — added the isolated Release preflight and three-hour soak driver with incremental evidence and exact-path process checks.
+- docs/native-launcher-phase4g-final-validation.md — appended this Phase 4G-4 closeout; all Phase 4G-1 through 4G-3 historical measurements remain unchanged.
+- Checkpoint review base branch: codex/shared-ai-translation-2.0.
+- Checkpoint review base HEAD and origin/codex/shared-ai-translation-2.0: 926c8bf799ee36deb6898865a78399af85991035.
+- At checkpoint review start, the only repository changes were the Phase 4G-4 sampler, soak driver, and report. All raw soak evidence and disposable profiles remained outside Git; no product code was changed.
+
+### Phase 4G-4 Decision
+
+**PHASE 4G-4 COMPLETE**
+
+**LONG-RUNNING / SOAK STABILITY PASS**
+
+**READY FOR PHASE 4G-5**
+
+Stop here. Phase 4G-5 has not started.
+
+### Phase 4G-4 Checkpoint Review
+
+- The final review rehashed all six raw soak evidence files and matched the report. The manifest, 14 checkpoints, 2,160 process samples, 179 heartbeats, six Manager-ready/normal-close/Electron-zero groups, 12 search/hidden events, zero errors, and the reported A/B durations agree. All checkpoints use NativeHost PID 18496 and HWND 1116180. The finite three-hour result is not presented as an indefinite stability guarantee.
+- Five blocking-P2 test-driver gaps were found and minimally corrected without rerunning the soak: the entire isolated Release runtime tree now rejects symbolic links/junctions before any child starts; Manager identity is captured before renderer readiness checks; cleanup still drains an exact-path Manager group when NativeHost has already exited; the pipe greeting now has a bounded, interruptible wait that rejects socket close/error; and Manager startup-timeout cleanup targets the unique fixed-title `WebTools` HWND inside the already identity-checked Manager PID, including while Electron keeps it hidden before renderer readiness. Cleanup uses exact executable path, PID, and creation time, requests normal WM_CLOSE, waits for group exit, and never terminates by process name. The NativeHost fallback selects the unique `WebTools Native Launcher` HWND because the hidden WPF process also owns other top-level HWNDs.
+- Review also corrected two evidence-path issues: malformed stage metadata is recorded on its sample instead of silently discarded, and successful sampler shutdown requires exit code 0. SIGINT/SIGTERM now enter bounded orderly cleanup; child-spawn failures are captured and surfaced. No NativeHost, Manager, Electron, IPC, preload, Translation, or user-data production code changed.
+- The three-hour workload used the driver and sampler source hashes recorded in the Source and Build Identity table above. Review-time test-harness changes were not retroactively attributed to that workload; the runtime used by the completed run had no reparse points. Focused checks passed for the runtime-tree junction guard, malformed-stage sampler record, cleanup state paths, bounded/interrupted greeting wait, hidden exact-title HWND discovery, exact-identity hidden NativeHost WM_CLOSE smoke, source safeguards, Node syntax, PowerShell AST, and the full automated regression listed above. After the final hidden-Manager-window fix, a separate isolated Release preflight completed with three Manager ready/normal-close cycles, zero errors, normal NativeHost exit, and zero final isolated processes; the production install/profile witness remained unchanged. This preflight did not fault-inject renderer-readiness timeout. No three-hour Soak was rerun.
+- A separate cancellation smoke at `D:\系统缓存\WebTools-Phase4G4-Interrupt-Smoke-20261003` started the isolated Release NativeHost, recorded only checkpoint A-00, then received Ctrl+C. The evidence remained `INCOMPLETE — REVIEW REQUIRED`; NativeHost, sampler, and probe all exited normally with code 0, a post-cleanup exact-path scan found zero isolated processes, and the real-install/profile witness remained unchanged. This partial run is not included in the soak results.
+- A targeted real-process cleanup smoke at `D:\System default\Desktop\WebTools Phase4G4 Cleanup Smoke 20261003-D` launched the previously packaged Release NativeHost with a fresh isolated profile and unique pipe, then used the updated PowerShell probe to send WM_CLOSE to its hidden Launcher HWND after exact path/PID/creation-time verification. NativeHost PID 25712 exited with code 0 and the subsequent exact-path scan found no remaining test NativeHost. Separate extracted-function checks exercised cleanup with an exited Host plus a surviving mock Manager group, the live-Host/no-pipe fallback, SIGTERM during an unresolved greeting, timeout, and listener cleanup. These are targeted failure-path checks, not a rerun of the soak.
+- SHA-256 of the reviewed post-fix harness sources:
+
+| Source | SHA-256 |
+|---|---|
+| `scripts/verify-phase4g4-soak.mjs` | `7927F57729CAA221A35837C284EAF3D1A386F064BF3E1185AA052B05450E2617` |
+| `native/scripts/Measure-Phase4G3Processes.ps1` | `D4855AF428B27417DD0F01C9733C735A0B99402E693F1CEC05217DA04FF4498F` |
+- Review findings: P0 = 0; P1 = 0; blocking P2 = 0 after fixes; P3 = 1 bounded first-use GDI/USER plateau, unchanged from the measured finding above.
+- Soak evidence remains outside the repository. The profile preservation evidence is hash-only: `nook-data.json` and `launcher-state.json` matched before/after; `secrets.json` was absent. No settings, Favorites, secret, token, profile, runtime, or raw sample artifact is staged.
+
+**PHASE 4G-4 CHECKPOINT REVIEW PASS**
+
+**READY FOR PHASE 4G-5**
