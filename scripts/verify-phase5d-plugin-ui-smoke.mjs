@@ -11,6 +11,7 @@ import { assertSafeManagerEvidenceRoot } from './lib/manager-lifecycle-evidence.
 import { createDefaultAppData } from '../src/shared/domain.ts'
 import { PluginManager } from '../electron/plugins/plugin-manager.ts'
 import { packageBytes, manifest } from '../electron/plugins/fixtures.mjs'
+import { validatePackage } from '../electron/plugins/package-validator.ts'
 
 // Short packaged Phase 5D UI/lifecycle smoke. It uses a fresh TEMP profile,
 // isolated NativeHost pipe, a packaged Manager, and a pre-seeded test plugin.
@@ -18,13 +19,19 @@ import { packageBytes, manifest } from '../electron/plugins/fixtures.mjs'
 // paid AI, startup registry and D:\webtools are never touched.
 const phase5f = process.argv[5] === '--phase5f'
 const phase5g = process.argv[5] === '--phase5g'
-const reportFile = phase5g ? 'phase5g-translation-plugin-smoke-report.json' : phase5f ? 'phase5f-plugin-catalog-smoke-report.json' : 'phase5d-plugin-ui-smoke-report.json'
+const phase5h = process.argv[5] === '--phase5h'
+const reportFile = phase5h ? 'phase5h-plugin-smoke-report.json' : phase5g ? 'phase5g-translation-plugin-smoke-report.json' : phase5f ? 'phase5f-plugin-catalog-smoke-report.json' : 'phase5d-plugin-ui-smoke-report.json'
 const repo = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const root = assertSafeManagerEvidenceRoot(resolve(process.argv[2] ?? ''))
 const nativeSource = resolve(process.argv[3] ?? '')
 const managerBinaryRoot = assertSafeManagerEvidenceRoot(resolve(process.argv[4] ?? ''))
 assert.ok(nativeSource.startsWith(join(repo, 'release') + '\\'), 'Reuse only an existing repository Release Native artifact')
 assert.ok(managerBinaryRoot.endsWith('manager-build\\win-unpacked'), 'Manager must come from the isolated electron-builder output')
+const inputPackagePath = phase5h ? resolve(process.argv[6] ?? '') : null
+if (phase5h) {
+  const relativePackage = inputPackagePath ? inputPackagePath.slice(root.length).replaceAll('/', '\\') : ''
+  assert.ok(relativePackage.startsWith('\\') && !relativePackage.startsWith('\\..\\') && inputPackagePath.toLowerCase().endsWith('.wtplugin'), 'Phase 5H package must be a .wtplugin contained in the isolated evidence root')
+}
 const nativeRoot = join(root, 'Native')
 const profile = join(root, 'profile')
 const nativeExe = join(nativeRoot, 'WebTools.NativeHost.exe')
@@ -39,28 +46,43 @@ await writeFile(join(profile, 'nook-data.json'), JSON.stringify(data))
 await writeFile(join(profile, 'launcher-state.json'), JSON.stringify({ schemaVersion: 1, quickSearchShortcut: data.settings.quickSearchShortcut, theme: 'dark', launcherDisplayMode: 'compact', launchOnStartup: false, searchEngines: data.settings.searchEngines, defaultSearchEngineId: 'google', everythingEnabled: false, everythingEsPath: '', websites: [], appSearchMemory: [] }))
 await writeFile(join(profile, 'catalog.json'), JSON.stringify({ schemaVersion: 1, generatedAtUtc: new Date().toISOString(), apps: [] }))
 
-const seed = new PluginManager({ userData: profile, hostVersion: '0.1.0', confirm: async () => true, externalOpen: async () => { throw new Error('not used') }, clipboardWrite: () => { throw new Error('not used') }, ai: { getDefaultProviderInfo: async () => { throw new Error('not used') }, complete: async () => { throw new Error('not used') } } })
+const demoPackageBytes = phase5h ? new Uint8Array(await readFile(inputPackagePath)) : null
+const demo = phase5h
+  ? (await validatePackage(demoPackageBytes, '0.1.0')).manifest
+  : manifest({
+    id: 'org.example.phase5dsmoke',
+    name: 'Phase 5D Smoke Plugin',
+    description: 'Isolated packaged UI smoke fixture.',
+    requestedCapabilities: ['manager.page', 'plugin.config.read', 'plugin.config.write', 'sharedAI.complete'],
+    settings: [{ key: 'message', label: 'Smoke message', type: 'text', minLength: 0, maxLength: 100, default: 'initial value' }],
+    pages: [{ id: 'home', title: 'Smoke Page', blocks: [{ type: 'heading', text: 'Packaged declarative page' }, { type: 'text-input', settingKey: 'message' }, { type: 'button', label: 'Review AI request', actionId: 'review-ai' }] }],
+    actions: [{ id: 'save-message', type: 'plugin.config.write', key: 'message' }, { id: 'review-ai', type: 'sharedAI.complete' }],
+  })
+const pluginId = demo.id
+const testConsentRequests = []
+const createTestManager = confirm => new PluginManager({ userData: profile, hostVersion: '0.1.0', confirm, externalOpen: async () => { throw new Error('not used') }, clipboardWrite: () => { throw new Error('not used') }, ai: { getDefaultProviderInfo: async () => { throw new Error('not used') }, complete: async () => { throw new Error('not used') } } })
+const seed = createTestManager(async request => { testConsentRequests.push({ kind: request.kind, capabilities: request.capabilities ?? [] }); return true })
 await seed.initialize()
-const pluginId = 'org.example.phase5dsmoke'
-const demo = manifest({
-  id: pluginId,
-  name: 'Phase 5D Smoke Plugin',
-  description: 'Isolated packaged UI smoke fixture.',
-  requestedCapabilities: ['manager.page', 'plugin.config.read', 'plugin.config.write', 'sharedAI.complete'],
-  settings: [{ key: 'message', label: 'Smoke message', type: 'text', minLength: 0, maxLength: 100, default: 'initial value' }],
-  pages: [{ id: 'home', title: 'Smoke Page', blocks: [{ type: 'heading', text: 'Packaged declarative page' }, { type: 'text-input', settingKey: 'message' }, { type: 'button', label: 'Review AI request', actionId: 'review-ai' }] }],
-  actions: [{ id: 'save-message', type: 'plugin.config.write', key: 'message' }, { id: 'review-ai', type: 'sharedAI.complete' }],
-})
-await seed.install(packageBytes(demo), seed.session)
+const seededPackage = await seed.install(demoPackageBytes ?? packageBytes(demo), seed.session)
+assert.equal(seededPackage.outcome, 'installed')
 await seed.setEnabled(pluginId, true, seed.session)
+const seededSummary = (await seed.list()).find(plugin => plugin.id === pluginId)
+assert.ok(seededSummary?.enabled)
+assert.deepEqual(seededSummary.granted, demo.requestedCapabilities)
+if (phase5h) {
+  assert.deepEqual(testConsentRequests.map(request => request.kind), ['install', 'grant'])
+  assert.deepEqual(testConsentRequests[0].capabilities, demo.requestedCapabilities)
+  assert.deepEqual(testConsentRequests[1].capabilities, demo.requestedCapabilities)
+}
 seed.close()
 
 const report = {
   root,
   sourceHead: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', windowsHide: true }).trim(),
   dirtySource: true,
+  buildInputs: { nativeSource, managerBinaryRoot, nativeExe, managerExe, appAsar: join(managerBinaryRoot, 'resources', 'app.asar'), packagedPlugin: inputPackagePath },
   artifacts: {},
-  fixtureConsent: 'TEST-ONLY mocked consent used only to seed an enabled plugin before launch',
+  fixtureConsent: phase5h ? 'TEST-ONLY mocked PluginManager consent in isolated TEMP profile; production file picker and native consent dialogs are not automated by this smoke.' : 'TEST-ONLY mocked consent used only to seed an enabled plugin before launch',
   productionDialogs: 'NOT TESTED',
   checkpoints: [],
   result: 'INCOMPLETE',
@@ -264,6 +286,10 @@ try {
   const pages = await until(async () => { try { return await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() } catch { return [] } }, pages => pages.filter(page => page.type === 'page').length === 1, 'single packaged renderer')
   const page = pages.find(candidate => candidate.type === 'page')
   assert.ok(page.url.startsWith('file:') && page.url.endsWith('/out/renderer/index.html'))
+  const managerOpen = await os()
+  assert.equal(group(managerOpen).filter(process => process.role === 'main').length, 1, 'one Manager main process is opened through NativeHost')
+  assert.equal(group(managerOpen).find(process => process.role === 'main')?.parentPid, native.pid)
+  record('manager-open-single-packaged-renderer', managerOpen)
   const ws = new WebSocket(page.webSocketDebuggerUrl)
   await once(ws, 'open')
   cdp = ws
@@ -412,6 +438,63 @@ try {
     await evaluate('[...document.querySelectorAll(".nav-subitem")].find(button => button.textContent.trim() === "插件管理")?.click()')
     await until(() => evaluate('!!document.querySelector(".plugin-manager-page")'), Boolean, 'return to Plugin Center after Translation handoff')
   }
+  if (phase5h) {
+    const catalog = await evaluate('window.desktop.pluginCatalog.list()')
+    assert.equal(catalog.ok, true)
+    const entry = catalog.data.entries.find(candidate => candidate.kind === 'declarative' && candidate.id === pluginId)
+    assert.ok(entry, 'packed SDK example appears in the packaged host catalog')
+    assert.equal(entry.package.name, demo.name)
+    assert.equal(entry.package.version, demo.version)
+    assert.equal(entry.package.enabled, true)
+    assert.deepEqual(entry.package.requested, demo.requestedCapabilities)
+    assert.deepEqual(entry.package.granted, demo.requestedCapabilities)
+    assert.equal(entry.package.status, 'active')
+    await evaluate(`[...document.querySelectorAll('.plugin-list-row')].find(row => row.textContent.includes(${JSON.stringify(demo.name)}))?.click()`)
+    await until(() => evaluate('!!document.querySelector(".plugin-detail-title h2")'), Boolean, 'SDK example details selected')
+    assert.equal(await evaluate('document.querySelector(".plugin-trust-note strong")?.textContent'), '本地插件，发布者未经验证')
+    assert.ok(await evaluate("document.querySelector('.plugin-permission-list')?.textContent.includes('读取插件私有数据') && document.querySelector('.plugin-permission-list')?.textContent.includes('保存插件私有数据')"))
+
+    const aiAvailability = await evaluate('(async()=>({descriptors:await window.desktop.getAIProviderDescriptors(),translation:await window.desktop.getTranslationProviderInfo()}))()')
+    assert.equal(aiAvailability.descriptors.ok, true, 'Shared AI provider descriptors remain available')
+    assert.equal(aiAvailability.translation.ok, true, 'Translation provider information remains available')
+    report.sharedAIAvailability = 'Provider descriptors and Translation provider information IPC succeeded. No connection check, provider completion, translation request or paid AI call was made.'
+
+    assert.equal(await evaluate('[...document.querySelectorAll(".plugin-nav-item")].find(button => button.textContent.trim() === "翻译")?.textContent.trim()'), '翻译', 'existing built-in Translation remains in Manager navigation')
+    await evaluate('[...document.querySelectorAll(".plugin-nav-item")].find(button => button.textContent.trim() === "翻译")?.click()')
+    await until(() => evaluate('!!document.querySelector(".translate-page")'), Boolean, 'existing Translation page remains available')
+    report.translation = 'Packaged Manager Translation page opened; no translation provider or paid AI request was invoked.'
+    await evaluate('[...document.querySelectorAll(".nav-subitem:not(.plugin-nav-item)")].find(button => button.textContent.trim() === "插件管理")?.click()')
+    await until(() => evaluate('!!document.querySelector(".plugin-manager-page")'), Boolean, 'return to Plugin Center after Translation smoke')
+    await evaluate(`[...document.querySelectorAll('.plugin-list-row')].find(row => row.textContent.includes(${JSON.stringify(demo.name)}))?.click()`)
+    await until(() => evaluate('!!document.querySelector(".plugin-detail-title h2")'), Boolean, 'SDK example details')
+    await evaluate('[...document.querySelectorAll(".plugin-actions button")].find(button => button.textContent.includes("打开插件页面"))?.click()')
+    await until(() => evaluate('!!document.querySelector(".declarative-plugin-page")'), Boolean, 'Private Notes declarative page')
+    assert.equal(await evaluate('document.querySelector(".plugin-page-heading h1")?.textContent'), demo.name)
+    assert.ok(await evaluate('document.querySelector(".declarative-plugin-content")?.textContent.includes("Save note") && document.querySelector(".declarative-plugin-content")?.textContent.includes("Load saved note")'))
+
+    const savedNote = 'Phase 5H isolated packaged storage check.'
+    await evaluate('[...document.querySelectorAll(".plugin-action-block button")].find(button => button.textContent.includes("Save note"))?.click()')
+    await until(() => evaluate('!!document.querySelector("#plugin-action-input")'), Boolean, 'Private Notes save prompt')
+    await evaluate(`(()=>{const input=document.querySelector('#plugin-action-input');const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;setter.call(input,${JSON.stringify(savedNote)});input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.plugin-action-input-footer .primary-button')?.click()})()`)
+    await until(() => evaluate('document.querySelector(".plugin-action-result")?.textContent || ""'), text => text.trim() === 'null', 'Private Notes storage write result')
+    const privateDataPath = join(profile, 'plugins', 'data', `${pluginId}.json`)
+    await until(async () => { try { return JSON.parse(await readFile(privateDataPath, 'utf8')).note } catch { return null } }, value => value === savedNote, 'isolated plugin private storage write')
+    await evaluate('[...document.querySelectorAll(".plugin-action-block button")].find(button => button.textContent.includes("Load saved note"))?.click()')
+    await until(() => evaluate('document.querySelector(".plugin-action-result")?.textContent || ""'), text => text.includes(savedNote), 'Private Notes storage read result')
+    await evaluate('[...document.querySelectorAll(".declarative-plugin-page button")].find(button => button.textContent.includes("返回插件管理"))?.click()')
+    await until(() => evaluate('!!document.querySelector(".plugin-manager-page")'), Boolean, 'return to Plugin Center after storage smoke')
+    await evaluate(`[...document.querySelectorAll('.plugin-list-row')].find(row => row.textContent.includes(${JSON.stringify(demo.name)}))?.click()`)
+    await evaluate('[...document.querySelectorAll(".plugin-actions button")].find(button => button.textContent.includes("停用插件"))?.click()')
+    await until(async () => (await evaluate('window.desktop.plugins.list()')).data?.find(plugin => plugin.id === pluginId)?.status === 'installed-disabled', Boolean, 'SDK example disabled')
+    assert.equal(await evaluate('[...document.querySelectorAll(".plugin-nav-item")].some(button => button.textContent.includes("Private Notes"))'), false)
+    await evaluate('[...document.querySelectorAll(".plugin-actions button")].find(button => button.textContent.includes("启用插件"))?.click()')
+    await until(async () => (await evaluate('window.desktop.plugins.list()')).data?.find(plugin => plugin.id === pluginId)?.status === 'active', Boolean, 'SDK example re-enabled')
+    assert.equal(await evaluate('[...document.querySelectorAll(".plugin-nav-item")].some(button => button.textContent.includes("Private Notes"))'), true)
+    report.sdkPluginUi = 'Packaged WebTools accepted the generated Private Notes package; metadata and requested/granted storage permissions matched Manifest v1. The page wrote and read a value through the declared host actions, and disable/re-enable removed/restored its Apps navigation entry.'
+    report.packagedInput = { path: inputPackagePath.slice(root.length + 1), sha256: createHash('sha256').update(demoPackageBytes).digest('hex'), bytes: demoPackageBytes.length, id: demo.id, version: demo.version }
+    report.testConsentRequests = testConsentRequests
+  }
+  if (!phase5h) {
   await evaluate(`[...document.querySelectorAll('.plugin-list-row')].find(row => row.textContent.includes(${JSON.stringify(demo.name)}))?.click()`)
   assert.equal(await evaluate('document.querySelector(".plugin-trust-note strong")?.textContent'), '本地插件，发布者未经验证')
   await evaluate('[...document.querySelectorAll(".plugin-actions button")].find(button => button.textContent.includes("打开插件页面"))?.click()')
@@ -460,6 +543,7 @@ try {
   assert.ok(afterNavigation.some(process => process.pid === mainIdentity.pid && process.created === mainIdentity.created), 'same Manager process reused for plugin UI navigation')
   record('packaged-plugin-center-declarative-config-enable-disable', afterNavigation)
   report.uiSmoke = 'Favorites default → Apps/Plugin Center → list/details/trust → declarative page/config write → complete AI preview/cancel → disable/re-enable → capability revoke removes page nav; same Manager main process'
+  }
 
   if (phase5f) {
     const prefillText = "  don't stop state-of-the-art  "
@@ -477,7 +561,7 @@ try {
   await os('close', mainIdentity)
   const closed = await until(os, processes => group(processes).length === 0 && processes.some(process => process.pid === native.pid), 'ordinary Manager close returns Electron to zero')
   record('manager-closed-electron-zero-native-remains', closed)
-  if (phase5f || phase5g) {
+  if (phase5f || phase5g || phase5h) {
     const firstManager = mainIdentity
     await control({ type: 'manager-open', section: 'favorites' })
     const reopened = await until(os, processes => group(processes).some(process => process.role === 'main'), 'Manager reopens after ordinary close')
@@ -504,8 +588,13 @@ try {
     assert.equal(restored.home, true)
     assert.equal(restored.catalog.ok, true)
     assert.equal(restored.catalog.data.entries[0].kind, 'builtin')
-    assert.equal(restored.catalog.data.entries.find(entry => entry.kind === 'declarative' && entry.id === pluginId)?.package.status, 'needs-permission')
-    if (phase5g) {
+    const restoredPlugin = restored.catalog.data.entries.find(entry => entry.kind === 'declarative' && entry.id === pluginId)?.package
+    assert.equal(restoredPlugin?.status, phase5h ? 'active' : 'needs-permission')
+    if (phase5h) {
+      assert.equal(restoredPlugin?.enabled, true)
+      assert.deepEqual(restoredPlugin?.granted, demo.requestedCapabilities)
+      report.restartPersistence = 'Generated SDK package and granted permissions restored as active after Manager process restart; Favorites remained the home page.'
+    } else if (phase5g) {
       assert.equal(restored.catalog.data.entries.find(entry => entry.kind === 'builtin')?.state.enabled, true, 'built-in enabled state persists after Manager process restart')
       const persistedFile = JSON.parse(await readFile(join(profile, 'builtin-plugins', 'state.json'), 'utf8'))
       assert.equal(persistedFile.plugins['webtools.translation']?.enabled, true)
@@ -518,10 +607,39 @@ try {
     await os('close', mainIdentity)
     record('reopened-manager-closed-electron-zero-native-remains', await until(os, processes => group(processes).length === 0 && processes.some(process => process.pid === native.pid), 'reopened Manager ordinary close'))
   }
+  if (phase5h) {
+    const dataFile = join(profile, 'plugins', 'data', `${pluginId}.json`)
+    const lifecycleConsents = []
+    let deletePrivateData = false
+    const lifecycle = createTestManager(async request => {
+      lifecycleConsents.push(request.kind)
+      return request.kind !== 'delete-data' || deletePrivateData
+    })
+    try {
+      await lifecycle.initialize()
+      const savedNote = 'Phase 5H isolated packaged storage check.'
+      assert.equal(JSON.parse(await readFile(dataFile, 'utf8')).note, savedNote)
+      assert.deepEqual(await lifecycle.uninstall(pluginId, lifecycle.session), { removed: true })
+      assert.equal(JSON.parse(await readFile(dataFile, 'utf8')).note, savedNote, 'keep-data consent retains private data')
+      const reinstall = await lifecycle.install(demoPackageBytes, lifecycle.session)
+      assert.equal(reinstall.outcome, 'installed')
+      await lifecycle.setEnabled(pluginId, true, lifecycle.session)
+      const summary = (await lifecycle.list()).find(plugin => plugin.id === pluginId)
+      assert.ok(summary)
+      const readRequest = { pluginId, version: summary.version, hash: summary.hash, actionId: 'load-note', input: null }
+      assert.deepEqual(await lifecycle.invoke(readRequest, lifecycle.session), { status: 'success', value: savedNote }, 'retained private data is readable after reinstall')
+      deletePrivateData = true
+      assert.deepEqual(await lifecycle.uninstall(pluginId, lifecycle.session), { removed: true })
+      await assert.rejects(readFile(dataFile), error => error?.code === 'ENOENT')
+      assert.deepEqual(lifecycleConsents, ['uninstall', 'delete-data', 'install', 'grant', 'uninstall', 'delete-data'])
+      report.uninstallAndPrivateData = 'The actual PluginManager in the isolated profile retained plugin storage when the delete-data consent was declined; reinstall read the retained note; the second uninstall with delete-data consent removed that data. Native consent dialogs are mocked only in this TEMP test profile.'
+      report.uninstallConsentSequence = lifecycleConsents
+    } finally { lifecycle.close() }
+  }
   await os('close-native', nativeIdentity)
   const exited = await until(os, processes => processes.length === 0, 'isolated Native exit')
   record('all-isolated-processes-exited', exited)
-  report.result = phase5g ? 'PACKAGED PHASE 5G BUILTIN TRANSLATION LIFECYCLE / HANDOFF / MANAGER LIFECYCLE PASS' : phase5f ? 'PACKAGED PHASE 5F UNIFIED CATALOG / NATIVE PREFILL / MANAGER LIFECYCLE PASS' : 'PACKAGED PHASE 5D PLUGIN UI / CONFIG / MANAGER LIFECYCLE PASS'
+  report.result = phase5h ? 'PACKAGED PHASE 5H SDK PLUGIN / MANAGER LIFECYCLE PASS' : phase5g ? 'PACKAGED PHASE 5G BUILTIN TRANSLATION LIFECYCLE / HANDOFF / MANAGER LIFECYCLE PASS' : phase5f ? 'PACKAGED PHASE 5F UNIFIED CATALOG / NATIVE PREFILL / MANAGER LIFECYCLE PASS' : 'PACKAGED PHASE 5D PLUGIN UI / CONFIG / MANAGER LIFECYCLE PASS'
 } catch (error) {
   report.error = String(error)
   throw error

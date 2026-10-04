@@ -46,3 +46,10 @@ test('rejects file-directory prefix aliases and case collisions between declared
     await assert.rejects(() => validate(packageBytes(value, paths.map(name => ({ name, data: png() })))))
   }
 })
+
+test('rejects Unicode NFC-equivalent declared asset paths', async () => {
+  const paths = ['assets/café.png', 'assets/cafe\u0301.png']
+  const value = manifest({ assets: paths.map(path => ({ path, type: 'image/png' })) })
+  const bytes = zip([{ name: 'manifest.json', data: JSON.stringify(value), flags: 0x800 }, ...paths.map(name => ({ name, data: png(), flags: 0x800 }))])
+  await assert.rejects(() => validate(bytes), error => error.code === 'INVALID_PACKAGE')
+})
