@@ -1,6 +1,9 @@
 import type { AppSettings, BookmarkFolder, WebsiteCollection, WebsiteEntry, WebsiteOrderByCollection, WebsiteSaveInput, EverythingResult, ThemePreference } from './domain'
 import type { AIProviderId } from './ai-config.ts'
 import type { TranslationProviderInfo, TranslationRequest, TranslationResult } from './translation-contracts.ts'
+import type { PluginApi } from './plugin-contracts.ts'
+import type { PluginCatalogApi } from './plugin-catalog-contracts.ts'
+import type { BuiltinTranslationHandoffProjection, ResolveTranslationHandoffRequest } from './builtin-translation-contracts.ts'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -26,6 +29,12 @@ export interface AIProviderStatus {
 }
 
 export interface DesktopApi {
+  pluginCatalog: PluginCatalogApi
+  plugins: PluginApi
+  builtinTranslationHandoff: {
+    get(): Promise<IpcResult<BuiltinTranslationHandoffProjection>>
+    resolve(request: ResolveTranslationHandoffRequest): Promise<IpcResult<BuiltinTranslationHandoffProjection>>
+  }
   managerReady(): void
   onNativeManagerIntent(handler: (intent: NativeManagerIntent) => void): () => void
   acknowledgeNativeManagerIntent(requestId: string): void
@@ -61,10 +70,26 @@ export interface DesktopApi {
 }
 
 export type NativeManagerIntent =
-  | { requestId: string; kind: 'open-page'; section: 'favorites' | 'entries' | 'settings' | 'translate' }
-  | { requestId: string; kind: 'translation-prefill'; text: string }
+  | { requestId: string; kind: 'open-page'; section: 'favorites' | 'entries' | 'settings' }
+  | { requestId: string; kind: 'translation-handoff' }
 
 export const IPC_CHANNELS = {
+  pluginCatalogList: 'plugin-catalog:list',
+  pluginCatalogOpen: 'plugin-catalog:open',
+  pluginCatalogSetEnabled: 'plugin-catalog:set-enabled',
+  pluginCatalogRecoverBuiltin: 'plugin-catalog:recover-builtin-translation',
+  builtinTranslationHandoffGet: 'builtin-translation-handoff:get',
+  builtinTranslationHandoffResolve: 'builtin-translation-handoff:resolve',
+  pluginList: 'plugins:list',
+  pluginInstall: 'plugins:install-from-dialog',
+  pluginSetEnabled: 'plugins:set-enabled',
+  pluginSetGrants: 'plugins:set-grants',
+  pluginGetPages: 'plugins:get-pages',
+  pluginInvoke: 'plugins:invoke',
+  pluginAIReviewPrepare: 'plugins:ai-review-prepare',
+  pluginAIReviewConfirm: 'plugins:ai-review-confirm',
+  pluginAIReviewCancel: 'plugins:ai-review-cancel',
+  pluginUninstall: 'plugins:uninstall',
   managerReady: 'window:manager-ready',
   nativeManagerIntent: 'native-manager:intent',
   acknowledgeNativeManagerIntent: 'native-manager:acknowledge-intent',

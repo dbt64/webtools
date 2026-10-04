@@ -65,7 +65,8 @@ test('packaged Electron connects to Native before creating its sole Manager wind
   assert.match(main, /const nativeManaged = app\.isPackaged \|\| isNativeManagerOnly/)
   const startup = main.slice(main.indexOf('app.whenReady().then'))
   assert.ok(startup.indexOf('await nativeManagerClient.connect()') < startup.indexOf('createWindow()'))
-  assert.match(main, /if \(!nativeManaged \|\| !nativeManagerClient\?\.isConnected\) return/)
+  assert.match(main, /builtinTranslationHandoff\?\.rendererReady\(\)/)
+  assert.match(main, /if \(!nativeManaged \|\| !nativeManagerClient\?\.isConnected\) \{ deliverPendingNativeIntent\(\); return \}/)
 })
 
 test('normal Manager close and Native disconnect end the Electron process', async () => {
@@ -187,7 +188,9 @@ test('Manager starts on Favorites and has no Search page or Search-only app APIs
   assert.doesNotMatch(ipc, /getApps\(|refreshApps\(|getAppIcon\(|launchApp\(|getRememberedAppSearchAppId|rememberAppSearchResult|openSearch\(/)
   assert.doesNotMatch(preload, /getApps:|refreshApps:|getAppIcon:|launchApp:|getRememberedAppSearchAppId:|rememberAppSearchResult:|openSearch:/)
   assert.doesNotMatch(main, /AppCatalogService|AppLauncher|registerAppIpcHandlers|appCatalog\.refresh/)
-  assert.match(main, /section: 'favorites' \| 'entries' \| 'settings' \| 'translate'/)
+  assert.match(main, /intent: \{ kind: 'open-page'; section: 'favorites' \| 'entries' \| 'settings' \}/)
+  assert.match(main, /if \(command\.section === 'translate'\) \{\s*await beginNativeTranslationHandoff\(command\.requestId, null\)/)
+  assert.match(await read('electron/services/native-manager-commands.ts'), /section: 'favorites' \| 'entries' \| 'settings' \| 'translate'/)
   assert.doesNotMatch(await read('src/shared/domain.ts'), /interface AppSearchEntry/)
 })
 
