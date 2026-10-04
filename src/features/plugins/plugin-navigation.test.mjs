@@ -32,6 +32,6 @@ test('Manager keeps Favorites as the default and preserves the Native Translatio
   assert.ok(app.includes("intent.kind === 'translation-prefill'"))
   assert.ok(app.includes('acknowledgeNativeManagerIntent'))
   assert.ok(app.includes('pluginNavItems'))
-  assert.ok(app.includes('window.desktop.plugins.getPages(pluginId)'))
+  assert.ok(app.includes('window.desktop.pluginCatalog.open({ ...ref })'))
   assert.ok(app.includes('pluginPageGeneration'))
 })

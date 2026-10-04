@@ -1,22 +1,25 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Check, CircleAlert, CircleCheck, ExternalLink, PackagePlus, Puzzle, RefreshCw, ShieldCheck, Trash2, ToggleLeft, ToggleRight } from '@lucide/vue'
+import { Check, CircleAlert, CircleCheck, ExternalLink, Languages, PackagePlus, Puzzle, RefreshCw, ShieldCheck, Trash2, ToggleLeft, ToggleRight } from '@lucide/vue'
 import type { PluginCapability, PluginSummary } from '../../shared/plugin-contracts.ts'
+import type { CatalogEntryDTO, PluginRef } from '../../shared/plugin-catalog-contracts.ts'
+import { catalogKey, catalogRef, catalogPresentation } from './catalog-view-model.ts'
 import { pluginGrantPayload, pluginInstallFeedback, pluginPermissionRows, pluginStatusView } from './plugin-view-model.ts'
 
-const props = defineProps<{ plugins: PluginSummary[]; loading: boolean; error?: string }>()
-const emit = defineEmits<{ changed: []; retry: []; openPlugin: [pluginId: string] }>()
+const props = defineProps<{ entries: CatalogEntryDTO[]; loading: boolean; error?: string }>()
+const emit = defineEmits<{ changed: []; retry: []; openPlugin: [ref: PluginRef] }>()
 
-const selectedId = ref<string | null>(null)
-const selected = computed(() => props.plugins.find(plugin => plugin.id === selectedId.value) ?? props.plugins[0] ?? null)
+const selectedRef = ref<PluginRef | null>(null)
+const selected = computed(() => props.entries.find(entry => selectedRef.value && catalogKey(entry) === catalogKey(selectedRef.value)) ?? props.entries[0] ?? null)
+const selectedPackage = computed(() => selected.value?.kind === 'declarative' ? selected.value.package : null)
 const grantedDraft = ref<PluginCapability[]>([])
 const busy = ref<string | null>(null)
 const feedback = ref<{ kind: 'status' | 'error'; text: string } | null>(null)
-const permissionRows = computed(() => selected.value ? pluginPermissionRows(selected.value) : [])
+const permissionRows = computed(() => selectedPackage.value ? pluginPermissionRows(selectedPackage.value) : [])
 
 watch(selected, plugin => {
-  selectedId.value = plugin?.id ?? null
-  grantedDraft.value = plugin?.granted.slice() ?? []
+  selectedRef.value = plugin ? catalogRef(plugin) : null
+  grantedDraft.value = plugin?.kind === 'declarative' ? plugin.package.granted.slice() : []
 }, { immediate: true })
 
 function errorText(error: { code: string; message: string }): string {
@@ -41,7 +44,7 @@ async function perform(key: string, operation: () => Promise<void>): Promise<voi
   feedback.value = null
   try { await operation() }
   catch { feedback.value = { kind: 'error', text: '插件操作没有完成，请重试。' } }
-  finally { busy.value = null }
+  finally { busy.value = null; emit('changed') }
 }
 
 async function install(): Promise<void> {
@@ -49,18 +52,16 @@ async function install(): Promise<void> {
     const result = await window.desktop.plugins.installFromUserDialog()
     if (!result.ok) { feedback.value = { kind: 'error', text: errorText(result.error) }; return }
     feedback.value = { kind: 'status', text: pluginInstallFeedback(result.data) }
-    emit('changed')
   })
 }
 
 async function toggle(plugin: PluginSummary): Promise<void> {
   await perform(`toggle:${plugin.id}`, async () => {
-    const result = await window.desktop.plugins.setEnabled(plugin.id, !plugin.enabled)
+    const result = await window.desktop.pluginCatalog.setEnabled({ kind: 'declarative', id: plugin.id }, !plugin.enabled)
     if (!result.ok) { feedback.value = { kind: 'error', text: errorText(result.error) }; return }
-    feedback.value = result.data.enabled
+    feedback.value = result.data.package.enabled
       ? { kind: 'status', text: '插件已启用。' }
       : { kind: 'status', text: plugin.enabled ? '插件已停用；设置和私有数据已保留。' : '权限确认已取消，插件仍保持停用。' }
-    emit('changed')
   })
 }
 
@@ -71,19 +72,18 @@ function toggleDraft(capability: PluginCapability, checked: boolean): void {
 }
 
 async function savePermissions(): Promise<void> {
-  const plugin = selected.value
+  const plugin = selectedPackage.value
   if (!plugin) return
   await perform(`grants:${plugin.id}`, async () => {
     const result = await window.desktop.plugins.setGrants(plugin.id, pluginGrantPayload(grantedDraft.value))
     if (!result.ok) { feedback.value = { kind: 'error', text: errorText(result.error) }; return }
     grantedDraft.value = result.data.granted.slice()
     feedback.value = { kind: 'status', text: '权限状态已更新。新授予的能力由 WebTools 宿主确认。' }
-    emit('changed')
   })
 }
 
 async function uninstall(): Promise<void> {
-  const plugin = selected.value
+  const plugin = selectedPackage.value
   if (!plugin) return
   await perform(`uninstall:${plugin.id}`, async () => {
     const result = await window.desktop.plugins.uninstall(plugin.id)
@@ -91,13 +91,12 @@ async function uninstall(): Promise<void> {
     feedback.value = result.data.removed
       ? { kind: 'status', text: '插件已卸载；数据是否删除由 WebTools 宿主中的单独选择决定。' }
       : { kind: 'status', text: '卸载已取消。' }
-    emit('changed')
   })
 }
 
-function select(plugin: PluginSummary): void {
-  selectedId.value = plugin.id
-  grantedDraft.value = plugin.granted.slice()
+function select(plugin: CatalogEntryDTO): void {
+  selectedRef.value = catalogRef(plugin)
+  grantedDraft.value = plugin.kind === 'declarative' ? plugin.package.granted.slice() : []
   feedback.value = null
 }
 </script>
@@ -105,7 +104,7 @@ function select(plugin: PluginSummary): void {
 <template>
   <section class="content-page plugin-manager-page">
     <header class="page-heading plugin-manager-heading">
-      <div><p class="eyebrow">应用扩展</p><h1>插件</h1><p class="page-description">管理本机导入的声明式插件和它们获准使用的 WebTools 能力。</p></div>
+      <div><p class="eyebrow">应用扩展</p><h1>插件管理</h1><p class="page-description">查看随 WebTools 提供的内置插件，管理本机导入的声明式插件及其权限。</p></div>
       <button class="primary-button" :disabled="loading || Boolean(busy)" @click="install"><PackagePlus :size="15" />{{ busy === 'install' ? '正在安装…' : '安装本地插件' }}</button>
     </header>
 
@@ -114,52 +113,57 @@ function select(plugin: PluginSummary): void {
     </p>
 
     <div v-if="loading" class="plugin-empty-state" role="status" aria-live="polite"><RefreshCw :size="17" class="plugin-spin" />正在读取已安装的插件…</div>
-    <div v-else-if="error" class="plugin-empty-state plugin-empty-error" role="alert"><CircleAlert :size="17" /><span>{{ error }}</span><button class="secondary-button" @click="emit('retry')">重新加载</button></div>
-    <div v-else-if="plugins.length === 0" class="plugin-empty-state"><Puzzle :size="21" /><div><strong>尚未安装插件</strong><p>选择本机的 .wtplugin 文件开始使用。新插件会先保持停用。</p></div><button class="secondary-button" @click="install">安装本地插件</button></div>
+    <div v-if="error" class="plugin-empty-state plugin-empty-error" role="alert"><CircleAlert :size="17" /><span>{{ error }}</span><button class="secondary-button" @click="emit('retry')">重新加载</button></div>
+    <div v-if="!loading && !error && entries.length === 0" class="plugin-empty-state"><Puzzle :size="21" /><div><strong>尚未安装插件</strong><p>选择本机的 .wtplugin 文件开始使用。新插件会先保持停用。</p></div><button class="secondary-button" @click="install">安装本地插件</button></div>
 
-    <div v-else class="plugin-manager-layout">
+    <div v-if="entries.length > 0" class="plugin-manager-layout">
       <nav class="plugin-list" aria-label="已安装插件">
-        <button v-for="plugin in plugins" :key="plugin.id" type="button" class="plugin-list-row" :class="{ selected: selected?.id === plugin.id }" :aria-current="selected?.id === plugin.id ? 'true' : undefined" @click="select(plugin)">
-          <span class="plugin-row-icon" aria-hidden="true"><img v-if="plugin.iconDataUrl" :src="plugin.iconDataUrl" alt="" /><Puzzle v-else :size="18" /></span>
-          <span class="plugin-row-copy"><strong :title="plugin.name">{{ plugin.name }}</strong><small>{{ plugin.author?.name ?? '作者未知' }} · {{ plugin.version }}</small></span>
-          <span class="plugin-state" :class="`tone-${pluginStatusView(plugin).tone}`">{{ pluginStatusView(plugin).label }}</span>
+        <button v-for="plugin in entries" :key="catalogKey(plugin)" type="button" class="plugin-list-row" :disabled="Boolean(busy)" :class="{ selected: selected && catalogKey(selected) === catalogKey(plugin) }" :aria-current="selected && catalogKey(selected) === catalogKey(plugin) ? 'true' : undefined" @click="select(plugin)">
+          <span class="plugin-row-icon" aria-hidden="true"><Languages v-if="plugin.icon.kind === 'host'" :size="18" /><img v-else-if="plugin.icon.kind === 'png'" :src="plugin.icon.dataUrl" alt="" /><Puzzle v-else :size="18" /></span>
+          <span class="plugin-row-copy"><strong :title="catalogPresentation(plugin).name">{{ catalogPresentation(plugin).name }}</strong><small>{{ catalogPresentation(plugin).author }} · {{ catalogPresentation(plugin).version }}</small></span>
+          <span class="plugin-state" :class="'tone-' + catalogPresentation(plugin).status.tone">{{ catalogPresentation(plugin).status.label }}</span>
         </button>
       </nav>
 
-      <section v-if="selected" class="plugin-detail" aria-labelledby="plugin-detail-title">
+      <section v-if="selected?.kind === 'builtin'" class="plugin-detail plugin-builtin-detail" aria-labelledby="plugin-detail-title">
+        <div class="plugin-detail-heading"><div class="plugin-row-icon plugin-detail-icon" aria-hidden="true"><Languages :size="19" /></div><div class="plugin-detail-title"><h2 id="plugin-detail-title">{{ selected.name }}</h2><p>{{ selected.description }}</p></div><span class="plugin-state tone-good">可用 · 内置</span></div>
+        <dl class="plugin-facts"><div><dt>插件 ID</dt><dd>{{ selected.id }}</dd></div><div><dt>版本</dt><dd>{{ selected.version }}</dd></div><div><dt>来源</dt><dd>随 WebTools 发布</dd></div><div><dt>状态</dt><dd>当前可用</dd></div></dl>
+        <div class="plugin-actions"><button class="primary-button" @click="emit('openPlugin', catalogRef(selected))"><ExternalLink :size="14" />打开翻译</button></div>
+      </section>
+      <section v-else-if="selectedPackage" class="plugin-detail" aria-labelledby="plugin-detail-title">
         <div class="plugin-detail-heading">
-          <div class="plugin-row-icon plugin-detail-icon" aria-hidden="true"><img v-if="selected.iconDataUrl" :src="selected.iconDataUrl" alt="" /><Puzzle v-else :size="19" /></div>
-          <div class="plugin-detail-title"><h2 id="plugin-detail-title">{{ selected.name }}</h2><p>{{ selected.description || '没有提供说明。' }}</p></div>
-          <span class="plugin-state" :class="`tone-${pluginStatusView(selected).tone}`">{{ pluginStatusView(selected).label }}</span>
+          <div class="plugin-row-icon plugin-detail-icon" aria-hidden="true"><img v-if="selectedPackage.iconDataUrl" :src="selectedPackage.iconDataUrl" alt="" /><Puzzle v-else :size="19" /></div>
+          <div class="plugin-detail-title"><h2 id="plugin-detail-title">{{ selectedPackage.name }}</h2><p>{{ selectedPackage.description || '没有提供说明。' }}</p></div>
+          <span class="plugin-state" :class="`tone-${pluginStatusView(selectedPackage).tone}`">{{ pluginStatusView(selectedPackage).label }}</span>
         </div>
 
         <div class="plugin-trust-note"><ShieldCheck :size="16" /><span><strong>本地插件，发布者未经验证</strong><small>SHA-256 仅用于识别已安装文件的完整性，不代表发布者身份或安全认证。</small></span></div>
         <dl class="plugin-facts">
-          <div><dt>插件 ID</dt><dd>{{ selected.id }}</dd></div>
-          <div><dt>作者</dt><dd>{{ selected.author?.name ?? '未知' }}<a v-if="selected.author?.url" :href="selected.author.url" target="_blank" rel="noreferrer" aria-label="打开作者网站"><ExternalLink :size="13" /></a></dd></div>
-          <div><dt>宿主 API</dt><dd>{{ selected.api ? `API ${selected.api.apiMajor} · 需要 ${selected.api.minHostVersion} 或更新版本` : '信息不可用' }}</dd></div>
-          <div><dt>版本</dt><dd>{{ selected.version }}<span v-if="selected.installedVersions.length > 1"> · 保留版本：{{ selected.installedVersions.join('、') }}</span></dd></div>
-          <div class="plugin-hash-row"><dt>完整性摘要（SHA-256）</dt><dd><code>{{ selected.hash }}</code></dd></div>
+          <div><dt>插件 ID</dt><dd>{{ selectedPackage.id }}</dd></div>
+          <div><dt>作者</dt><dd>{{ selectedPackage.author?.name ?? '未知' }}<a v-if="selectedPackage.author?.url" :href="selectedPackage.author.url" target="_blank" rel="noreferrer" aria-label="打开作者网站"><ExternalLink :size="13" /></a></dd></div>
+          <div><dt>宿主 API</dt><dd>{{ selectedPackage.api ? `API ${selectedPackage.api.apiMajor} · 需要 ${selectedPackage.api.minHostVersion} 或更新版本` : '信息不可用' }}</dd></div>
+          <div><dt>版本</dt><dd>{{ selectedPackage.version }}<span v-if="selectedPackage.installedVersions.length > 1"> · 保留版本：{{ selectedPackage.installedVersions.join('、') }}</span></dd></div>
+          <div class="plugin-hash-row"><dt>完整性摘要（SHA-256）</dt><dd><code>{{ selectedPackage.hash }}</code></dd></div>
         </dl>
 
-        <div v-if="selected.errorCode" class="plugin-error-detail" role="alert"><CircleAlert :size="15" /><span><strong>{{ selected.errorCode }}</strong><small>{{ pluginStatusView(selected).recovery }}</small></span></div>
+        <div v-if="selectedPackage.errorCode" class="plugin-error-detail" role="alert"><CircleAlert :size="15" /><span><strong>{{ selectedPackage.errorCode }}</strong><small>{{ pluginStatusView(selectedPackage).recovery }}</small></span></div>
 
         <section class="plugin-permissions" aria-labelledby="plugin-permission-title">
           <div class="plugin-section-heading"><div><h3 id="plugin-permission-title">请求的能力</h3><p>新授予的能力需由 WebTools 宿主再次确认；未选中的能力会立即撤销。</p></div></div>
-          <fieldset class="plugin-permission-list" :disabled="Boolean(busy)"><legend class="visually-hidden">管理 {{ selected.name }} 的权限</legend>
+          <fieldset class="plugin-permission-list" :disabled="Boolean(busy)"><legend class="visually-hidden">管理 {{ selectedPackage.name }} 的权限</legend>
             <label v-for="permission in permissionRows" :key="permission.id" class="plugin-permission-row">
               <input type="checkbox" :checked="grantedDraft.includes(permission.id)" @change="toggleDraft(permission.id, ($event.target as HTMLInputElement).checked)" />
               <span>{{ permission.label }}</span><small>{{ permission.granted ? '已授予' : '尚未授予' }}</small>
             </label>
             <p v-if="permissionRows.length === 0" class="plugin-no-permissions">此插件未申请额外能力。</p>
           </fieldset>
-          <button class="secondary-button" :disabled="Boolean(busy) || JSON.stringify(grantedDraft.slice().sort()) === JSON.stringify(selected.granted.slice().sort())" @click="savePermissions">{{ busy === `grants:${selected.id}` ? '保存中…' : '保存权限' }}</button>
+          <button class="secondary-button" :disabled="Boolean(busy) || JSON.stringify(grantedDraft.slice().sort()) === JSON.stringify(selectedPackage.granted.slice().sort())" @click="savePermissions">{{ busy === `grants:${selectedPackage.id}` ? '保存中…' : '保存权限' }}</button>
         </section>
 
         <div class="plugin-actions">
-          <button v-if="selected.enabled" class="secondary-button" :disabled="Boolean(busy)" @click="toggle(selected)"><ToggleLeft :size="15" />{{ busy === `toggle:${selected.id}` ? '正在停用…' : '停用插件' }}</button>
-          <button v-else class="primary-button" :disabled="Boolean(busy) || selected.status === 'invalid' || selected.status === 'incompatible'" @click="toggle(selected)"><ToggleRight :size="15" />{{ busy === `toggle:${selected.id}` ? '正在启用…' : '启用插件' }}</button>
-          <button v-if="selected.enabled && selected.granted.includes('manager.page') && selected.status === 'active'" class="secondary-button" :disabled="Boolean(busy)" @click="emit('openPlugin', selected.id)"><ExternalLink :size="14" />打开插件页面</button>
+          <button v-if="selectedPackage.enabled" class="secondary-button" :disabled="Boolean(busy)" @click="toggle(selectedPackage)"><ToggleLeft :size="15" />{{ busy === `toggle:${selectedPackage.id}` ? '正在停用…' : '停用插件' }}</button>
+          <button v-else class="primary-button" :disabled="Boolean(busy) || selectedPackage.status === 'invalid' || selectedPackage.status === 'incompatible'" @click="toggle(selectedPackage)"><ToggleRight :size="15" />{{ busy === `toggle:${selectedPackage.id}` ? '正在启用…' : '启用插件' }}</button>
+          <button v-if="selectedPackage.enabled && selectedPackage.granted.includes('manager.page') && selectedPackage.status === 'active'" class="secondary-button" :disabled="Boolean(busy)" @click="emit('openPlugin', { kind: 'declarative', id: selectedPackage.id })"><ExternalLink :size="14" />打开插件页面</button>
           <button class="secondary-button" :disabled="Boolean(busy)" @click="install"><RefreshCw :size="14" />导入替换或新版本</button>
           <button class="danger-button" :disabled="Boolean(busy)" @click="uninstall"><Trash2 :size="14" />卸载…</button>
         </div>

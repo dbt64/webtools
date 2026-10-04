@@ -6,12 +6,14 @@ import {
 import logoDark from '@/assets/brand/logo-dark.svg'
 import logoLight from '@/assets/brand/logo-light.svg'
 import FavoritesView from './features/favorites/FavoritesView.vue'
-import TranslateView from './features/translate/TranslateView.vue'
+import { builtinPluginPage } from './features/plugins/builtin-plugin-pages.ts'
 import type { TranslationPrefillRequest } from './shared/domain'
 import type { NativeManagerIntent } from './shared/ipc'
-import type { PluginPageDTO, PluginSummary } from './shared/plugin-contracts.ts'
-import { pluginCanOpen } from './features/plugins/plugin-view-model.ts'
-import { isCurrentPluginPageRequest, pluginNavigationItems, shouldReturnToPluginCenter } from './features/plugins/plugin-navigation.ts'
+import type { PluginPageDTO } from './shared/plugin-contracts.ts'
+import type { CatalogEntryDTO, PluginRef } from './shared/plugin-catalog-contracts.ts'
+import { catalogCanOpen, catalogKey, catalogNavigationItems, catalogPresentation, catalogShouldReturnToCenter, isCurrentCatalogRequest } from './features/plugins/catalog-view-model.ts'
+
+const TranslateView = builtinPluginPage('translation')
 
 type Section = 'favorites' | 'translate' | 'settings' | 'plugins' | 'plugin-page'
 
@@ -52,14 +54,18 @@ const DeclarativePluginView = defineAsyncComponent({ loader: () => import('./fea
 
 const activeSection = ref<Section>('favorites')
 const appsExpanded = ref(false)
-const pluginSummaries = ref<PluginSummary[]>([])
+const catalogEntries = ref<CatalogEntryDTO[]>([])
 const pluginsLoading = ref(false)
 const pluginsError = ref('')
-const activePluginId = ref<string | null>(null)
+const activePluginRef = ref<PluginRef | null>(null)
 const activePluginPage = ref<PluginPageDTO | null>(null)
 const pluginPageLoading = ref(false)
 const pluginPageError = ref('')
-const pluginNavItems = computed(() => pluginNavigationItems(pluginSummaries.value))
+const pluginNavItems = computed(() => catalogNavigationItems(catalogEntries.value))
+const activeEntry = computed(() => activePluginRef.value ? catalogEntries.value.find(entry => catalogKey(entry) === catalogKey(activePluginRef.value!)) : undefined)
+const activePluginName = computed(() => activeEntry.value ? catalogPresentation(activeEntry.value).name : '插件')
+let catalogRevision = -1
+let disposed = false
 let pluginRefreshGeneration = 0
 let pluginPageGeneration = 0
 const translationPrefill = ref<TranslationPrefillRequest | null>(null)
@@ -73,9 +79,9 @@ const navItems: { id: Section; label: string; icon: typeof Compass }[] = [
 const sectionLabel = computed(() => activeSection.value === 'translate'
   ? '翻译'
   : activeSection.value === 'plugins'
-    ? '插件'
+    ? '插件管理'
     : activeSection.value === 'plugin-page'
-      ? pluginSummaries.value.find(plugin => plugin.id === activePluginId.value)?.name ?? '插件'
+      ? activePluginName.value
   : navItems.find((item) => item.id === activeSection.value)?.label ?? '设置')
 
 onMounted(() => {
@@ -85,6 +91,9 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  pluginRefreshGeneration += 1
+  pluginPageGeneration += 1
   removeNativeManagerIntentListener?.()
 })
 
@@ -120,45 +129,60 @@ async function refreshPlugins(): Promise<void> {
   pluginsLoading.value = true
   pluginsError.value = ''
   try {
-    const result = await window.desktop.plugins.list()
-    if (generation !== pluginRefreshGeneration) return
+    const result = await window.desktop.pluginCatalog.list()
+    if (disposed || generation !== pluginRefreshGeneration) return
     if (!result.ok) { pluginsError.value = result.error.message; return }
-    pluginSummaries.value = result.data
-    if (activeSection.value === 'plugin-page' && shouldReturnToPluginCenter(activePluginId.value, result.data)) returnToPluginCenter()
-  } catch { if (generation === pluginRefreshGeneration) pluginsError.value = '无法读取已安装插件，请重试。' }
-  finally { if (generation === pluginRefreshGeneration) pluginsLoading.value = false }
+    if (result.data.revision < catalogRevision) return
+    catalogRevision = result.data.revision
+    catalogEntries.value = result.data.entries
+    if (result.data.declarativeAvailability.status === 'unavailable') pluginsError.value = '第三方插件暂时无法读取；内置翻译仍可使用。请重试。'
+    if (activeSection.value === 'plugin-page' && catalogShouldReturnToCenter(activePluginRef.value, result.data.entries)) returnToPluginCenter()
+  } catch { if (!disposed && generation === pluginRefreshGeneration) pluginsError.value = '无法读取插件目录，请重试。' }
+  finally { if (!disposed && generation === pluginRefreshGeneration) pluginsLoading.value = false }
 }
 
-async function openPluginPage(pluginId: string): Promise<void> {
+async function openPluginPage(ref: PluginRef): Promise<void> {
   const generation = ++pluginPageGeneration
-  const summary = pluginSummaries.value.find(plugin => plugin.id === pluginId)
-  if (!summary || !pluginCanOpen(summary)) { returnToPluginCenter(); return }
-  activePluginId.value = pluginId
+  const entry = catalogEntries.value.find(item => catalogKey(item) === catalogKey(ref))
+  if (!entry || !catalogCanOpen(entry)) { returnToPluginCenter(); return }
+  // Preserve the original Translation mount (input/results/pending request) on repeat navigation.
+  if (ref.kind === 'builtin' && activeSection.value === 'translate') return
+  activePluginRef.value = { ...ref }
   activePluginPage.value = null
   pluginPageError.value = ''
   pluginPageLoading.value = true
   appsExpanded.value = true
   activeSection.value = 'plugin-page'
+  const current = () => !disposed && isCurrentCatalogRequest({ section: activeSection.value, ref: activePluginRef.value, generation: pluginPageGeneration }, { section: 'plugin-page', ref, generation })
   try {
-    const result = await window.desktop.plugins.getPages(pluginId)
-    if (!isCurrentPluginPageRequest({ section: activeSection.value, pluginId: activePluginId.value, generation: pluginPageGeneration }, { section: 'plugin-page', pluginId, generation })) return
+    const result = await window.desktop.pluginCatalog.open({ ...ref })
+    if (!current()) return
     if (!result.ok) { pluginPageError.value = result.error.message; pluginPageLoading.value = false; void refreshPlugins(); return }
-    const latest = pluginSummaries.value.find(plugin => plugin.id === pluginId)
-    if (!latest || !pluginCanOpen(latest) || result.data.pluginId !== pluginId || result.data.version !== latest.version || result.data.hash !== latest.hash) {
+    const latest = catalogEntries.value.find(item => catalogKey(item) === catalogKey(ref))
+    if (!latest || !catalogCanOpen(latest)) { returnToPluginCenter(); void refreshPlugins(); return }
+    if (result.data.kind === 'builtin') {
+      if (ref.kind !== 'builtin' || latest.kind !== 'builtin' || result.data.id !== ref.id || result.data.key !== latest.entry.key) { returnToPluginCenter(); return }
+      activeSection.value = 'translate'
+      pluginPageLoading.value = false
+      return
+    }
+    const page = result.data.page
+    if (ref.kind !== 'declarative' || latest.kind !== 'declarative' || page.pluginId !== ref.id || page.version !== latest.package.version || page.hash !== latest.package.hash) {
       returnToPluginCenter(); void refreshPlugins(); return
     }
-    activePluginPage.value = result.data
+    activePluginPage.value = page
     pluginPageLoading.value = false
   } catch {
-    if (!isCurrentPluginPageRequest({ section: activeSection.value, pluginId: activePluginId.value, generation: pluginPageGeneration }, { section: 'plugin-page', pluginId, generation })) return
+    if (!current()) return
     pluginPageError.value = '插件页面暂时无法加载，请重试。'
     pluginPageLoading.value = false
+    void refreshPlugins()
   }
 }
 
 function returnToPluginCenter(): void {
   pluginPageGeneration += 1
-  activePluginId.value = null
+  activePluginRef.value = null
   activePluginPage.value = null
   pluginPageLoading.value = false
   pluginPageError.value = ''
@@ -197,21 +221,17 @@ function returnToPluginCenter(): void {
       </nav>
       <button class="nav-item nav-apps-trigger" :class="{ 'is-active': activeSection === 'translate' || activeSection === 'plugins' || activeSection === 'plugin-page' }" :aria-expanded="appsExpanded" aria-controls="apps-submenu" @click="appsExpanded = !appsExpanded">
         <LayoutGrid :size="17" :stroke-width="1.8" />
-        <span>应用</span>
+        <span>插件</span>
         <ChevronDown :size="14" class="nav-apps-chevron" :class="{ 'is-expanded': appsExpanded }" />
       </button>
-      <nav id="apps-submenu" v-show="appsExpanded" class="nav-submenu" aria-label="应用">
-        <button class="nav-item nav-subitem" :class="{ 'is-active': activeSection === 'translate' }" @click="activeSection = 'translate'">
-          <Languages :size="15" :stroke-width="1.8" />
-          <span>翻译</span>
-        </button>
-        <button class="nav-item nav-subitem" :class="{ 'is-active': activeSection === 'plugins' || activeSection === 'plugin-page' }" @click="returnToPluginCenter">
-          <Puzzle :size="15" :stroke-width="1.8" />
-          <span>插件</span>
-        </button>
-        <button v-for="item in pluginNavItems" :key="item.id" class="nav-item nav-subitem plugin-nav-item" :class="{ 'is-active': activeSection === 'plugin-page' && activePluginId === item.id }" :title="item.label" @click="openPluginPage(item.id)">
-          <img v-if="item.iconDataUrl" :src="item.iconDataUrl" alt="" /><Puzzle v-else :size="14" :stroke-width="1.8" />
+      <nav id="apps-submenu" v-show="appsExpanded" class="nav-submenu" aria-label="插件">
+        <button v-for="item in pluginNavItems" :key="item.key" class="nav-item nav-subitem plugin-nav-item" :class="{ 'is-active': item.ref.kind === 'builtin' ? activeSection === 'translate' : activeSection === 'plugin-page' && activePluginRef && catalogKey(activePluginRef) === item.key }" :title="item.label" @click="openPluginPage(item.ref)">
+          <Languages v-if="item.icon.kind === 'host'" :size="15" :stroke-width="1.8" /><img v-else-if="item.icon.kind === 'png'" :src="item.icon.dataUrl" alt="" /><Puzzle v-else :size="14" :stroke-width="1.8" />
           <span>{{ item.label }}</span>
+        </button>
+        <button class="nav-item nav-subitem" :class="{ 'is-active': activeSection === 'plugins' }" @click="returnToPluginCenter">
+          <Puzzle :size="15" :stroke-width="1.8" />
+          <span>插件管理</span>
         </button>
       </nav>
 
@@ -240,11 +260,11 @@ function returnToPluginCenter(): void {
       <FavoritesView v-if="activeSection === 'favorites'" />
       <SettingsView v-else-if="activeSection === 'settings'" />
       <TranslateView v-else-if="activeSection === 'translate'" :prefill="translationPrefill" @settings="activeSection = 'settings'" @prefill-applied="handleTranslationPrefillApplied" />
-      <PluginManagerView v-else-if="activeSection === 'plugins'" :plugins="pluginSummaries" :loading="pluginsLoading" :error="pluginsError" @retry="refreshPlugins" @changed="refreshPlugins" @open-plugin="openPluginPage" />
-      <DeclarativePluginView v-else-if="activeSection === 'plugin-page' && activePluginPage" :page="activePluginPage" :plugin-name="pluginSummaries.find(plugin => plugin.id === activePluginId)?.name ?? activePluginPage.entry.label" @leave="returnToPluginCenter" />
+      <PluginManagerView v-else-if="activeSection === 'plugins'" :entries="catalogEntries" :loading="pluginsLoading" :error="pluginsError" @retry="refreshPlugins" @changed="refreshPlugins" @open-plugin="openPluginPage" />
+      <DeclarativePluginView v-else-if="activeSection === 'plugin-page' && activePluginPage" :page="activePluginPage" :plugin-name="activePluginName" @leave="returnToPluginCenter" />
       <section v-else-if="activeSection === 'plugin-page'" class="content-page settings-load-state" role="status" aria-live="polite">
-        <div class="page-heading"><div><p class="eyebrow">插件页面</p><h1>{{ pluginSummaries.find(plugin => plugin.id === activePluginId)?.name ?? '插件' }}</h1><p class="page-description" :role="pluginPageError ? 'alert' : 'status'">{{ pluginPageError || (pluginPageLoading ? '正在载入声明式页面…' : '页面当前不可用。') }}</p></div></div>
-        <button v-if="pluginPageError && activePluginId" class="secondary-button" @click="openPluginPage(activePluginId)">重试</button><button class="secondary-button" @click="returnToPluginCenter">返回插件管理</button>
+        <div class="page-heading"><div><p class="eyebrow">插件页面</p><h1>{{ activePluginName }}</h1><p class="page-description" :role="pluginPageError ? 'alert' : 'status'">{{ pluginPageError || (pluginPageLoading ? '正在载入声明式页面…' : '页面当前不可用。') }}</p></div></div>
+        <button v-if="pluginPageError && activePluginRef" class="secondary-button" @click="openPluginPage(activePluginRef!)">重试</button><button class="secondary-button" @click="returnToPluginCenter">返回插件管理</button>
       </section>
     </main>
   </div>

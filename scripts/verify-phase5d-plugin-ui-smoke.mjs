@@ -16,6 +16,8 @@ import { packageBytes, manifest } from '../electron/plugins/fixtures.mjs'
 // isolated NativeHost pipe, a packaged Manager, and a pre-seeded test plugin.
 // The fixture seed is test-only; production dialogs, installer, real profile,
 // paid AI, startup registry and D:\webtools are never touched.
+const phase5f = process.argv[5] === '--phase5f'
+const reportFile = phase5f ? 'phase5f-plugin-catalog-smoke-report.json' : 'phase5d-plugin-ui-smoke-report.json'
 const repo = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const root = assertSafeManagerEvidenceRoot(resolve(process.argv[2] ?? ''))
 const nativeSource = resolve(process.argv[3] ?? '')
@@ -257,9 +259,25 @@ try {
   await until(() => evaluate('!!window.desktop?.plugins && !!document.querySelector(".favorites-page")'), Boolean, 'packaged Vue and preload')
   assert.equal(await evaluate('document.querySelector(".breadcrumb strong")?.textContent'), '网址')
   await evaluate('document.querySelector(".nav-apps-trigger")?.click()')
-  await evaluate('[...document.querySelectorAll(".nav-subitem:not(.plugin-nav-item)")].find(button => button.textContent.trim() === "插件")?.click()')
+  await evaluate('[...document.querySelectorAll(".nav-subitem:not(.plugin-nav-item)")].find(button => button.textContent.trim() === "插件管理")?.click()')
   await until(() => evaluate('!!document.querySelector(".plugin-manager-page")'), Boolean, 'plugin center route')
   await until(() => evaluate(`[...document.querySelectorAll('.plugin-list-row')].some(row => row.textContent.includes(${JSON.stringify(demo.name)}))`), Boolean, 'seeded plugin list')
+  if (phase5f) {
+    const catalog = await evaluate('window.desktop.pluginCatalog.list()')
+    assert.equal(catalog.ok, true)
+    assert.equal(catalog.data.entries.filter(entry => entry.kind === 'builtin').length, 1)
+    assert.equal(catalog.data.declarativeAvailability.status, 'available')
+    await until(() => evaluate('!!document.querySelector(".plugin-builtin-detail")'), Boolean, 'builtin detail selected by default')
+    assert.equal(await evaluate('document.querySelector(".plugin-builtin-detail h2")?.textContent'), '翻译')
+    assert.equal(await evaluate('[...document.querySelectorAll(".plugin-builtin-detail button")].some(button => /停用|卸载|替换/.test(button.textContent))'), false)
+    await evaluate('document.querySelector(".plugin-builtin-detail .primary-button")?.click()')
+    await until(() => evaluate('!!document.querySelector(".translate-page")'), Boolean, 'builtin opens original Translation page')
+    await evaluate(`(()=>{const input=document.querySelector('.translate-page textarea');window.__phase5fOriginalInput=input;input.value='retain current Translation input';input.dispatchEvent(new Event('input',{bubbles:true}));[...document.querySelectorAll('.plugin-nav-item')].find(button=>button.textContent.trim()==='翻译')?.click()})()`)
+    assert.equal(await evaluate("document.querySelector('.translate-page textarea') === window.__phase5fOriginalInput && window.__phase5fOriginalInput.value === 'retain current Translation input'"), true, 'repeat Translation nav keeps original mounted input')
+    await evaluate('[...document.querySelectorAll(".nav-subitem")].find(button => button.textContent.trim() === "插件管理")?.click()')
+    await until(() => evaluate('!!document.querySelector(".plugin-manager-page")'), Boolean, 'return to mixed center')
+  }
+  await evaluate(`[...document.querySelectorAll('.plugin-list-row')].find(row => row.textContent.includes(${JSON.stringify(demo.name)}))?.click()`)
   assert.equal(await evaluate('document.querySelector(".plugin-trust-note strong")?.textContent'), '本地插件，发布者未经验证')
   await evaluate('[...document.querySelectorAll(".plugin-actions button")].find(button => button.textContent.includes("打开插件页面"))?.click()')
   await until(() => evaluate('!!document.querySelector(".declarative-plugin-page")'), Boolean, 'declarative plugin page route')
@@ -280,6 +298,8 @@ try {
   await until(() => evaluate('!document.querySelector(".plugin-review-dialog")?.open'), Boolean, 'AI review cancellation')
   await evaluate('[...document.querySelectorAll(".declarative-plugin-page button")].find(button => button.textContent.includes("返回插件管理"))?.click()')
   await until(() => evaluate('!!document.querySelector(".plugin-manager-page")'), Boolean, 'return to plugin center')
+  await evaluate(`[...document.querySelectorAll('.plugin-list-row')].find(row => row.textContent.includes(${JSON.stringify(demo.name)}))?.click()`)
+  await until(() => evaluate('!!document.querySelector(".plugin-permissions")'), Boolean, 'select declarative details after center remount')
   await evaluate('[...document.querySelectorAll(".plugin-actions button")].find(button => button.textContent.includes("停用插件"))?.click()')
   await until(async () => { const result = await evaluate('window.desktop.plugins.list()'); return result.data?.find(plugin => plugin.id === pluginId)?.status === 'installed-disabled' }, Boolean, 'plugin disabled through UI')
   await until(() => evaluate('[...document.querySelectorAll(".plugin-nav-item")].every(button => !button.textContent.includes("Phase 5D Smoke Plugin"))'), Boolean, 'disabled plugin removed from Apps submenu')
@@ -306,15 +326,60 @@ try {
   record('packaged-plugin-center-declarative-config-enable-disable', afterNavigation)
   report.uiSmoke = 'Favorites default → Apps/Plugin Center → list/details/trust → declarative page/config write → complete AI preview/cancel → disable/re-enable → capability revoke removes page nav; same Manager main process'
 
+  if (phase5f) {
+    const prefillText = "  don't stop state-of-the-art  "
+    await control({ type: 'manager-translation', text: prefillText })
+    await until(() => evaluate('document.querySelector(".translate-page textarea")?.value'), value => value === prefillText, 'exact Native Translation handoff')
+    const processes = await os()
+    assert.ok(processes.some(process => sameProcess(process, mainIdentity, managerExe)), 'Native intent reuses Manager')
+    report.nativeTranslationPrefill = 'Exact whitespace/apostrophe/hyphen text from real Native Translation action applied in original TranslateView; unconfigured AI test profile, no provider request'
+    const beforeCloseCatalog = await evaluate('window.desktop.pluginCatalog.list()')
+    assert.equal(beforeCloseCatalog.data.entries[0].state.enabled, true)
+    record('unified-catalog-native-translation-prefill', processes)
+  }
   ws.close()
   cdp = null
   await os('close', mainIdentity)
   const closed = await until(os, processes => group(processes).length === 0 && processes.some(process => process.pid === native.pid), 'ordinary Manager close returns Electron to zero')
   record('manager-closed-electron-zero-native-remains', closed)
+  if (phase5f) {
+    const firstManager = mainIdentity
+    await control({ type: 'manager-open', section: 'favorites' })
+    const reopened = await until(os, processes => group(processes).some(process => process.role === 'main'), 'Manager reopens after ordinary close')
+    mainIdentity = group(reopened).find(process => process.role === 'main')
+    assert.equal(mainIdentity.parentPid, native.pid)
+    assert.notEqual(mainIdentity.created, firstManager.created)
+    await until(() => control({ type: 'manager-state' }), state => state.manager.rendererReady && state.manager.pendingRequestId === null, 'reopened Manager ready and page intent acknowledged')
+    const newPages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
+    const newPage = newPages.find(page => page.type === 'page')
+    assert.ok(newPage?.url.endsWith('/out/renderer/index.html'))
+    const newWs = new WebSocket(newPage.webSocketDebuggerUrl)
+    cdp = newWs
+    await once(newWs, 'open')
+    const restored = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Reopened CDP timeout')), 10_000)
+      newWs.addEventListener('message', event => {
+        const message = JSON.parse(event.data)
+        if (message.id !== 1) return
+        clearTimeout(timer)
+        message.error || message.result?.exceptionDetails ? reject(new Error(JSON.stringify(message))) : resolve(message.result.result.value)
+      })
+      newWs.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: "window.desktop.pluginCatalog.list().then(result=>({catalog:result,home:!!document.querySelector('.favorites-page')}))", returnByValue: true, awaitPromise: true } }))
+    })
+    assert.equal(restored.home, true)
+    assert.equal(restored.catalog.ok, true)
+    assert.equal(restored.catalog.data.entries[0].kind, 'builtin')
+    assert.equal(restored.catalog.data.entries.find(entry => entry.kind === 'declarative' && entry.id === pluginId)?.package.status, 'needs-permission')
+    report.restartPersistence = 'Builtin and retained third-party grants/status restored after new Manager process; Favorites remains home'
+    record('reopened-manager-catalog-persistence', await os())
+    newWs.close(); cdp = null
+    await os('close', mainIdentity)
+    record('reopened-manager-closed-electron-zero-native-remains', await until(os, processes => group(processes).length === 0 && processes.some(process => process.pid === native.pid), 'reopened Manager ordinary close'))
+  }
   await os('close-native', nativeIdentity)
   const exited = await until(os, processes => processes.length === 0, 'isolated Native exit')
   record('all-isolated-processes-exited', exited)
-  report.result = 'PACKAGED PHASE 5D PLUGIN UI / CONFIG / MANAGER LIFECYCLE PASS'
+  report.result = phase5f ? 'PACKAGED PHASE 5F UNIFIED CATALOG / NATIVE PREFILL / MANAGER LIFECYCLE PASS' : 'PACKAGED PHASE 5D PLUGIN UI / CONFIG / MANAGER LIFECYCLE PASS'
 } catch (error) {
   report.error = String(error)
   throw error
@@ -348,7 +413,7 @@ try {
       report.result = 'INCOMPLETE: IDENTITY PROBE CLEANUP FAILED'
       process.exitCode = 1
     }
-    await writeFile(join(root, 'phase5d-plugin-ui-smoke-report.json'), JSON.stringify(report, null, 2))
-    console.log(JSON.stringify({ result: report.result, evidence: join(root, 'phase5d-plugin-ui-smoke-report.json') }))
+    await writeFile(join(root, reportFile), JSON.stringify(report, null, 2))
+    console.log(JSON.stringify({ result: report.result, evidence: join(root, reportFile) }))
   }
 }

@@ -2,6 +2,7 @@ import type { AppSettings, BookmarkFolder, WebsiteCollection, WebsiteEntry, Webs
 import type { AIProviderId } from './ai-config.ts'
 import type { TranslationProviderInfo, TranslationRequest, TranslationResult } from './translation-contracts.ts'
 import type { PluginApi } from './plugin-contracts.ts'
+import type { PluginCatalogApi } from './plugin-catalog-contracts.ts'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -27,6 +28,7 @@ export interface AIProviderStatus {
 }
 
 export interface DesktopApi {
+  pluginCatalog: PluginCatalogApi
   plugins: PluginApi
   managerReady(): void
   onNativeManagerIntent(handler: (intent: NativeManagerIntent) => void): () => void
@@ -67,6 +69,9 @@ export type NativeManagerIntent =
   | { requestId: string; kind: 'translation-prefill'; text: string }
 
 export const IPC_CHANNELS = {
+  pluginCatalogList: 'plugin-catalog:list',
+  pluginCatalogOpen: 'plugin-catalog:open',
+  pluginCatalogSetEnabled: 'plugin-catalog:set-enabled',
   pluginList: 'plugins:list',
   pluginInstall: 'plugins:install-from-dialog',
   pluginSetEnabled: 'plugins:set-enabled',

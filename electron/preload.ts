@@ -2,6 +2,11 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS, type DesktopApi } from '../src/shared/ipc'
 
 const desktopApi: DesktopApi = {
+  pluginCatalog: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.pluginCatalogList),
+    open: (ref) => ipcRenderer.invoke(IPC_CHANNELS.pluginCatalogOpen, ref),
+    setEnabled: (ref, enabled) => ipcRenderer.invoke(IPC_CHANNELS.pluginCatalogSetEnabled, ref, enabled),
+  },
   plugins: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.pluginList),
     installFromUserDialog: () => ipcRenderer.invoke(IPC_CHANNELS.pluginInstall),

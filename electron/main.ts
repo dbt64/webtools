@@ -30,6 +30,8 @@ import { overlayNativeLauncherSettings, projectWebsitesForNative } from './servi
 import { resolveManagerTestProfile } from './services/manager-test-options'
 import { createElectronPluginHost } from './plugins/electron-plugin-host'
 import { registerPluginIpcHandlers } from './ipc/plugin-handlers'
+import { registerPluginCatalogIpcHandlers } from './ipc/plugin-catalog-handlers'
+import { PluginCatalog } from './plugins/plugin-catalog'
 import type { PluginManager } from './plugins/plugin-manager'
 
 const isDevelopment = !app.isPackaged
@@ -58,6 +60,8 @@ let nativeLauncherState: NativeLauncherState | null = null
 let managerRendererReady = false
 let quitting = false
 let pluginManager: PluginManager | null = null
+let pluginCatalog: PluginCatalog | null = null
+let disposeCatalogHandlers = () => {}
 let disposePluginHandlers: () => void = () => undefined
 
 interface PendingNativeIntent {
@@ -178,6 +182,7 @@ function createWindow(): void {
     managerRendererReady = false
     cancelActiveAIRequests()
     pluginManager?.beginSession()
+    pluginCatalog?.beginSession()
     void pluginManager?.restoreSession()
     if (nativeManaged && nativeManagerClient?.isConnected) {
       void nativeManagerClient.request('manager-renderer-not-ready', {}).catch((error) => console.error('[native-manager] renderer-not-ready failed', error))
@@ -187,6 +192,7 @@ function createWindow(): void {
     if (managerWindow !== window) return
     cancelActiveAIRequests()
     pluginManager?.close()
+    pluginCatalog?.close()
     managerWindow = null
     managerRendererReady = false
     if (pendingNativeIntent) {
@@ -280,6 +286,11 @@ app.whenReady().then(async () => {
   const pluginHost = createElectronPluginHost({ userData: app.getPath('userData'), hostVersion: app.getVersion(), sharedAI: sharedAIService, dataStore, getWindow: () => managerWindow })
   try { await pluginHost.manager.initialize(); pluginManager = pluginHost.manager }
   catch { pluginHost.manager.close() } // Fail closed without preventing existing Manager pages from opening.
+  pluginCatalog = new PluginCatalog(app.getVersion(), () => pluginManager)
+  disposeCatalogHandlers = registerPluginCatalogIpcHandlers(ipcMain, {
+    getCatalog: () => pluginCatalog,
+    isManagerMainFrame: context => isCurrentWindowMainFrame(context, managerWindow),
+  })
   disposePluginHandlers = registerPluginIpcHandlers(ipcMain, {
     getManager: () => pluginManager,
     isManagerMainFrame: context => isCurrentWindowMainFrame(context, managerWindow),
@@ -334,6 +345,8 @@ app.on('before-quit', () => {
   cancelActiveAIRequests()
   pluginManager?.close()
   disposePluginHandlers()
+  pluginCatalog?.close()
+  disposeCatalogHandlers()
   nativeManagerClient?.close()
   nativeManagerClient = null
 })
