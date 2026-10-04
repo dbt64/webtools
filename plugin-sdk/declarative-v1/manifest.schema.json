@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WebTools Declarative Plugin Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifestVersion", "id", "name", "description", "author", "version", "api", "type", "entry", "requestedCapabilities", "settings", "pages", "actions", "assets"],
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "id": { "type": "string", "minLength": 3, "maxLength": 128, "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "description": { "type": "string", "maxLength": 512 },
+    "author": {
+      "type": "object", "additionalProperties": false, "required": ["name"],
+      "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 128 }, "url": { "type": "string", "maxLength": 2048, "format": "uri", "pattern": "^https://" } }
+    },
+    "version": { "$ref": "#/$defs/semver" },
+    "api": {
+      "type": "object", "additionalProperties": false, "required": ["apiMajor", "minHostVersion"],
+      "properties": { "apiMajor": { "const": 1 }, "minHostVersion": { "$ref": "#/$defs/semver" } }
+    },
+    "type": { "const": "declarative-manager" },
+    "entry": {
+      "type": "object", "additionalProperties": false, "required": ["pageId", "label"],
+      "properties": { "pageId": { "$ref": "#/$defs/key" }, "label": { "type": "string", "minLength": 1, "maxLength": 80 }, "icon": { "type": "string", "maxLength": 240, "pattern": "^assets/(?:[^/]+/)*[^/]+\\.png$" } }
+    },
+    "requestedCapabilities": { "type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true, "items": { "enum": ["manager.page", "plugin.config.read", "plugin.config.write", "plugin.storage.read", "plugin.storage.write", "external.open", "clipboard.write", "sharedAI.complete"] } },
+    "settings": { "type": "array", "maxItems": 64, "items": { "oneOf": [{ "$ref": "#/$defs/textSetting" }, { "$ref": "#/$defs/enumSetting" }, { "$ref": "#/$defs/booleanSetting" }, { "$ref": "#/$defs/numberSetting" }] } },
+    "pages": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/page" } },
+    "actions": { "type": "array", "maxItems": 32, "items": { "oneOf": [{ "$ref": "#/$defs/keyAction" }, { "$ref": "#/$defs/urlAction" }, { "$ref": "#/$defs/simpleAction" }] } },
+    "assets": { "type": "array", "maxItems": 255, "items": { "$ref": "#/$defs/asset" } }
+  },
+  "$defs": {
+    "key": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_-]+$" },
+    "semver": { "type": "string", "maxLength": 128, "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$" },
+    "textSetting": { "type": "object", "additionalProperties": false, "required": ["key", "label", "type", "minLength", "maxLength", "default"], "properties": { "key": { "$ref": "#/$defs/key" }, "label": { "type": "string", "minLength": 1, "maxLength": 128 }, "type": { "const": "text" }, "minLength": { "type": "integer", "minimum": 0, "maximum": 50000 }, "maxLength": { "type": "integer", "minimum": 0, "maximum": 50000 }, "default": { "type": "string" } } },
+    "enumSetting": { "type": "object", "additionalProperties": false, "required": ["key", "label", "type", "options", "default"], "properties": { "key": { "$ref": "#/$defs/key" }, "label": { "type": "string", "minLength": 1, "maxLength": 128 }, "type": { "const": "enum" }, "options": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 128 } }, "default": { "type": "string" } } },
+    "booleanSetting": { "type": "object", "additionalProperties": false, "required": ["key", "label", "type", "default"], "properties": { "key": { "$ref": "#/$defs/key" }, "label": { "type": "string", "minLength": 1, "maxLength": 128 }, "type": { "const": "boolean" }, "default": { "type": "boolean" } } },
+    "numberSetting": { "type": "object", "additionalProperties": false, "required": ["key", "label", "type", "min", "max", "default"], "properties": { "key": { "$ref": "#/$defs/key" }, "label": { "type": "string", "minLength": 1, "maxLength": 128 }, "type": { "const": "number" }, "min": { "type": "number" }, "max": { "type": "number" }, "default": { "type": "number" } } },
+    "page": { "type": "object", "additionalProperties": false, "required": ["id", "title", "blocks"], "properties": { "id": { "$ref": "#/$defs/key" }, "title": { "type": "string", "minLength": 1, "maxLength": 128 }, "blocks": { "type": "array", "maxItems": 64, "items": { "oneOf": [{ "$ref": "#/$defs/textBlock" }, { "$ref": "#/$defs/settingBlock" }, { "$ref": "#/$defs/dividerBlock" }, { "$ref": "#/$defs/buttonBlock" }] } } } },
+    "textBlock": { "type": "object", "additionalProperties": false, "required": ["type", "text"], "properties": { "type": { "enum": ["heading", "paragraph"] }, "text": { "type": "string", "maxLength": 4096 } } },
+    "settingBlock": { "type": "object", "additionalProperties": false, "required": ["type", "settingKey"], "properties": { "type": { "enum": ["text-input", "select", "checkbox"] }, "settingKey": { "$ref": "#/$defs/key" } } },
+    "dividerBlock": { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "divider" } } },
+    "buttonBlock": { "type": "object", "additionalProperties": false, "required": ["type", "label", "actionId"], "properties": { "type": { "const": "button" }, "label": { "type": "string", "minLength": 1, "maxLength": 128 }, "actionId": { "$ref": "#/$defs/key" } } },
+    "keyAction": { "type": "object", "additionalProperties": false, "required": ["id", "type", "key"], "properties": { "id": { "$ref": "#/$defs/key" }, "type": { "enum": ["plugin.config.read", "plugin.config.write", "plugin.storage.read", "plugin.storage.write"] }, "key": { "$ref": "#/$defs/key" } } },
+    "urlAction": { "type": "object", "additionalProperties": false, "required": ["id", "type", "url"], "properties": { "id": { "$ref": "#/$defs/key" }, "type": { "const": "external.open" }, "url": { "type": "string", "minLength": 1, "maxLength": 2048, "format": "uri", "pattern": "^https://" } } },
+    "simpleAction": { "type": "object", "additionalProperties": false, "required": ["id", "type"], "properties": { "id": { "$ref": "#/$defs/key" }, "type": { "enum": ["clipboard.write", "sharedAI.complete"] } } },
+    "asset": { "type": "object", "additionalProperties": false, "required": ["path", "type"], "properties": { "path": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "^assets/(?:[^/]+/)*[^/]+\\.png$" }, "type": { "const": "image/png" } } }
+  }
+}

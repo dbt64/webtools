@@ -19,6 +19,10 @@ test('strict manifest rejects missing/unknown fields, identities, SemVer and clo
   const cases = [missing, manifest({ mystery: true }), manifest({ id: '../evil' }), manifest({ version: '01.0.0' }), manifest({ requestedCapabilities: ['filesystem.read'] }), manifest({ type: 'javascript' }), manifest({ author: { name: 'A', extra: true } }), manifest({ pages: [{ id: 'home', title: 'H', blocks: [{ type: 'html', text: '<script>' }] }] }), manifest({ actions: [{ id: 'a', type: 'eval' }] })]
   for (const value of cases) assert.throws(() => parse(value))
 })
+test('strict manifest rejects case-insensitive NFC-equivalent declared asset paths', () => {
+  const assets = ['assets/café.png', 'assets/cafe\u0301.png'].map(path => ({ path, type: 'image/png' }))
+  assert.throws(() => parse(manifest({ assets })), error => error.code === 'INVALID_MANIFEST')
+})
 test('rejects unresolved, duplicate or undeclared-capability references and resource bounds', () => {
   for (const value of [manifest({ entry: { pageId: 'absent', label: 'A' } }), manifest({ requestedCapabilities: [] }), manifest({ assets: [{ path: '../x.png', type: 'image/png' }] }), manifest({ entry: { pageId: 'home', label: 'A', icon: 'assets/missing.png' } }), manifest({ actions: [{ id: 'open', type: 'external.open', url: 'http://example.org' }] }), manifest({ requestedCapabilities: ['manager.page', 'external.open'], actions: [{ id: 'a', type: 'external.open', url: 'https://example.org' }, { id: 'a', type: 'external.open', url: 'https://example.org' }] }), manifest({ pages: Array.from({ length: 9 }, (_, i) => ({ id: `p${i}`, title: 'P', blocks: [] })) }), manifest({ name: 'x'.repeat(81) })]) assert.throws(() => parse(value))
 })
