@@ -18,11 +18,13 @@
   "dependencies": {
     "@lucide/vue": "^1.48.0",
     "pinyin-pro": "^3.29.4",
-    "vue": "^3.5.43"
+    "vue": "^3.5.43",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^6.0.2",
     "@types/node": "^24.5.2",
+    "@types/yauzl": "3.4.0",
+    "@vitejs/plugin-vue": "^6.0.2",
     "electron": "^44.4.5",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",

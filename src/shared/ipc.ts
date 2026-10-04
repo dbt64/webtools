@@ -1,6 +1,7 @@
 import type { AppSettings, BookmarkFolder, WebsiteCollection, WebsiteEntry, WebsiteOrderByCollection, WebsiteSaveInput, EverythingResult, ThemePreference } from './domain'
 import type { AIProviderId } from './ai-config.ts'
 import type { TranslationProviderInfo, TranslationRequest, TranslationResult } from './translation-contracts.ts'
+import type { PluginApi } from './plugin-contracts.ts'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -26,6 +27,7 @@ export interface AIProviderStatus {
 }
 
 export interface DesktopApi {
+  plugins: PluginApi
   managerReady(): void
   onNativeManagerIntent(handler: (intent: NativeManagerIntent) => void): () => void
   acknowledgeNativeManagerIntent(requestId: string): void
@@ -65,6 +67,13 @@ export type NativeManagerIntent =
   | { requestId: string; kind: 'translation-prefill'; text: string }
 
 export const IPC_CHANNELS = {
+  pluginList: 'plugins:list',
+  pluginInstall: 'plugins:install-from-dialog',
+  pluginSetEnabled: 'plugins:set-enabled',
+  pluginSetGrants: 'plugins:set-grants',
+  pluginGetPages: 'plugins:get-pages',
+  pluginInvoke: 'plugins:invoke',
+  pluginUninstall: 'plugins:uninstall',
   managerReady: 'window:manager-ready',
   nativeManagerIntent: 'native-manager:intent',
   acknowledgeNativeManagerIntent: 'native-manager:acknowledge-intent',

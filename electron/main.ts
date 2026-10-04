@@ -28,6 +28,9 @@ import { NativeManagerRequestError, type NativeManagerEnvelope } from './service
 import { parseNativeManagerCommand } from './services/native-manager-commands'
 import { overlayNativeLauncherSettings, projectWebsitesForNative } from './services/native-launcher-settings'
 import { resolveManagerTestProfile } from './services/manager-test-options'
+import { createElectronPluginHost } from './plugins/electron-plugin-host'
+import { registerPluginIpcHandlers } from './ipc/plugin-handlers'
+import type { PluginManager } from './plugins/plugin-manager'
 
 const isDevelopment = !app.isPackaged
 const nativeManaged = app.isPackaged || isNativeManagerOnly(process.argv, process.env)
@@ -54,6 +57,8 @@ let nativeManagerClient: NativeManagerClient | null = null
 let nativeLauncherState: NativeLauncherState | null = null
 let managerRendererReady = false
 let quitting = false
+let pluginManager: PluginManager | null = null
+let disposePluginHandlers: () => void = () => undefined
 
 interface PendingNativeIntent {
   requestId: string
@@ -172,6 +177,8 @@ function createWindow(): void {
     if (!isMainFrame || isInPlace) return
     managerRendererReady = false
     cancelActiveAIRequests()
+    pluginManager?.beginSession()
+    void pluginManager?.restoreSession()
     if (nativeManaged && nativeManagerClient?.isConnected) {
       void nativeManagerClient.request('manager-renderer-not-ready', {}).catch((error) => console.error('[native-manager] renderer-not-ready failed', error))
     }
@@ -179,6 +186,7 @@ function createWindow(): void {
   window.on('closed', () => {
     if (managerWindow !== window) return
     cancelActiveAIRequests()
+    pluginManager?.close()
     managerWindow = null
     managerRendererReady = false
     if (pendingNativeIntent) {
@@ -269,6 +277,14 @@ app.whenReady().then(async () => {
     openAICompatibleAdapter: new OpenAICompatibleAdapter(),
     anthropicAdapter: new AnthropicMessagesAdapter(),
   })
+  const pluginHost = createElectronPluginHost({ userData: app.getPath('userData'), hostVersion: app.getVersion(), sharedAI: sharedAIService, dataStore, getWindow: () => managerWindow })
+  try { await pluginHost.manager.initialize(); pluginManager = pluginHost.manager }
+  catch { pluginHost.manager.close() } // Fail closed without preventing existing Manager pages from opening.
+  disposePluginHandlers = registerPluginIpcHandlers(ipcMain, {
+    getManager: () => pluginManager,
+    isManagerMainFrame: context => isCurrentWindowMainFrame(context, managerWindow),
+    choosePackage: pluginHost.choosePackage,
+  })
   translationService = new TranslationService({
     dataStore,
     sharedAI: sharedAIService,
@@ -316,6 +332,8 @@ app.on('window-all-closed', () => app.quit())
 app.on('before-quit', () => {
   quitting = true
   cancelActiveAIRequests()
+  pluginManager?.close()
+  disposePluginHandlers()
   nativeManagerClient?.close()
   nativeManagerClient = null
 })

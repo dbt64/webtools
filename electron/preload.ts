@@ -2,6 +2,15 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS, type DesktopApi } from '../src/shared/ipc'
 
 const desktopApi: DesktopApi = {
+  plugins: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.pluginList),
+    installFromUserDialog: () => ipcRenderer.invoke(IPC_CHANNELS.pluginInstall),
+    setEnabled: (id, enabled) => ipcRenderer.invoke(IPC_CHANNELS.pluginSetEnabled, id, enabled),
+    setGrants: (id, grants) => ipcRenderer.invoke(IPC_CHANNELS.pluginSetGrants, id, grants),
+    getPages: (id) => ipcRenderer.invoke(IPC_CHANNELS.pluginGetPages, id),
+    invoke: (request) => ipcRenderer.invoke(IPC_CHANNELS.pluginInvoke, request),
+    uninstall: (id) => ipcRenderer.invoke(IPC_CHANNELS.pluginUninstall, id),
+  },
   managerReady: () => ipcRenderer.send(IPC_CHANNELS.managerReady),
   onNativeManagerIntent: (handler) => {
     const listener = (_event: Electron.IpcRendererEvent, value: unknown): void => {
