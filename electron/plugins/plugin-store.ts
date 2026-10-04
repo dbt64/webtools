@@ -1,4 +1,4 @@
-import type { PluginJson } from '../../src/shared/plugin-contracts.ts'
+import type { PluginJson, PluginSettingValue } from '../../src/shared/plugin-contracts.ts'
 import { LIMITS, opaqueKey, parseStrictJson, record, validPluginId, validateSettingValue, type ValidatedManifest } from './manifest.ts'
 import { ManagedFs, SerialQueue, isMissing } from './managed-fs.ts'
 import { fail } from './errors.ts'
@@ -39,11 +39,11 @@ export class PluginStore {
     }
     check(value); return result
   }
-  async readConfig(manifest: ValidatedManifest): Promise<Record<string, PluginJson>> {
+  async readConfig(manifest: ValidatedManifest): Promise<Record<string, PluginSettingValue>> {
     const saved = await this.readValues('config', manifest.id); const settings = manifest.settings
     try {
       record(saved, [], settings.map(setting => setting.key))
-      const result: Record<string, PluginJson> = {}
+      const result: Record<string, PluginSettingValue> = {}
       for (const setting of settings) result[setting.key] = validateSettingValue(setting, Object.hasOwn(saved, setting.key) ? saved[setting.key] : setting.default)
       return result
     } catch { fail('CONFIG_INCOMPATIBLE') }

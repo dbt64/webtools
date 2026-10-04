@@ -24,12 +24,13 @@ test('rejects unresolved, duplicate or undeclared-capability references and reso
 })
 test('setting schemas, defaults and matching UI/action targets are validated', () => {
   const settings = [{ key: 'text', label: 'Text', type: 'text', minLength: 0, maxLength: 20, default: '' }, { key: 'choice', label: 'Choice', type: 'enum', options: ['a', 'b'], default: 'a' }, { key: 'flag', label: 'Flag', type: 'boolean', default: true }, { key: 'amount', label: 'Amount', type: 'number', min: 0, max: 10, default: 3 }]
-  const value = manifest({ settings, requestedCapabilities: ['manager.page', 'plugin.config.read', 'plugin.config.write'], actions: [{ id: 'save', type: 'plugin.config.write', key: 'text' }], pages: [{ id: 'home', title: 'H', blocks: [{ type: 'text-input', settingKey: 'text' }, { type: 'select', settingKey: 'choice' }, { type: 'checkbox', settingKey: 'flag' }, { type: 'button', label: 'Save', actionId: 'save' }] }] })
+  const value = manifest({ settings, requestedCapabilities: ['manager.page', 'plugin.config.read', 'plugin.config.write'], actions: [{ id: 'save', type: 'plugin.config.write', key: 'text' }, { id: 'saveChoice', type: 'plugin.config.write', key: 'choice' }, { id: 'saveFlag', type: 'plugin.config.write', key: 'flag' }], pages: [{ id: 'home', title: 'H', blocks: [{ type: 'text-input', settingKey: 'text' }, { type: 'select', settingKey: 'choice' }, { type: 'checkbox', settingKey: 'flag' }, { type: 'button', label: 'Save', actionId: 'save' }] }] })
   assert.equal(parse(value).settings.length, 4)
   assert.throws(() => validateSettingValue(settings[0], 'x'.repeat(21)))
   assert.throws(() => validateSettingValue(settings[1], 'c'))
   assert.throws(() => validateSettingValue(settings[3], Infinity))
   assert.throws(() => parse({ ...value, settings: [{ ...settings[0], default: 7 }] }))
+  assert.throws(() => parse({ ...value, actions: [{ id: 'save', type: 'plugin.config.write', key: 'text' }] }))
 })
 test('SemVer precedence handles prerelease, numeric identifiers and build metadata', () => {
   assert.equal(compareVersions('1.0.0+one', '1.0.0+two'), 0)

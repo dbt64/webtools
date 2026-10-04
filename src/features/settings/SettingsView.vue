@@ -412,7 +412,7 @@ onBeforeUnmount(() => { isMounted = false })
         </button>
       </div>
       <p v-if="translationProviderInfo" class="settings-note">当前：{{ translationProviderInfo.providerName }}<template v-if="translationProviderInfo.model"> · {{ translationProviderInfo.model }}</template> · {{ translationProviderInfo.configured ? '已配置' : '尚未配置' }}</p>
-      <p class="settings-note">MyMemory 无需 Key；公共免费额度为每日 5,000 字符，单次最多 500 UTF-8 字节。点击翻译后，原文会发送给 MyMemory；需要更长文本时可配置 AI Key 并切换至 WebTools AI。</p>
+      <p class="settings-note">MyMemory 无需 Key；公共免费额度为每日 5,000 字符，单次最多 500 UTF-8 字节。选择 MyMemory 后，停止输入约 450 毫秒会自动发送原文；仅切换翻译引擎不会发送文本。需要更长文本时可配置 AI Key 并切换至 WebTools AI。</p>
       <p class="settings-note">Google Translate 网页仍是单独的手动打开入口，不会作为 API 自动回退。</p>
       <p class="settings-note">当前默认翻译引擎：{{ translationEngineLabel }}</p>
     </div>

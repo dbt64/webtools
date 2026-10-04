@@ -1,8 +1,8 @@
-import type { PluginActionResult, PluginJson, PluginPageDTO } from '../../src/shared/plugin-contracts.ts'
+import type { PluginActionResult, PluginJson, PluginPageDTO, PluginSettingValue } from '../../src/shared/plugin-contracts.ts'
 import type { AIMessage } from '../services/openai-compatible-adapter.ts'
 import type { ValidatedManifest } from './manifest.ts'
 import { PluginError, fail } from './errors.ts'
-import { PermissionBroker, validateActionInput } from './permission-broker.ts'
+import { PermissionBroker, providerIdentity, validateActionInput, type PluginProviderInfo } from './permission-broker.ts'
 import { PluginStore } from './plugin-store.ts'
 
 /** Closed runtime: no module path, source string, process, worker or loader. */
@@ -15,22 +15,23 @@ export class DeclarativeRuntime implements PluginRuntime {
   readonly kind = 'declarative-manager' as const
   readonly manifest: ValidatedManifest
   readonly hash: string
-  private iconDataUrl?: string
+  private readonly iconDataUrlValue?: string
   private readonly operations = new Set<AbortController>()
   private stopped = false
   constructor(manifest: ValidatedManifest, hash: string, assets: Map<string, Buffer>) {
     this.manifest = manifest; this.hash = hash
     const icon = manifest.entry.icon ? assets.get(manifest.entry.icon) : undefined
-    this.iconDataUrl = icon ? `data:image/png;base64,${icon.toString('base64')}` : undefined
+    this.iconDataUrlValue = icon ? `data:image/png;base64,${icon.toString('base64')}` : undefined
   }
   get invoking(): boolean { return this.operations.size > 0 }
-  stop(): void { this.stopped = true; for (const op of this.operations) op.abort(); this.operations.clear(); this.iconDataUrl = undefined }
-  pages(): PluginPageDTO {
+  get iconDataUrl(): string | undefined { return this.stopped ? undefined : this.iconDataUrlValue }
+  stop(): void { this.stopped = true; for (const op of this.operations) op.abort(); this.operations.clear() }
+  pages(config?: Record<string, PluginSettingValue>): PluginPageDTO {
     if (this.stopped) fail('PLUGIN_DISABLED')
     const m = this.manifest
-    return structuredClone({ pluginId: m.id, version: m.version, hash: this.hash, entry: { pageId: m.entry.pageId, label: m.entry.label, ...(this.iconDataUrl ? { iconDataUrl: this.iconDataUrl } : {}) }, pages: m.pages, settings: m.settings, actions: m.actions.map(action => ({ id: action.id, type: action.type })) })
+    return structuredClone({ pluginId: m.id, version: m.version, hash: this.hash, entry: { pageId: m.entry.pageId, label: m.entry.label, ...(this.iconDataUrlValue ? { iconDataUrl: this.iconDataUrlValue } : {}) }, pages: m.pages, settings: m.settings, ...(config ? { config } : {}), actions: m.actions.map(action => ({ id: action.id, type: action.type, ...('key' in action ? { key: action.key } : {}) })) })
   }
-  async invoke(actionId: string, input: unknown, broker: PermissionBroker, store: PluginStore, isCurrent: () => boolean): Promise<PluginActionResult> {
+  async invoke(actionId: string, input: unknown, broker: PermissionBroker, store: PluginStore, isCurrent: () => boolean, reviewedProvider?: PluginProviderInfo): Promise<PluginActionResult> {
     const action = this.manifest.actions.find(item => item.id === actionId); if (!action) fail('ACTION_NOT_DECLARED')
     const parsed = validateActionInput(action, input)
     const controller = new AbortController(); const signal = controller.signal
@@ -64,8 +65,9 @@ export class DeclarativeRuntime implements PluginRuntime {
           reservation = broker.reserveAI(this.manifest.id)
           const info = await broker.host.ai.getDefaultProviderInfo()
           const messages = parsed as AIMessage[]
+          if (reviewedProvider && providerIdentity(info) !== providerIdentity(reviewedProvider)) fail('USER_CONFIRMATION_REQUIRED')
           const preview = `将以下内容发送至当前共享 AI 提供方 ${info.providerName} (${info.model})。\n${messages.map(m => `[${m.role}]\n${m.content}`).join('\n\n')}`
-          if (!await consent('ai', preview)) return { status: 'cancelled' }
+          if (!reviewedProvider && !await consent('ai', preview)) return { status: 'cancelled' }
           const currentProvider = await broker.host.ai.getDefaultProviderInfo()
           if (currentProvider.providerName !== info.providerName || currentProvider.model !== info.model || currentProvider.identity !== info.identity) fail('USER_CONFIRMATION_REQUIRED')
           if (!valid()) return { status: 'cancelled' }

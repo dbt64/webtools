@@ -156,7 +156,7 @@ export function parseManifest(bytes: Uint8Array, hostVersion: string): Validated
           case 'button': { const block = record(value, ['type', 'label', 'actionId']); boundedString(block.label, 128); if (!actions.some(action => action.id === block.actionId)) fail('INVALID_MANIFEST'); break }
           case 'text-input': case 'select': case 'checkbox': {
             const block = record(value, ['type', 'settingKey']); const setting = settings.find(setting => setting.key === block.settingKey)
-            if (!caps.includes('plugin.config.read') || !caps.includes('plugin.config.write') || !setting || setting.type !== ({ 'text-input': 'text', select: 'enum', checkbox: 'boolean' }[type])) fail('INVALID_MANIFEST')
+            if (!caps.includes('plugin.config.read') || !caps.includes('plugin.config.write') || !setting || setting.type !== ({ 'text-input': 'text', select: 'enum', checkbox: 'boolean' }[type]) || !actions.some(action => action.type === 'plugin.config.write' && action.key === setting.key)) fail('INVALID_MANIFEST')
             break
           }
           default: fail('INVALID_MANIFEST')

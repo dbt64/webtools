@@ -44,6 +44,13 @@ export function createPluginHandlers(deps: PluginHandlerDependencies): Record<st
       if (typeof request.hash !== 'string' || !/^[a-f0-9]{64}$/.test(request.hash)) fail('INVALID_INPUT')
       return manager.invoke(request as unknown as PluginInvokeRequest, session)
     }),
+    [IPC_CHANNELS.pluginAIReviewPrepare]: guard(1, async (manager, session, args) => {
+      const request = record(args[0], ['pluginId', 'version', 'hash', 'actionId', 'input']); id(request.pluginId); versionParts(request.version); opaqueKey(request.actionId)
+      if (typeof request.hash !== 'string' || !/^[a-f0-9]{64}$/.test(request.hash)) fail('INVALID_INPUT')
+      return manager.prepareAIReview(request as unknown as PluginInvokeRequest, session)
+    }),
+    [IPC_CHANNELS.pluginAIReviewConfirm]: guard(1, async (manager, session, args) => manager.confirmAIReview(args[0], session)),
+    [IPC_CHANNELS.pluginAIReviewCancel]: guard(1, async (manager, session, args) => manager.cancelAIReview(args[0], session)),
     [IPC_CHANNELS.pluginUninstall]: guard(1, async (manager, session, args) => manager.uninstall(id(args[0]), session)),
   }
 }

@@ -5,11 +5,12 @@ import type { DataStore } from '../services/data-store.ts'
 import type { SharedAIService } from '../services/shared-ai-service.ts'
 import { PluginManager } from './plugin-manager.ts'
 import type { PluginConsent } from './permission-broker.ts'
+import { formatPluginConsentDetail } from './plugin-consent-view.ts'
 import { LIMITS } from './manifest.ts'
 import { fail } from './errors.ts'
 
 const consentText: Record<PluginConsent['kind'], string> = {
-  install: '安装本地声明式插件？发布者未经验证。新插件默认禁用，不自动授予权限。',
+  install: '导入本地声明式插件？发布者未经验证。导入不会自动授予权限。',
   replace: '同一插件版本的内容不同，确认替换当前版本？原内容保留用于回滚。',
   downgrade: '确认降级插件？不执行插件迁移代码；已有私有数据保持不变。',
   grant: '授予以下宿主能力？插件仅能使用列出的声明式操作。',
@@ -25,7 +26,7 @@ export function createElectronPluginHost(deps: { userData: string; hostVersion: 
     // stay unavailable until 5D can present the full request in a dedicated view.
     if ((request.preview?.length ?? 0) > 24_000) fail('USER_CONFIRMATION_REQUIRED')
     const deleting = request.kind === 'delete-data'
-    const detail = `${request.name} (${request.pluginId}) ${request.version}\n${request.capabilities?.join('\n') ?? ''}\n${request.preview ?? ''}`
+    const detail = formatPluginConsentDetail(request)
     const result = await dialog.showMessageBox(w, { type: 'question', title: 'WebTools 插件', message: consentText[request.kind], detail, buttons: deleting ? ['保留数据', '删除插件私有数据'] : ['取消', '确认'], defaultId: 0, cancelId: 0, noLink: true })
     return !w.isDestroyed() && deps.getWindow() === w && result.response === 1
   }

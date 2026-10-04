@@ -1,21 +1,23 @@
-import type { PluginAction, PluginCapability, PluginJson } from '../../src/shared/plugin-contracts.ts'
+import type { PluginAction, PluginCapability, PluginJson, PluginVersionChange } from '../../src/shared/plugin-contracts.ts'
 import type { AIMessage } from '../services/openai-compatible-adapter.ts'
 import { boundedString, record } from './manifest.ts'
 import { fail } from './errors.ts'
 
 export interface PluginConsent {
   kind: 'install' | 'replace' | 'downgrade' | 'grant' | 'uninstall' | 'delete-data' | 'external' | 'clipboard' | 'ai'
-  pluginId: string; name: string; version: string; capabilities?: PluginCapability[]; preview?: string
+  pluginId: string; name: string; version: string; capabilities?: PluginCapability[]; preview?: string; versionChange?: PluginVersionChange
 }
+export interface PluginProviderInfo { providerName: string; model: string; identity?: string }
 export interface PluginHostEffects {
   confirm(request: PluginConsent): Promise<boolean>
   externalOpen(url: string): Promise<void>
   clipboardWrite(text: string): void
   ai: {
     complete(messages: AIMessage[], signal: AbortSignal, maxOutputTokens: number): Promise<{ text: string }>
-    getDefaultProviderInfo(): Promise<{ providerName: string; model: string; identity?: string }>
+    getDefaultProviderInfo(): Promise<PluginProviderInfo>
   }
 }
+export function providerIdentity(info: PluginProviderInfo): string { return JSON.stringify([info.providerName, info.model, info.identity ?? null]) }
 export function validateActionInput(action: PluginAction, input: unknown): unknown {
   switch (action.type) {
     case 'plugin.config.read': case 'plugin.storage.read': case 'external.open': if (input !== null) fail('INVALID_INPUT'); return null

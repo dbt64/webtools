@@ -35,6 +35,23 @@ test('conflicting hash and downgrade require separate consent; upgrade retains r
   assert.equal((await env.manager.install(packageBytes(allManifest()), env.session)).outcome, 'cancelled')
   assert.equal((await env.manager.list())[0].version, '2.0.0')
 })
+test('version consent and install result report current/incoming version and capability changes', async t => {
+  const env = await setup(t)
+  const original = manifest({ requestedCapabilities: ['manager.page', 'clipboard.write'], actions: [{ id: 'copy', type: 'clipboard.write' }] })
+  await env.manager.install(packageBytes(original), env.session)
+  await env.manager.setEnabled(original.id, true, env.session)
+
+  const incoming = manifest({ version: '2.0.0', requestedCapabilities: ['manager.page', 'sharedAI.complete'], actions: [{ id: 'ai', type: 'sharedAI.complete' }] })
+  const result = await env.manager.install(packageBytes(incoming), env.session)
+  const consent = env.prompts.filter(prompt => prompt.kind === 'install').at(-1)
+
+  assert.deepEqual(consent.versionChange, {
+    kind: 'upgrade', currentVersion: '1.0.0', incomingVersion: '2.0.0',
+    addedCapabilities: ['sharedAI.complete'], removedCapabilities: ['clipboard.write'], reauthorizationRequired: true,
+  })
+  assert.equal(result.change.kind, 'upgrade')
+  assert.equal(result.plugin.status, 'needs-permission')
+})
 test('failed registry commit rolls back activation and removes new staged/package bytes', async t => {
   const env = await setup(t); const p = await enabled(env)
   const save = env.manager.registry.save.bind(env.manager.registry); env.manager.registry.save = async () => { throw new Error('simulated write failure') }
@@ -174,6 +191,94 @@ test('AI aborts after 60 seconds and rejects provider changes after preview', as
   const outcome = assert.rejects(call, error => error.code === 'AI_TIMEOUT')
   for (let i = 0; i < 20 && !invoked; i++) await Promise.resolve()
   assert.equal(invoked, true); t.mock.timers.tick(60_000); await outcome; t.mock.timers.reset()
+})
+
+test('declarative pages project safe config values and declaration-bound action keys', async t => {
+  const env = await setup(t); const p = await enabled(env)
+  await env.manager.invoke(request(p, 'set', { value: 'saved value' }), env.session)
+  const page = await env.manager.getPages(p.id, env.session)
+  assert.deepEqual(page.config, { label: 'saved value' })
+  assert.ok(page.actions.some(action => action.id === 'set' && action.key === 'label'))
+  assert.equal(JSON.stringify(page).includes(env.root), false)
+})
+
+test('AI review returns the complete exact request and only confirms once through Main', async t => {
+  let sent; let provider = { providerName: 'Mock Provider', model: 'mock-model', identity: 'selected-provider-and-model' }
+  const env = await setup(t, { ai: { getDefaultProviderInfo: async () => provider, complete: async messages => { sent = messages; return { text: 'reviewed answer', apiKey: 'must-not-leak' } } } })
+  const p = await enabled(env); const input = { messages: [{ role: 'user', content: `exact preview ${'x'.repeat(30_000)}` }] }
+  const review = await env.manager.prepareAIReview(request(p, 'ai', input), env.session)
+  assert.equal(review.messages[0].content, input.messages[0].content)
+  assert.equal(review.providerName, 'Mock Provider'); assert.equal(review.model, 'mock-model')
+  assert.equal(review.characterCount, input.messages[0].content.length)
+  assert.equal(JSON.stringify(review).includes('selected-provider-and-model'), false)
+  assert.equal(JSON.stringify(review).includes('must-not-leak'), false)
+  assert.deepEqual(sent, undefined)
+  assert.deepEqual(await env.manager.confirmAIReview(review.reviewId, env.session), { status: 'success', value: { text: 'reviewed answer' } })
+  assert.deepEqual(sent, input.messages)
+  await assert.rejects(() => env.manager.confirmAIReview(review.reviewId, env.session), error => error.code === 'USER_CONFIRMATION_REQUIRED')
+})
+
+test('AI review expires, cancels, and fails closed when provider or plugin identity changes', async t => {
+  let now = 1_000; let calls = 0; let provider = { providerName: 'Mock', model: 'one', identity: 'one' }
+  const env = await setup(t, { now: () => now, ai: { getDefaultProviderInfo: async () => provider, complete: async () => { calls++; return { text: 'sent' } } } })
+  const p = await enabled(env); const r = request(p, 'ai', { messages: [{ role: 'user', content: 'review me' }] })
+  const expired = await env.manager.prepareAIReview(r, env.session); now += 120_001
+  await assert.rejects(() => env.manager.confirmAIReview(expired.reviewId, env.session), error => error.code === 'USER_CONFIRMATION_REQUIRED')
+  assert.equal(calls, 0)
+  now = 2_000; const cancelled = await env.manager.prepareAIReview(r, env.session)
+  assert.deepEqual(await env.manager.cancelAIReview(cancelled.reviewId, env.session), { cancelled: true })
+  await assert.rejects(() => env.manager.confirmAIReview(cancelled.reviewId, env.session), error => error.code === 'USER_CONFIRMATION_REQUIRED')
+  const changedProvider = await env.manager.prepareAIReview(r, env.session); provider = { providerName: 'Mock', model: 'two', identity: 'two' }
+  await assert.rejects(() => env.manager.confirmAIReview(changedProvider.reviewId, env.session), error => error.code === 'USER_CONFIRMATION_REQUIRED')
+  assert.equal(calls, 0)
+  provider = { providerName: 'Mock', model: 'one', identity: 'one' }; const disabled = await env.manager.prepareAIReview(r, env.session)
+  await env.manager.setEnabled(p.id, false, env.session)
+  await assert.rejects(() => env.manager.confirmAIReview(disabled.reviewId, env.session), error => error.code === 'USER_CONFIRMATION_REQUIRED')
+  assert.equal(calls, 0)
+})
+test('expired AI review drops its pending request without waiting for confirmation', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.after(() => t.mock.timers.reset())
+  let now = 1_000
+  const env = await setup(t, { now: () => now })
+  const p = await enabled(env)
+  const review = await env.manager.prepareAIReview(request(p, 'ai', { messages: [{ role: 'user', content: 'large request to release' }] }), env.session)
+  assert.equal(env.manager.pendingAIReviews.size, 1)
+
+  now += 120_001
+  t.mock.timers.tick(120_000)
+
+  assert.equal(env.manager.pendingAIReviews.size, 0)
+  env.manager.close()
+})
+test('AI review generations are pruned after cancellation and cancelled imports', async t => {
+  const env = await setup(t)
+  const p = await enabled(env)
+  const review = await env.manager.prepareAIReview(request(p, 'ai', { messages: [{ role: 'user', content: 'cancel me' }] }), env.session)
+  assert.equal(env.manager.reviewGenerations.size, 1)
+  await env.manager.cancelAIReview(review.reviewId, env.session)
+  assert.equal(env.manager.reviewGenerations.size, 0)
+
+  env.deps.confirm = async () => false
+  for (let i = 0; i < 30; i++) {
+    const candidate = manifest({ id: `org.example.cancel${i}` })
+    assert.equal((await env.manager.install(packageBytes(candidate), env.session)).outcome, 'cancelled')
+  }
+  assert.equal(env.manager.reviewGenerations.size, 0)
+  env.manager.close()
+})
+test('AI review generation remains during preparation and is pruned after invalidation', async t => {
+  let releaseProvider
+  const env = await setup(t, { ai: { getDefaultProviderInfo: () => new Promise(resolve => { releaseProvider = resolve }), complete: async () => ({ text: 'unused' }) } })
+  const p = await enabled(env)
+  const pending = env.manager.prepareAIReview(request(p, 'ai', { messages: [{ role: 'user', content: 'stale review' }] }), env.session)
+  await until(() => releaseProvider)
+  await env.manager.setEnabled(p.id, false, env.session)
+  assert.equal(env.manager.reviewGenerations.size, 1)
+  releaseProvider({ providerName: 'Mock', model: 'model' })
+  await assert.rejects(pending, error => error.code === 'USER_CONFIRMATION_REQUIRED')
+  assert.equal(env.manager.reviewGenerations.size, 0)
+  env.manager.close()
 })
 test('AI timeout measures provider work, and cancelled lookup never opens a late preview', async t => {
   const env = await setup(t); const p = await enabled(env)

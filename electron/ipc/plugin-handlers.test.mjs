@@ -4,7 +4,7 @@ import { createPluginHandlers } from './plugin-handlers.ts'
 import { IPC_CHANNELS } from '../../src/shared/ipc.ts'
 function setup() {
   const calls = []; let current = true; let session = 'session'
-  const manager = { get session() { return session }, isSession: value => value === session, list: async () => [], install: async () => ({ outcome: 'installed' }), setEnabled: async (...args) => { calls.push(args); return {} }, setGrants: async () => ({}), getPages: async () => ({}), invoke: async () => ({ status: 'success', value: null }), uninstall: async () => ({ removed: true }) }
+  const manager = { get session() { return session }, isSession: value => value === session, list: async () => [], install: async () => ({ outcome: 'installed' }), setEnabled: async (...args) => { calls.push(args); return {} }, setGrants: async () => ({}), getPages: async () => ({}), invoke: async () => ({ status: 'success', value: null }), prepareAIReview: async request => ({ reviewId: 'review', request }), confirmAIReview: async reviewId => ({ status: 'success', value: reviewId }), cancelAIReview: async reviewId => ({ cancelled: reviewId === 'review' }), uninstall: async () => ({ removed: true }) }
   const deps = { getManager: () => manager, isManagerMainFrame: () => current, choosePackage: async () => null }
   return { handlers: createPluginHandlers(deps), deps, calls, setCurrent: value => { current = value }, changeSession: () => { session = 'new' } }
 }
@@ -26,4 +26,13 @@ test('picker cancellation is safe and stale sender/session cannot import selecte
 test('safe errors and unavailable core never leak raw paths or credentials', async () => {
   const env = setup(); env.deps.getManager = () => null
   const result = await env.handlers[IPC_CHANNELS.pluginList]({}); assert.equal(result.ok, false); assert.equal(JSON.stringify(result).includes('C:'), false)
+})
+test('AI review IPC is narrow, sender-checked and rejects caller-supplied confirmation fields', async () => {
+  const env = setup(); const request = { pluginId: 'org.example.demo', version: '1.0.0', hash: 'a'.repeat(64), actionId: 'ai', input: { messages: [{ role: 'user', content: 'hello' }] } }
+  assert.equal((await env.handlers[IPC_CHANNELS.pluginAIReviewPrepare]({}, request)).ok, true)
+  assert.equal((await env.handlers[IPC_CHANNELS.pluginAIReviewPrepare]({}, { ...request, confirmed: true })).ok, false)
+  assert.equal((await env.handlers[IPC_CHANNELS.pluginAIReviewConfirm]({}, 'review')).ok, true)
+  assert.deepEqual(await env.handlers[IPC_CHANNELS.pluginAIReviewCancel]({}, 'review'), { ok: true, data: { cancelled: true } })
+  env.setCurrent(false)
+  assert.equal((await env.handlers[IPC_CHANNELS.pluginAIReviewConfirm]({}, 'review')).error.code, 'PERMISSION_DENIED')
 })
