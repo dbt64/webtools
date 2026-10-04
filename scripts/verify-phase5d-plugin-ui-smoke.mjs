@@ -3,7 +3,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process'
 import { once } from 'node:events'
 import { createConnection, createServer } from 'node:net'
 import { createInterface } from 'node:readline'
-import { mkdir, readFile, writeFile, cp } from 'node:fs/promises'
+import { mkdir, readFile, readdir, writeFile, cp } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,7 +17,8 @@ import { packageBytes, manifest } from '../electron/plugins/fixtures.mjs'
 // The fixture seed is test-only; production dialogs, installer, real profile,
 // paid AI, startup registry and D:\webtools are never touched.
 const phase5f = process.argv[5] === '--phase5f'
-const reportFile = phase5f ? 'phase5f-plugin-catalog-smoke-report.json' : 'phase5d-plugin-ui-smoke-report.json'
+const phase5g = process.argv[5] === '--phase5g'
+const reportFile = phase5g ? 'phase5g-translation-plugin-smoke-report.json' : phase5f ? 'phase5f-plugin-catalog-smoke-report.json' : 'phase5d-plugin-ui-smoke-report.json'
 const repo = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const root = assertSafeManagerEvidenceRoot(resolve(process.argv[2] ?? ''))
 const nativeSource = resolve(process.argv[3] ?? '')
@@ -65,6 +66,29 @@ const report = {
   result: 'INCOMPLETE',
 }
 async function hash(path) { return createHash('sha256').update(await readFile(path)).digest('hex') }
+async function snapshotFiles(paths) {
+  const entries = await Promise.all(paths.map(async path => {
+    try { return [path, await hash(join(profile, path))] }
+    catch (error) { if (error?.code === 'ENOENT') return [path, null]; throw error }
+  }))
+  return Object.fromEntries(entries)
+}
+async function snapshotTree(directory) {
+  const files = {}
+  async function visit(current) {
+    let entries
+    try { entries = await readdir(current, { withFileTypes: true }) }
+    catch (error) { if (error?.code === 'ENOENT') return; throw error }
+    for (const entry of entries) {
+      const path = join(current, entry.name)
+      if (entry.isSymbolicLink()) throw new Error(`Isolated data snapshot refuses a reparse entry: ${path}`)
+      if (entry.isDirectory()) await visit(path)
+      else if (entry.isFile()) files[path.slice(directory.length + 1)] = await hash(path)
+    }
+  }
+  await visit(directory)
+  return files
+}
 report.artifacts = {
   nativeExe: await hash(nativeExe),
   nativeDll: await hash(join(nativeRoot, 'WebTools.NativeHost.dll')),
@@ -277,6 +301,117 @@ try {
     await evaluate('[...document.querySelectorAll(".nav-subitem")].find(button => button.textContent.trim() === "插件管理")?.click()')
     await until(() => evaluate('!!document.querySelector(".plugin-manager-page")'), Boolean, 'return to mixed center')
   }
+  if (phase5g) {
+    const catalog = await evaluate('window.desktop.pluginCatalog.list()')
+    assert.equal(catalog.ok, true)
+    assert.equal(catalog.data.entries.filter(entry => entry.kind === 'builtin').length, 1)
+    assert.equal(catalog.data.entries.filter(entry => entry.kind === 'declarative' && entry.id === pluginId).length, 1)
+    assert.equal(catalog.data.declarativeAvailability.status, 'available')
+    assert.equal(catalog.data.entries.find(entry => entry.kind === 'builtin').state.enabled, true, 'first-run built-in Translation defaults to enabled')
+    const preservedFiles = ['nook-data.json', 'secrets.json', 'launcher-state.json', 'launcher-state.json.bak', 'catalog.json', 'catalog.json.bak', 'plugins/registry.json', `plugins/config/${pluginId}.json`]
+    const persistentStateBeforeToggle = {
+      files: await snapshotFiles(preservedFiles),
+      declarativeData: await snapshotTree(join(profile, 'plugins', 'data', pluginId)),
+    }
+
+    await evaluate(`[...document.querySelectorAll('.plugin-list-row')].find(row => row.textContent.includes('翻译'))?.click()`)
+    await until(() => evaluate('!!document.querySelector(".plugin-builtin-detail")'), Boolean, 'built-in Translation detail')
+    await evaluate('[...document.querySelectorAll(".plugin-builtin-detail .plugin-actions button")].find(button => button.textContent.includes("停用翻译"))?.click()')
+    await until(async () => {
+      const result = await evaluate('window.desktop.pluginCatalog.list()')
+      return result.data?.entries.find(entry => entry.kind === 'builtin')?.state.status === 'disabled'
+    }, Boolean, 'built-in Translation disable persisted')
+    const storedDisabled = JSON.parse(await readFile(join(profile, 'builtin-plugins', 'state.json'), 'utf8'))
+    assert.equal(storedDisabled.plugins['webtools.translation']?.enabled, false)
+    const declarativeWhileDisabled = (await evaluate('window.desktop.plugins.list()')).data?.find(plugin => plugin.id === pluginId)
+    assert.equal(declarativeWhileDisabled?.status, 'active', 'declared plugin stays active when built-in Translation is disabled')
+    assert.equal(await evaluate('[...document.querySelectorAll(".plugin-nav-item")].some(button => button.textContent.trim() === "翻译")'), false, 'disabled built-in page is removed from navigation')
+    await evaluate('document.querySelector(".sidebar-bottom .nav-item")?.click()')
+    await until(() => evaluate('!!document.querySelector(".settings-page")'), Boolean, 'Settings remains accessible while Translation is disabled')
+    const providerSettings = await evaluate(`(async()=>{
+      const settings=await window.desktop.getSettings()
+      const providers=await window.desktop.getAIProviderDescriptors()
+      const status=providers.ok ? await window.desktop.getAIProviderStatus(providers.data[0].id) : providers
+      return {engine:settings.translation.engine,providers,status}
+    })()`)
+    assert.ok(['mymemory', 'ai', 'qwen-mt'].includes(providerSettings.engine))
+    assert.equal(providerSettings.providers.ok, true, 'AI provider settings remain readable while Translation is disabled')
+    assert.equal(providerSettings.status.ok, true)
+    await evaluate('[...document.querySelectorAll(".nav-subitem")].find(button => button.textContent.trim() === "插件管理")?.click()')
+    await until(() => evaluate('!!document.querySelector(".plugin-manager-page")'), Boolean, 'return to Plugin Center after disabled-state Settings check')
+
+    const disabledIpc = await evaluate(`(async()=>({
+      providerInfo: await window.desktop.getTranslationProviderInfo(),
+      translation: await window.desktop.translate({requestId:'00000000-0000-4000-8000-000000000001',text:'phase5g disabled check',sourceLanguage:'auto',targetLanguage:'zh-CN'}),
+      google: await window.desktop.openGoogleTranslate({text:'phase5g disabled check',targetLanguage:'zh-CN'})
+    }))()`)
+    assert.equal(disabledIpc.providerInfo.ok, true, 'provider information remains available while Translation is disabled')
+    assert.equal(disabledIpc.translation.ok, false)
+    assert.equal(disabledIpc.translation.error.code, 'TRANSLATION_DISABLED')
+    assert.equal(disabledIpc.google.ok, false)
+    assert.equal(disabledIpc.google.error.code, 'TRANSLATION_DISABLED', 'disabled Google handoff is blocked before external open')
+
+    const pluginSummary = declarativeWhileDisabled
+    const aiReview = await evaluate(`window.desktop.plugins.prepareAIReview({pluginId:${JSON.stringify(pluginId)},version:${JSON.stringify(pluginSummary.version)},hash:${JSON.stringify(pluginSummary.hash)},actionId:'review-ai',input:{messages:[{role:'user',content:'phase5g isolated AI review'}]}})`)
+    assert.equal(aiReview.ok, true, 'declarative Shared AI review preparation stays independent from built-in Translation')
+    assert.equal((await evaluate(`window.desktop.plugins.cancelAIReview(${JSON.stringify(aiReview.data.reviewId)})`)).ok, true)
+    record('builtin-translation-disabled-with-declarative-ai-available', await os())
+
+    const prefillText = "  café don't stop state-of-the-art  "
+    await control({ type: 'manager-translation', text: prefillText })
+    await until(() => evaluate('!!document.querySelector(".builtin-translation-gate")'), Boolean, 'Native Translation gate presented while disabled')
+    assert.equal(await evaluate(`document.body.innerText.includes(${JSON.stringify(prefillText)})`), false, 'blocked renderer projection never exposes exact prefill text')
+    assert.equal(await evaluate('!!document.querySelector(".translate-page")'), false, 'disabled handoff does not mount Translation')
+    const presentedState = await control({ type: 'manager-state' })
+    assert.equal(presentedState.manager.pendingRequestId ?? null, null, 'Native transport is acknowledged after gate presentation')
+    const disabledProjection = await evaluate('window.desktop.builtinTranslationHandoff.get()')
+    assert.equal(disabledProjection.ok, true)
+    assert.equal(disabledProjection.data.status, 'blocked')
+    assert.equal(disabledProjection.data.hasPrefill, true)
+    assert.equal(Object.hasOwn(disabledProjection.data, 'text'), false)
+    await evaluate('[...document.querySelectorAll(".translation-gate-actions button")].find(button => button.textContent.trim() === "取消")?.click()')
+    await until(async () => (await evaluate('window.desktop.builtinTranslationHandoff.get()')).data?.status === 'none', Boolean, 'cancel clears disabled Native handoff')
+    const canceledState = JSON.parse(await readFile(join(profile, 'builtin-plugins', 'state.json'), 'utf8'))
+    assert.equal(canceledState.plugins['webtools.translation']?.enabled, false, 'cancel leaves disabled state unchanged')
+
+    await control({ type: 'manager-translation', text: prefillText })
+    await until(() => evaluate('!!document.querySelector(".builtin-translation-gate")'), Boolean, 'second Native Translation gate presented')
+    await evaluate('[...document.querySelectorAll(".translation-gate-actions button")].find(button => button.textContent.includes("启用并打开翻译"))?.click()')
+    await until(() => evaluate('!!document.querySelector(".translate-page textarea")'), Boolean, 'explicit enable opens Translation')
+    await until(() => evaluate('document.querySelector(".translate-page textarea")?.value'), value => value === prefillText, 'exact Unicode, whitespace and punctuation prefill applied')
+    await until(async () => (await evaluate('window.desktop.builtinTranslationHandoff.get()')).data?.status === 'none', Boolean, 'handoff acknowledged only after exact input application')
+    const providerAfterEnable = await evaluate('window.desktop.getTranslationProviderInfo()')
+    assert.equal(providerAfterEnable.ok, true)
+    assert.equal(providerAfterEnable.data.configured, false, 'isolated AI provider has no credential')
+    await sleep(700)
+    assert.equal(await evaluate('document.querySelector(".translation-output")?.textContent.trim()'), '译文会显示在这里', 'no automatic provider request starts without configured credentials')
+    const storedEnabled = JSON.parse(await readFile(join(profile, 'builtin-plugins', 'state.json'), 'utf8'))
+    assert.equal(storedEnabled.plugins['webtools.translation']?.enabled, true, 'explicit enable is persisted')
+    assert.equal(JSON.stringify(storedEnabled).includes(prefillText), false, 'exact text is not written to built-in state')
+    const persistentStateAfterToggle = {
+      files: await snapshotFiles(preservedFiles),
+      declarativeData: await snapshotTree(join(profile, 'plugins', 'data', pluginId)),
+    }
+    assert.deepEqual(persistentStateAfterToggle, persistentStateBeforeToggle, 'built-in enable changes leave DataStore, SecretStore, Native files and declarative plugin data untouched')
+    report.translationPlugin = {
+      firstRunDefault: 'enabled',
+      disablePersisted: true,
+      disabledTranslationIpc: disabledIpc.translation.error.code,
+      disabledGoogleIpc: disabledIpc.google.error.code,
+      providerInfoAvailableWhileDisabled: true,
+      settingsAndAIProviderDescriptorsAvailableWhileDisabled: true,
+      declarativeSharedAIReviewAvailableWhileDisabled: true,
+      nativeDisabledGate: 'presented without exposing exact input; Native request acknowledged after gate mount',
+      cancelLeavesDisabled: true,
+      explicitEnable: 'exact Latin-Unicode/whitespace/apostrophe/hyphen prefill applied and state persisted',
+      providerCalls: 'none; isolated AI provider has no credential and output remains empty after 700 ms',
+      textPersistence: 'not present in built-in state file',
+      unrelatedPersistentState: 'DataStore, SecretStore, Native launcher/catalog files, declarative registry/config and declarative data hashes unchanged by Translation disable/enable and handoff',
+    }
+    record('builtin-translation-gate-enable-prefill-persistence', await os())
+    await evaluate('[...document.querySelectorAll(".nav-subitem")].find(button => button.textContent.trim() === "插件管理")?.click()')
+    await until(() => evaluate('!!document.querySelector(".plugin-manager-page")'), Boolean, 'return to Plugin Center after Translation handoff')
+  }
   await evaluate(`[...document.querySelectorAll('.plugin-list-row')].find(row => row.textContent.includes(${JSON.stringify(demo.name)}))?.click()`)
   assert.equal(await evaluate('document.querySelector(".plugin-trust-note strong")?.textContent'), '本地插件，发布者未经验证')
   await evaluate('[...document.querySelectorAll(".plugin-actions button")].find(button => button.textContent.includes("打开插件页面"))?.click()')
@@ -342,7 +477,7 @@ try {
   await os('close', mainIdentity)
   const closed = await until(os, processes => group(processes).length === 0 && processes.some(process => process.pid === native.pid), 'ordinary Manager close returns Electron to zero')
   record('manager-closed-electron-zero-native-remains', closed)
-  if (phase5f) {
+  if (phase5f || phase5g) {
     const firstManager = mainIdentity
     await control({ type: 'manager-open', section: 'favorites' })
     const reopened = await until(os, processes => group(processes).some(process => process.role === 'main'), 'Manager reopens after ordinary close')
@@ -370,7 +505,14 @@ try {
     assert.equal(restored.catalog.ok, true)
     assert.equal(restored.catalog.data.entries[0].kind, 'builtin')
     assert.equal(restored.catalog.data.entries.find(entry => entry.kind === 'declarative' && entry.id === pluginId)?.package.status, 'needs-permission')
-    report.restartPersistence = 'Builtin and retained third-party grants/status restored after new Manager process; Favorites remains home'
+    if (phase5g) {
+      assert.equal(restored.catalog.data.entries.find(entry => entry.kind === 'builtin')?.state.enabled, true, 'built-in enabled state persists after Manager process restart')
+      const persistedFile = JSON.parse(await readFile(join(profile, 'builtin-plugins', 'state.json'), 'utf8'))
+      assert.equal(persistedFile.plugins['webtools.translation']?.enabled, true)
+      report.restartPersistence = 'Favorites remains home; enabled built-in Translation and declarative grant/status restored after a new Manager process'
+    } else {
+      report.restartPersistence = 'Builtin and retained third-party grants/status restored after new Manager process; Favorites remains home'
+    }
     record('reopened-manager-catalog-persistence', await os())
     newWs.close(); cdp = null
     await os('close', mainIdentity)
@@ -379,7 +521,7 @@ try {
   await os('close-native', nativeIdentity)
   const exited = await until(os, processes => processes.length === 0, 'isolated Native exit')
   record('all-isolated-processes-exited', exited)
-  report.result = phase5f ? 'PACKAGED PHASE 5F UNIFIED CATALOG / NATIVE PREFILL / MANAGER LIFECYCLE PASS' : 'PACKAGED PHASE 5D PLUGIN UI / CONFIG / MANAGER LIFECYCLE PASS'
+  report.result = phase5g ? 'PACKAGED PHASE 5G BUILTIN TRANSLATION LIFECYCLE / HANDOFF / MANAGER LIFECYCLE PASS' : phase5f ? 'PACKAGED PHASE 5F UNIFIED CATALOG / NATIVE PREFILL / MANAGER LIFECYCLE PASS' : 'PACKAGED PHASE 5D PLUGIN UI / CONFIG / MANAGER LIFECYCLE PASS'
 } catch (error) {
   report.error = String(error)
   throw error

@@ -5,7 +5,11 @@ import { fail, safePluginError } from '../plugins/errors.ts'
 import type { PluginCatalog } from '../plugins/plugin-catalog.ts'
 import type { IpcSenderContext } from './window-security.ts'
 
-interface Dependencies { getCatalog(): PluginCatalog | null; isManagerMainFrame(context: IpcSenderContext): boolean }
+interface Dependencies {
+  getCatalog(): PluginCatalog | null
+  isManagerMainFrame(context: IpcSenderContext): boolean
+  confirmBuiltinStateRecovery(): Promise<boolean>
+}
 type Handler = (event: IpcSenderContext, ...args: unknown[]) => Promise<IpcResult<unknown>>
 function reference(value: unknown): PluginRef {
   const ref = record(value, ['kind', 'id'])
@@ -31,6 +35,10 @@ export function createPluginCatalogHandlers(deps: Dependencies): Record<string, 
     [IPC_CHANNELS.pluginCatalogSetEnabled]: guard(2, (catalog, session, args) => {
       if (typeof args[1] !== 'boolean') fail('INVALID_INPUT')
       return catalog.setEnabled(reference(args[0]), args[1], session)
+    }),
+    [IPC_CHANNELS.pluginCatalogRecoverBuiltin]: guard(0, async (catalog, session) => {
+      if (!await deps.confirmBuiltinStateRecovery()) return { recovered: false as const }
+      return { recovered: true as const, entry: await catalog.recoverBuiltinTranslation(session, true) }
     }),
   }
 }

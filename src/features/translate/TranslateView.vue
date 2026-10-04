@@ -6,7 +6,7 @@ import { MYMEMORY_MAX_UTF8_BYTES, TRANSLATION_LANGUAGES, type TranslationLanguag
 import type { TranslationProviderInfo } from '@/shared/translation-contracts'
 import { TranslationRequestGate } from '@/shared/translation-request-gate'
 
-const emit = defineEmits<{ settings: []; prefillApplied: [id: string] }>()
+const emit = defineEmits<{ settings: []; pageReady: []; prefillApplied: [id: string] }>()
 const props = defineProps<{ prefill: TranslationPrefillRequest | null }>()
 const sourceText = ref('')
 const translation = ref('')
@@ -86,6 +86,7 @@ watch(() => props.prefill?.id, async () => {
 
 onMounted(async () => {
   isMounted = true
+  emit('pageReady')
   try {
     const [settings, info] = await Promise.all([window.desktop.getSettings(), window.desktop.getTranslationProviderInfo()])
     if (!isMounted) return

@@ -116,3 +116,39 @@ test('times out stale provider work and validates bounded request IDs, language,
   assert.equal(validateTranslationRequest({ ...baseRequest, sourceLanguage: 'invalid' }), false)
   assert.equal(validateTranslationRequest({ ...baseRequest, text: 'x'.repeat(20_001) }), false)
 })
+
+test('Main translation admission rejects disabled requests before any provider work while provider status stays readable', async () => {
+  let enabled = false
+  let generation = 4
+  const { service, calls } = setup('mymemory', {
+    translationAdmission: {
+      captureGeneration: () => enabled ? generation : null,
+      isGenerationCurrent: value => enabled && value === generation,
+    },
+  })
+
+  await assert.rejects(service.translate(baseRequest), error => error.code === 'TRANSLATION_DISABLED')
+  assert.equal(calls.free.length + calls.ai.length + calls.qwen.length, 0)
+  assert.deepEqual(await service.getProviderInfo(), { engine: 'mymemory', providerName: 'MyMemory 免费翻译', configured: true })
+})
+
+test('a provider response arriving after Translation is disabled cannot be returned to the old Manager request', async () => {
+  let enabled = true
+  let generation = 9
+  let complete
+  const { service } = setup('mymemory', {
+    translationAdmission: {
+      captureGeneration: () => enabled ? generation : null,
+      isGenerationCurrent: value => enabled && value === generation,
+    },
+    myMemoryAdapter: { translate: () => new Promise(resolve => { complete = resolve }) },
+  })
+
+  const pending = service.translate(baseRequest)
+  await new Promise(resolve => setImmediate(resolve))
+  enabled = false
+  generation += 1
+  complete('late translation')
+
+  await assert.rejects(pending, error => error.code === 'TRANSLATION_DISABLED')
+})

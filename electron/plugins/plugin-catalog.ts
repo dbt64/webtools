@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto'
-import type { CatalogOpenDTO, CatalogSnapshot, DeclarativeEntryDTO, PluginRef } from '../../src/shared/plugin-catalog-contracts.ts'
+import type { BuiltinEntryDTO, CatalogOpenDTO, CatalogSnapshot, DeclarativeEntryDTO, PluginRef } from '../../src/shared/plugin-catalog-contracts.ts'
 import type { PluginSummary } from '../../src/shared/plugin-contracts.ts'
 import type { PluginManager } from './plugin-manager.ts'
+import type { BuiltinTranslationRuntimeState } from './builtin-translation-lifecycle.ts'
 import { builtinPluginEntries } from './builtin-plugin-registry.ts'
 import { fail, safePluginError } from './errors.ts'
 
 type CatalogCore = Pick<PluginManager, 'session' | 'isSession' | 'list' | 'getPages' | 'setEnabled'>
+export interface BuiltinTranslationCatalogPort {
+  snapshot(): BuiltinTranslationRuntimeState
+  isEnabled(): boolean
+  setEnabled(enabled: boolean, mayCommit?: () => boolean): Promise<BuiltinTranslationRuntimeState>
+  recoverToDefault(confirmed: boolean, mayCommit?: () => boolean): Promise<BuiltinTranslationRuntimeState>
+}
 function project(plugin: PluginSummary): DeclarativeEntryDTO {
   return {
     kind: 'declarative', id: plugin.id, source: 'local-unsigned', package: plugin,
@@ -23,7 +30,12 @@ export class PluginCatalog {
   private generation = 0
   private readonly hostVersion: string
   private readonly getCore: () => CatalogCore | null
-  constructor(hostVersion: string, getCore: () => CatalogCore | null) { this.hostVersion = hostVersion; this.getCore = getCore }
+  private readonly builtinTranslation: BuiltinTranslationCatalogPort
+  constructor(hostVersion: string, getCore: () => CatalogCore | null, builtinTranslation: BuiltinTranslationCatalogPort) {
+    this.hostVersion = hostVersion
+    this.getCore = getCore
+    this.builtinTranslation = builtinTranslation
+  }
   get session(): string { return this.currentSession }
   isSession(session: string): boolean { return !this.closed && session === this.currentSession }
   private assertSession(session: string): void { if (!this.isSession(session)) fail('SESSION_EXPIRED') }
@@ -31,22 +43,23 @@ export class PluginCatalog {
   async list(session: string): Promise<CatalogSnapshot> {
     this.assertSession(session)
     const revision = ++this.revision
-    const entries: CatalogSnapshot['entries'] = builtinPluginEntries(this.hostVersion)
+    let packageEntries: DeclarativeEntryDTO[] = []
     const core = this.getCore(); const coreSession = core?.session
     let declarativeAvailability: CatalogSnapshot['declarativeAvailability'] = { status: 'available' }
     if (!core) declarativeAvailability = { status: 'unavailable', errorCode: 'OPERATION_FAILED' }
     else {
-      try { entries.push(...(await core.list()).map(project)) }
+      try { packageEntries = (await core.list()).map(project) }
       catch (error) { declarativeAvailability = { status: 'unavailable', errorCode: safePluginError(error).code } }
       this.assertCore(core, coreSession!)
     }
     this.assertSession(session)
-    return { revision, entries, declarativeAvailability }
+    return { revision, entries: [...builtinPluginEntries(this.hostVersion, this.builtinTranslation.snapshot()), ...packageEntries], declarativeAvailability }
   }
   async open(ref: PluginRef, session: string): Promise<CatalogOpenDTO> {
     this.assertSession(session)
     if (ref.kind === 'builtin') {
-      if (!builtinPluginEntries(this.hostVersion).some(entry => entry.id === ref.id)) fail('NOT_INSTALLED')
+      if (ref.id !== 'webtools.translation') fail('NOT_INSTALLED')
+      if (!this.builtinTranslation.isEnabled()) fail('PLUGIN_DISABLED')
       return { kind: 'builtin', id: 'webtools.translation', key: 'translation', generation: this.generation }
     }
     const core = this.getCore(); if (!core) fail('OPERATION_FAILED')
@@ -55,14 +68,25 @@ export class PluginCatalog {
     this.assertSession(session); this.assertCore(core, coreSession)
     return { kind: 'declarative', page }
   }
-  async setEnabled(ref: PluginRef, enabled: boolean, session: string): Promise<DeclarativeEntryDTO> {
+  async setEnabled(ref: PluginRef, enabled: boolean, session: string): Promise<BuiltinEntryDTO | DeclarativeEntryDTO> {
     this.assertSession(session)
-    if (ref.kind === 'builtin') fail('PERMISSION_DENIED') // Phase 5F keeps Translation always enabled.
+    if (ref.kind === 'builtin') {
+      if (ref.id !== 'webtools.translation') fail('NOT_INSTALLED')
+      const state = await this.builtinTranslation.setEnabled(enabled, () => this.isSession(session))
+      this.assertSession(session)
+      return builtinPluginEntries(this.hostVersion, state)[0]
+    }
     const core = this.getCore(); if (!core) fail('OPERATION_FAILED')
     const coreSession = core.session
     const result = await core.setEnabled(ref.id, enabled, coreSession)
     this.assertSession(session); this.assertCore(core, coreSession)
     return project(result)
+  }
+  async recoverBuiltinTranslation(session: string, confirmed: boolean): Promise<BuiltinEntryDTO> {
+    this.assertSession(session)
+    const state = await this.builtinTranslation.recoverToDefault(confirmed, () => this.isSession(session))
+    this.assertSession(session)
+    return builtinPluginEntries(this.hostVersion, state)[0]
   }
   beginSession(): void { if (this.closed) return; this.currentSession = randomUUID(); this.generation += 1 }
   close(): void { this.closed = true; this.generation += 1 }

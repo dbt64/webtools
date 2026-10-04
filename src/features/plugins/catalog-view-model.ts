@@ -3,10 +3,26 @@ import { pluginCanOpen, pluginStatusView } from './plugin-view-model.ts'
 
 export function catalogRef(entry: CatalogEntryDTO): PluginRef { return entry.kind === 'builtin' ? { kind: 'builtin', id: entry.id } : { kind: 'declarative', id: entry.id } }
 export function catalogKey(ref: PluginRef): string { return `${ref.kind}:${ref.id}` }
-export function catalogCanOpen(entry: CatalogEntryDTO): boolean { return entry.kind === 'builtin' ? entry.state.enabled && entry.state.status === 'ready' : pluginCanOpen(entry.package) }
+export function catalogCanOpen(entry: CatalogEntryDTO): boolean { return entry.kind === 'builtin' ? entry.state.status === 'ready' && entry.state.enabled : pluginCanOpen(entry.package) }
 export function catalogPresentation(entry: CatalogEntryDTO) {
   return entry.kind === 'builtin'
-    ? { name: entry.name, version: entry.version, description: entry.description, author: 'WebTools · 内置', status: { label: '可用 · 内置', tone: 'good' } }
+    ? {
+        name: entry.name,
+        version: entry.version,
+        description: entry.description,
+        author: 'WebTools · 内置',
+        status: entry.state.status === 'ready'
+          ? { label: '可用 · 内置', tone: 'good' }
+          : entry.state.status === 'disabled'
+            ? { label: '已停用', tone: 'quiet' }
+            : entry.state.status === 'enabling'
+              ? { label: '正在启用…', tone: 'quiet' }
+              : entry.state.status === 'stopping'
+                ? { label: '正在停用…', tone: 'quiet' }
+                : entry.state.status === 'faulted'
+                  ? { label: '状态未保存', tone: 'danger' }
+                  : { label: '需要恢复', tone: 'danger' },
+      }
     : { name: entry.package.name, version: entry.package.version, description: entry.package.description ?? '', author: entry.package.author?.name ?? '作者未知', status: pluginStatusView(entry.package) }
 }
 export function catalogNavigationItems(entries: CatalogEntryDTO[]) {

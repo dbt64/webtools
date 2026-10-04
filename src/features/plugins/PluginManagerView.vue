@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { Check, CircleAlert, CircleCheck, ExternalLink, Languages, PackagePlus, Puzzle, RefreshCw, ShieldCheck, Trash2, ToggleLeft, ToggleRight } from '@lucide/vue'
 import type { PluginCapability, PluginSummary } from '../../shared/plugin-contracts.ts'
-import type { CatalogEntryDTO, PluginRef } from '../../shared/plugin-catalog-contracts.ts'
+import type { BuiltinEntryDTO, CatalogEntryDTO, PluginRef } from '../../shared/plugin-catalog-contracts.ts'
 import { catalogKey, catalogRef, catalogPresentation } from './catalog-view-model.ts'
 import { pluginGrantPayload, pluginInstallFeedback, pluginPermissionRows, pluginStatusView } from './plugin-view-model.ts'
 
@@ -12,6 +12,7 @@ const emit = defineEmits<{ changed: []; retry: []; openPlugin: [ref: PluginRef] 
 const selectedRef = ref<PluginRef | null>(null)
 const selected = computed(() => props.entries.find(entry => selectedRef.value && catalogKey(entry) === catalogKey(selectedRef.value)) ?? props.entries[0] ?? null)
 const selectedPackage = computed(() => selected.value?.kind === 'declarative' ? selected.value.package : null)
+const selectedBuiltin = computed(() => selected.value?.kind === 'builtin' ? selected.value : null)
 const grantedDraft = ref<PluginCapability[]>([])
 const busy = ref<string | null>(null)
 const feedback = ref<{ kind: 'status' | 'error'; text: string } | null>(null)
@@ -34,6 +35,11 @@ function errorText(error: { code: string; message: string }): string {
     AI_NOT_CONFIGURED: '前往 WebTools AI 设置完成提供方配置。',
     AI_TIMEOUT: '检查网络连接后重试。',
     OPERATION_FAILED: '请重试；如果问题持续，请先停用插件。',
+    STATE_INVALID: '状态文件未被覆盖；可以备份原文件后恢复。',
+    STATE_UNSUPPORTED: '状态文件版本不兼容；原文件已保留。',
+    STATE_UNAVAILABLE: '当前无法安全读取状态，请检查权限或执行受控恢复。',
+    STATE_WRITE_FAILED: '本次状态没有保存；翻译仍保持停用，请重试。',
+    STATE_RECOVERY_FAILED: '恢复没有完成，原状态文件仍然保留。',
   }
   return `${error.message}${recovery[error.code] ? ` ${recovery[error.code]}` : ''}`
 }
@@ -59,9 +65,30 @@ async function toggle(plugin: PluginSummary): Promise<void> {
   await perform(`toggle:${plugin.id}`, async () => {
     const result = await window.desktop.pluginCatalog.setEnabled({ kind: 'declarative', id: plugin.id }, !plugin.enabled)
     if (!result.ok) { feedback.value = { kind: 'error', text: errorText(result.error) }; return }
+    if (result.data.kind !== 'declarative') { feedback.value = { kind: 'error', text: '插件状态响应无效，请重新加载。' }; return }
     feedback.value = result.data.package.enabled
       ? { kind: 'status', text: '插件已启用。' }
       : { kind: 'status', text: plugin.enabled ? '插件已停用；设置和私有数据已保留。' : '权限确认已取消，插件仍保持停用。' }
+  })
+}
+
+async function toggleBuiltin(plugin: BuiltinEntryDTO): Promise<void> {
+  if (!plugin.management.canToggle) return
+  const enabled = plugin.state.status === 'faulted' ? plugin.state.retryEnabled : !plugin.state.enabled
+  await perform('builtin-state', async () => {
+    const result = await window.desktop.pluginCatalog.setEnabled(catalogRef(plugin), enabled)
+    if (!result.ok) { feedback.value = { kind: 'error', text: errorText(result.error) }; return }
+    feedback.value = { kind: 'status', text: enabled ? '翻译已启用。' : '翻译已停用；翻译设置和 AI 密钥已保留。' }
+  })
+}
+
+async function recoverBuiltin(): Promise<void> {
+  await perform('builtin-recovery', async () => {
+    const result = await window.desktop.pluginCatalog.recoverBuiltinTranslation()
+    if (!result.ok) { feedback.value = { kind: 'error', text: errorText(result.error) }; return }
+    feedback.value = result.data.recovered
+      ? { kind: 'status', text: '原状态文件已备份，翻译状态已恢复为启用。' }
+      : { kind: 'status', text: '已取消恢复。' }
   })
 }
 
@@ -125,10 +152,16 @@ function select(plugin: CatalogEntryDTO): void {
         </button>
       </nav>
 
-      <section v-if="selected?.kind === 'builtin'" class="plugin-detail plugin-builtin-detail" aria-labelledby="plugin-detail-title">
-        <div class="plugin-detail-heading"><div class="plugin-row-icon plugin-detail-icon" aria-hidden="true"><Languages :size="19" /></div><div class="plugin-detail-title"><h2 id="plugin-detail-title">{{ selected.name }}</h2><p>{{ selected.description }}</p></div><span class="plugin-state tone-good">可用 · 内置</span></div>
-        <dl class="plugin-facts"><div><dt>插件 ID</dt><dd>{{ selected.id }}</dd></div><div><dt>版本</dt><dd>{{ selected.version }}</dd></div><div><dt>来源</dt><dd>随 WebTools 发布</dd></div><div><dt>状态</dt><dd>当前可用</dd></div></dl>
-        <div class="plugin-actions"><button class="primary-button" @click="emit('openPlugin', catalogRef(selected))"><ExternalLink :size="14" />打开翻译</button></div>
+      <section v-if="selectedBuiltin" class="plugin-detail plugin-builtin-detail" aria-labelledby="plugin-detail-title">
+        <div class="plugin-detail-heading"><div class="plugin-row-icon plugin-detail-icon" aria-hidden="true"><Languages :size="19" /></div><div class="plugin-detail-title"><h2 id="plugin-detail-title">{{ selectedBuiltin.name }}</h2><p>{{ selectedBuiltin.description }}</p></div><span class="plugin-state" :class="`tone-${catalogPresentation(selectedBuiltin).status.tone}`">{{ catalogPresentation(selectedBuiltin).status.label }}</span></div>
+        <dl class="plugin-facts"><div><dt>插件 ID</dt><dd>{{ selectedBuiltin.id }}</dd></div><div><dt>版本</dt><dd>{{ selectedBuiltin.version }}</dd></div><div><dt>来源</dt><dd>随 WebTools 发布</dd></div><div><dt>状态</dt><dd>{{ catalogPresentation(selectedBuiltin).status.label }}</dd></div></dl>
+        <div v-if="selectedBuiltin.state.status === 'faulted' || selectedBuiltin.state.status === 'unavailable'" class="plugin-error-detail" role="alert"><CircleAlert :size="15" /><span><strong>{{ selectedBuiltin.state.errorCode }}</strong><small>{{ selectedBuiltin.state.status === 'unavailable' ? '翻译已关闭。恢复前会备份当前状态文件，不会清理其他插件或配置。' : '状态写入没有完成；当前会话已关闭翻译请求。可重试上次操作。' }}</small></span></div>
+        <p class="plugin-data-note"><Check :size="13" />停用翻译会保留全局翻译设置、AI 提供方配置、密钥和第三方插件状态；Shared AI 仍供其他功能使用。</p>
+        <div class="plugin-actions">
+          <button v-if="selectedBuiltin.management.canToggle" :class="selectedBuiltin.state.status === 'disabled' || (selectedBuiltin.state.status === 'faulted' && selectedBuiltin.state.retryEnabled) ? 'primary-button' : 'secondary-button'" :disabled="Boolean(busy)" @click="toggleBuiltin(selectedBuiltin)"><ToggleRight v-if="selectedBuiltin.state.status === 'disabled' || (selectedBuiltin.state.status === 'faulted' && selectedBuiltin.state.retryEnabled)" :size="15" /><ToggleLeft v-else :size="15" />{{ busy === 'builtin-state' ? '正在保存…' : selectedBuiltin.state.status === 'faulted' ? (selectedBuiltin.state.retryEnabled ? '重试启用' : '重试停用') : selectedBuiltin.state.enabled ? '停用翻译' : '启用翻译' }}</button>
+          <button v-if="selectedBuiltin.management.canRecover" class="primary-button" :disabled="Boolean(busy)" @click="recoverBuiltin"><RefreshCw :size="14" />{{ busy === 'builtin-recovery' ? '正在恢复…' : '备份并恢复状态' }}</button>
+          <button v-if="selectedBuiltin.state.status === 'ready' && selectedBuiltin.state.enabled" class="secondary-button" :disabled="Boolean(busy)" @click="emit('openPlugin', catalogRef(selectedBuiltin))"><ExternalLink :size="14" />打开翻译</button>
+        </div>
       </section>
       <section v-else-if="selectedPackage" class="plugin-detail" aria-labelledby="plugin-detail-title">
         <div class="plugin-detail-heading">

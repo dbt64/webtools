@@ -6,6 +6,11 @@ const desktopApi: DesktopApi = {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.pluginCatalogList),
     open: (ref) => ipcRenderer.invoke(IPC_CHANNELS.pluginCatalogOpen, ref),
     setEnabled: (ref, enabled) => ipcRenderer.invoke(IPC_CHANNELS.pluginCatalogSetEnabled, ref, enabled),
+    recoverBuiltinTranslation: () => ipcRenderer.invoke(IPC_CHANNELS.pluginCatalogRecoverBuiltin),
+  },
+  builtinTranslationHandoff: {
+    get: () => ipcRenderer.invoke(IPC_CHANNELS.builtinTranslationHandoffGet),
+    resolve: (request) => ipcRenderer.invoke(IPC_CHANNELS.builtinTranslationHandoffResolve, request),
   },
   plugins: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.pluginList),
@@ -26,10 +31,10 @@ const desktopApi: DesktopApi = {
       const intent = value as Record<string, unknown>
       if (typeof intent.requestId !== 'string' || intent.requestId.length === 0 || intent.requestId.length > 128) return
       if (intent.kind === 'open-page'
-        && (intent.section === 'favorites' || intent.section === 'entries' || intent.section === 'settings' || intent.section === 'translate')) {
+        && (intent.section === 'favorites' || intent.section === 'entries' || intent.section === 'settings')) {
         handler({ requestId: intent.requestId, kind: 'open-page', section: intent.section })
-      } else if (intent.kind === 'translation-prefill' && typeof intent.text === 'string' && intent.text.length > 0 && intent.text.length <= 20_000) {
-        handler({ requestId: intent.requestId, kind: 'translation-prefill', text: intent.text })
+      } else if (intent.kind === 'translation-handoff') {
+        handler({ requestId: intent.requestId, kind: 'translation-handoff' })
       }
     }
     ipcRenderer.on(IPC_CHANNELS.nativeManagerIntent, listener)

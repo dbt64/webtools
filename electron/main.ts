@@ -10,6 +10,9 @@ import { MyMemoryAdapter } from './services/mymemory-adapter'
 import { QwenMtAdapter } from './services/qwen-mt-adapter'
 import { SharedAIService } from './services/shared-ai-service'
 import { TranslationService } from './services/translation-service'
+import { BuiltinPluginStateStore } from './plugins/builtin-plugin-state'
+import { BuiltinTranslationLifecycle } from './plugins/builtin-translation-lifecycle'
+import { BuiltinTranslationHandoff } from './services/builtin-translation-handoff'
 import { openExternalUrl } from './services/external-opener'
 import { BookmarkService } from './services/bookmark-service'
 import { WebsiteService } from './services/website-service'
@@ -31,6 +34,7 @@ import { resolveManagerTestProfile } from './services/manager-test-options'
 import { createElectronPluginHost } from './plugins/electron-plugin-host'
 import { registerPluginIpcHandlers } from './ipc/plugin-handlers'
 import { registerPluginCatalogIpcHandlers } from './ipc/plugin-catalog-handlers'
+import { registerBuiltinTranslationHandoffHandlers } from './ipc/builtin-translation-handoff-handlers'
 import { PluginCatalog } from './plugins/plugin-catalog'
 import type { PluginManager } from './plugins/plugin-manager'
 
@@ -54,6 +58,8 @@ let dataStore: DataStore
 let secretStore: SecretStore
 let managerWindow: BrowserWindow | null = null
 let translationService: TranslationService | null = null
+let builtinTranslationLifecycle: BuiltinTranslationLifecycle | null = null
+let builtinTranslationHandoff: BuiltinTranslationHandoff | null = null
 let cancelAIConnectionTests: () => void = () => undefined
 let nativeManagerClient: NativeManagerClient | null = null
 let nativeLauncherState: NativeLauncherState | null = null
@@ -63,10 +69,11 @@ let pluginManager: PluginManager | null = null
 let pluginCatalog: PluginCatalog | null = null
 let disposeCatalogHandlers = () => {}
 let disposePluginHandlers: () => void = () => undefined
+let disposeBuiltinTranslationHandoffHandlers: () => void = () => undefined
 
 interface PendingNativeIntent {
   requestId: string
-  intent: { kind: 'open-page'; section: 'favorites' | 'entries' | 'settings' | 'translate' } | { kind: 'translation-prefill'; text: string }
+  intent: { kind: 'open-page'; section: 'favorites' | 'entries' | 'settings' }
   resolve: () => void
   reject: (error: Error) => void
 }
@@ -97,12 +104,15 @@ async function updateNativeLauncherSettings(update: NativeLauncherSettingsUpdate
 }
 
 function deliverPendingNativeIntent(): void {
-  const pending = pendingNativeIntent
   const window = managerWindow
-  if (!pending || !managerRendererReady || !window || window.isDestroyed() || window.webContents.isDestroyed()) return
+  if (!managerRendererReady || !window || window.isDestroyed() || window.webContents.isDestroyed()) return
+  const pending = pendingNativeIntent
+  const handoff = builtinTranslationHandoff?.claimNativeDelivery()
+  if (!pending && !handoff) return
   window.show()
   window.focus()
-  window.webContents.send(IPC_CHANNELS.nativeManagerIntent, { requestId: pending.requestId, ...pending.intent })
+  if (pending) window.webContents.send(IPC_CHANNELS.nativeManagerIntent, { requestId: pending.requestId, ...pending.intent })
+  if (handoff) window.webContents.send(IPC_CHANNELS.nativeManagerIntent, { requestId: handoff.requestId, kind: 'translation-handoff' })
 }
 
 function waitForNativeIntentAcknowledgement(
@@ -125,13 +135,35 @@ async function handleNativeManagerCommand(message: NativeManagerEnvelope): Promi
     }
   }
   if (command.kind === 'open-page') {
+    if (command.section === 'translate') {
+      await beginNativeTranslationHandoff(command.requestId, null)
+      return
+    }
+    builtinTranslationHandoff?.supersede()
     showManager()
     await waitForNativeIntentAcknowledgement(command.requestId, { kind: 'open-page', section: command.section })
     return
   }
   if (!isValidTranslationText(command.text)) throw new NativeManagerRequestError('INVALID_TRANSLATION_TEXT', '翻译内容为空或超过 20,000 个字符。')
+  await beginNativeTranslationHandoff(command.requestId, command.text)
+}
+
+async function beginNativeTranslationHandoff(requestId: string, text: string | null): Promise<void> {
+  if (pendingNativeIntent) {
+    pendingNativeIntent.reject(new NativeManagerRequestError('INTENT_SUPERSEDED', 'A newer Manager request replaced this one.'))
+    pendingNativeIntent = null
+  }
+  const handoff = builtinTranslationHandoff
+  if (!handoff) throw new NativeManagerRequestError('MANAGER_NOT_READY', 'Manager translation handoff is unavailable.')
+  const presented = handoff.begin({ requestId, text })
   showManager()
-  await waitForNativeIntentAcknowledgement(command.requestId, { kind: 'translation-prefill', text: command.text })
+  deliverPendingNativeIntent()
+  try { await presented }
+  catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'HANDOFF_FAILED'
+    const message = code === 'INTENT_SUPERSEDED' ? 'A newer Manager request replaced this one.' : 'Manager did not present the Translation request.'
+    throw new NativeManagerRequestError(code, message)
+  }
 }
 
 function acknowledgeNativeManagerIntent(context: { sender: object; senderFrame: object | null }, requestId: unknown): void {
@@ -180,6 +212,8 @@ function createWindow(): void {
   window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (!isMainFrame || isInPlace) return
     managerRendererReady = false
+    builtinTranslationHandoff?.rendererStarting()
+    builtinTranslationLifecycle?.invalidateSession()
     cancelActiveAIRequests()
     pluginManager?.beginSession()
     pluginCatalog?.beginSession()
@@ -191,6 +225,8 @@ function createWindow(): void {
   window.on('closed', () => {
     if (managerWindow !== window) return
     cancelActiveAIRequests()
+    builtinTranslationLifecycle?.close()
+    builtinTranslationHandoff?.close()
     pluginManager?.close()
     pluginCatalog?.close()
     managerWindow = null
@@ -231,7 +267,8 @@ function markManagerRendererReady(sender: WebContents): void {
   const window = managerWindow
   if (!window || window.isDestroyed() || window.webContents.isDestroyed() || sender !== window.webContents) return
   managerRendererReady = true
-  if (!nativeManaged || !nativeManagerClient?.isConnected) return
+  builtinTranslationHandoff?.rendererReady()
+  if (!nativeManaged || !nativeManagerClient?.isConnected) { deliverPendingNativeIntent(); return }
   void nativeManagerClient.request('manager-renderer-ready', {}).then(() => deliverPendingNativeIntent()).catch((error) => {
     console.error('[native-manager] renderer-ready acknowledgement failed', error)
     app.quit()
@@ -283,25 +320,54 @@ app.whenReady().then(async () => {
     openAICompatibleAdapter: new OpenAICompatibleAdapter(),
     anthropicAdapter: new AnthropicMessagesAdapter(),
   })
-  const pluginHost = createElectronPluginHost({ userData: app.getPath('userData'), hostVersion: app.getVersion(), sharedAI: sharedAIService, dataStore, getWindow: () => managerWindow })
-  try { await pluginHost.manager.initialize(); pluginManager = pluginHost.manager }
-  catch { pluginHost.manager.close() } // Fail closed without preventing existing Manager pages from opening.
-  pluginCatalog = new PluginCatalog(app.getVersion(), () => pluginManager)
-  disposeCatalogHandlers = registerPluginCatalogIpcHandlers(ipcMain, {
-    getCatalog: () => pluginCatalog,
-    isManagerMainFrame: context => isCurrentWindowMainFrame(context, managerWindow),
-  })
-  disposePluginHandlers = registerPluginIpcHandlers(ipcMain, {
-    getManager: () => pluginManager,
-    isManagerMainFrame: context => isCurrentWindowMainFrame(context, managerWindow),
-    choosePackage: pluginHost.choosePackage,
-  })
+  builtinTranslationLifecycle = new BuiltinTranslationLifecycle(
+    new BuiltinPluginStateStore(app.getPath('userData')),
+    () => translationService?.cancelAll(),
+  )
+  await builtinTranslationLifecycle.initialize()
+  builtinTranslationHandoff = new BuiltinTranslationHandoff(builtinTranslationLifecycle)
   translationService = new TranslationService({
     dataStore,
     sharedAI: sharedAIService,
     aiCredentials,
     myMemoryAdapter: new MyMemoryAdapter(),
     qwenMtAdapter: new QwenMtAdapter(),
+    translationAdmission: {
+      captureGeneration: () => builtinTranslationLifecycle?.isEnabled() ? builtinTranslationLifecycle.generation : null,
+      isGenerationCurrent: generation => builtinTranslationLifecycle?.isGenerationCurrent(generation) ?? false,
+    },
+  })
+  const pluginHost = createElectronPluginHost({ userData: app.getPath('userData'), hostVersion: app.getVersion(), sharedAI: sharedAIService, dataStore, getWindow: () => managerWindow })
+  try { await pluginHost.manager.initialize(); pluginManager = pluginHost.manager }
+  catch { pluginHost.manager.close() } // Fail closed without preventing existing Manager pages from opening.
+  pluginCatalog = new PluginCatalog(app.getVersion(), () => pluginManager, builtinTranslationLifecycle)
+  disposeCatalogHandlers = registerPluginCatalogIpcHandlers(ipcMain, {
+    getCatalog: () => pluginCatalog,
+    isManagerMainFrame: context => isCurrentWindowMainFrame(context, managerWindow),
+    confirmBuiltinStateRecovery: async () => {
+      const window = managerWindow
+      if (!window || window.isDestroyed()) return false
+      const result = await dialog.showMessageBox(window, {
+        type: 'warning',
+        title: '恢复内置翻译状态',
+        message: 'WebTools 将先备份无法读取的状态文件，再恢复翻译为启用状态。',
+        detail: '原文件会保留在内置插件状态目录中。此操作不会修改翻译设置、AI 密钥或第三方插件数据。',
+        buttons: ['备份并恢复', '取消'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      })
+      return result.response === 0
+    },
+  })
+  disposeBuiltinTranslationHandoffHandlers = registerBuiltinTranslationHandoffHandlers(ipcMain, {
+    getHandoff: () => builtinTranslationHandoff,
+    isManagerMainFrame: context => isCurrentWindowMainFrame(context, managerWindow),
+  })
+  disposePluginHandlers = registerPluginIpcHandlers(ipcMain, {
+    getManager: () => pluginManager,
+    isManagerMainFrame: context => isCurrentWindowMainFrame(context, managerWindow),
+    choosePackage: pluginHost.choosePackage,
   })
   const bookmarkService = new BookmarkService(dataStore)
   const websiteService = new WebsiteService(dataStore)
@@ -320,7 +386,7 @@ app.whenReady().then(async () => {
     getSettings: currentSettings,
     updateNativeLauncherSettings: nativeManaged ? updateNativeLauncherSettings : undefined,
   })
-  cancelAIConnectionTests = registerTranslationIpcHandlers({
+  cancelAIConnectionTests = registerTranslationIpcHandlers(ipcMain, {
     translationService,
     sharedAIService,
     aiCredentials,
@@ -343,8 +409,10 @@ app.on('window-all-closed', () => app.quit())
 app.on('before-quit', () => {
   quitting = true
   cancelActiveAIRequests()
+  builtinTranslationLifecycle?.close()
   pluginManager?.close()
   disposePluginHandlers()
+  disposeBuiltinTranslationHandoffHandlers()
   pluginCatalog?.close()
   disposeCatalogHandlers()
   nativeManagerClient?.close()
