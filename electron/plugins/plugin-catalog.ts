@@ -5,6 +5,7 @@ import type { PluginManager } from './plugin-manager.ts'
 import type { BuiltinTranslationRuntimeState } from './builtin-translation-lifecycle.ts'
 import { builtinPluginEntries } from './builtin-plugin-registry.ts'
 import { fail, safePluginError } from './errors.ts'
+import type { LauncherPluginProjection, LauncherPluginShortcut } from '../../src/shared/launcher-plugin-contracts.ts'
 
 type CatalogCore = Pick<PluginManager, 'session' | 'isSession' | 'list' | 'getPages' | 'setEnabled'>
 export interface BuiltinTranslationCatalogPort {
@@ -67,6 +68,20 @@ export class PluginCatalog {
     const page = await core.getPages(ref.id, coreSession)
     this.assertSession(session); this.assertCore(core, coreSession)
     return { kind: 'declarative', page }
+  }
+  async launcherProjection(session: string): Promise<LauncherPluginProjection> {
+    const snapshot = await this.list(session)
+    const plugins: LauncherPluginShortcut[] = []
+    for (const entry of snapshot.entries) {
+      if (entry.kind === 'builtin') {
+        if (entry.state.status === 'ready' && entry.state.enabled)
+          plugins.push({ ref: { kind: 'builtin', id: entry.id }, displayName: entry.name.replace(/\p{Cc}/gu, ' ').trim().slice(0, 128) || entry.id, icon: 'translation' })
+      } else if (entry.package.enabled && ['active', 'invoking'].includes(entry.package.status) && entry.package.granted.includes('manager.page')) {
+        plugins.push({ ref: { kind: 'declarative', id: entry.id }, displayName: entry.package.name.replace(/\p{Cc}/gu, ' ').trim().slice(0, 128) || entry.id, icon: 'plugin' })
+      }
+    }
+    if (plugins.length > 1001) fail('INVALID_INPUT') // Existing 1,000-package registry limit plus the builtin.
+    return { projectionVersion: 1, plugins }
   }
   async setEnabled(ref: PluginRef, enabled: boolean, session: string): Promise<BuiltinEntryDTO | DeclarativeEntryDTO> {
     this.assertSession(session)

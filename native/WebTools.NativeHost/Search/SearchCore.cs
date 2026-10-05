@@ -9,6 +9,8 @@ public sealed class SearchCore
 {
     private static readonly CompareInfo ChineseCompare = CultureInfo.GetCultureInfo("zh-CN").CompareInfo;
     private static readonly Regex TokenPattern = new(@"[\p{L}\p{N}]+", RegexOptions.Compiled);
+    private const int MaximumPinyinAliases = 16;
+    private const int MaximumPinyinAliasRunes = 128;
     private readonly IndexedEntry[] _apps;
     private readonly IndexedEntry[] _websites;
     private readonly Dictionary<string, AppSearchMemoryRecord> _remembered = new(StringComparer.Ordinal);
@@ -27,7 +29,10 @@ public sealed class SearchCore
     {
         if (command.Mode is SearchMode.Files or SearchMode.Web) return [];
         var normalized = Normalize(command.Query);
-        if (normalized.Length == 0) return [];
+        if (normalized.Length == 0)
+            return command.Mode == SearchMode.Local && !string.IsNullOrWhiteSpace(command.Query)
+                ? [TranslationResult(command.Raw), SearchFilesResult(command.Raw)]
+                : [];
         var tokens = TokenPattern.Matches(command.Query.ToLowerInvariant()).Select(match => match.Value).ToArray();
         var candidates = command.Mode == SearchMode.SavedWebsites ? _websites.AsEnumerable() : _apps.Concat(_websites);
         var matches = candidates.Select(indexed => (indexed, match: Score(indexed, normalized, tokens)))
@@ -63,8 +68,9 @@ public sealed class SearchCore
         }).ToList();
 
         if (command.Mode == SearchMode.Local && IsTranslationCandidate(command.Raw))
-            results.Add(new SearchResult("translation", ResultKind.Translation, "翻译", $"翻译“{command.Raw.Trim()}”",
-                int.MaxValue, MatchKind.Name, new OpenTranslationAction(command.Raw)));
+            results.Add(TranslationResult(command.Raw));
+        if (command.Mode == SearchMode.Local && !string.IsNullOrWhiteSpace(command.Query))
+            results.Add(SearchFilesResult(command.Raw));
         return results;
     }
 
@@ -96,30 +102,13 @@ public sealed class SearchCore
         return builder.ToString();
     }
 
-    public static bool IsTranslationCandidate(string raw)
-    {
-        var text = raw.Trim();
-        return text.Length > 0 && text.EnumerateRunes().Any(IsLatinLetter)
-            && text.EnumerateRunes().All(rune => Rune.IsWhiteSpace(rune)
-                || IsLatinLetter(rune)
-                || rune.Value is '\'' or '’' or '‘' or 0x02BC or '-' or >= 0x2010 and <= 0x2015);
-    }
+    public static bool IsTranslationCandidate(string raw) => raw.Length <= 20_000 && !string.IsNullOrWhiteSpace(raw);
 
-    private static bool IsLatinLetter(Rune rune)
-    {
-        var code = rune.Value;
-        return Rune.IsLetter(rune) && (code is >= 0x0041 and <= 0x007A
-            or >= 0x00C0 and <= 0x02AF
-            or >= 0x1D00 and <= 0x1DBF
-            or >= 0x1E00 and <= 0x1EFF
-            or >= 0x2C60 and <= 0x2C7F
-            or >= 0xA720 and <= 0xA7FF
-            or >= 0xAB30 and <= 0xAB6F
-            or >= 0xFB00 and <= 0xFB06
-            or >= 0xFF21 and <= 0xFF5A
-            or >= 0x10780 and <= 0x107BF
-            or >= 0x1DF00 and <= 0x1DFFF);
-    }
+    private static SearchResult TranslationResult(string raw) => new("translation", ResultKind.Translation, "翻译", $"翻译“{raw.Trim()}”",
+        int.MaxValue, MatchKind.Name, new OpenTranslationAction(raw));
+
+    private static SearchResult SearchFilesResult(string query) => new("search-files", ResultKind.SearchFiles, "搜索文件", $"搜索文件“{query.Trim()}”",
+        int.MaxValue, MatchKind.Name, new SearchFilesAction(query));
 
     private static (int Rank, MatchKind Kind)? Score(IndexedEntry entry, string query, string[] queryTokens)
     {
@@ -133,8 +122,12 @@ public sealed class SearchCore
         if (entry.FullPinyin.Contains(query, StringComparison.Ordinal)) return (7, MatchKind.Pinyin);
         if (entry.Initials.StartsWith(query, StringComparison.Ordinal)) return (8, MatchKind.Initials);
         if (entry.Initials.Contains(query, StringComparison.Ordinal)) return (9, MatchKind.Initials);
+        if (entry.AliasFullPinyin.Any(alias => alias.StartsWith(query, StringComparison.Ordinal))) return (10, MatchKind.Pinyin);
+        if (entry.AliasFullPinyin.Any(alias => alias.Contains(query, StringComparison.Ordinal))) return (11, MatchKind.Pinyin);
+        if (entry.AliasInitials.Any(alias => alias.StartsWith(query, StringComparison.Ordinal))) return (12, MatchKind.Initials);
+        if (entry.AliasInitials.Any(alias => alias.Contains(query, StringComparison.Ordinal))) return (13, MatchKind.Initials);
         if (entry.NormalizedText.Contains(query, StringComparison.Ordinal))
-            return (10, entry.NormalizedAliases.Any(alias => alias.Contains(query, StringComparison.Ordinal)) ? MatchKind.Alias : MatchKind.Name);
+            return (14, entry.NormalizedAliases.Any(alias => alias.Contains(query, StringComparison.Ordinal)) ? MatchKind.Alias : MatchKind.Name);
         return null;
     }
 
@@ -166,6 +159,11 @@ public sealed class SearchCore
             var syllables = PinyinConverter.Syllables(entry.Name);
             FullPinyin = Normalize(string.Concat(syllables));
             Initials = Normalize(string.Concat(syllables.Select(syllable => syllable.EnumerateRunes().FirstOrDefault().ToString())));
+            var cjkAliases = entry.Aliases.Where(ContainsCjk).Take(MaximumPinyinAliases).Select(TrimRunes).ToArray();
+            var aliasReadings = cjkAliases.Select(alias => PinyinConverter.Syllables(alias)).ToArray();
+            AliasFullPinyin = aliasReadings.Select(reading => Normalize(string.Concat(reading))).Where(value => value.Length > 0).ToArray();
+            AliasInitials = aliasReadings.Select(reading => Normalize(string.Concat(reading
+                .Select(syllable => syllable.EnumerateRunes().FirstOrDefault().ToString())))).Where(value => value.Length > 0).ToArray();
         }
 
         public SearchEntry Entry { get; }
@@ -176,5 +174,12 @@ public sealed class SearchCore
         public string[] NameTokens { get; }
         public string FullPinyin { get; }
         public string Initials { get; }
+        public string[] AliasFullPinyin { get; }
+        public string[] AliasInitials { get; }
+
+        private static bool ContainsCjk(string value) => value.EnumerateRunes().Any(rune =>
+            rune.Value is >= 0x3400 and <= 0x4DBF or >= 0x4E00 and <= 0x9FFF or >= 0xF900 and <= 0xFAFF or >= 0x20000 and <= 0x2FA1F);
+
+        private static string TrimRunes(string value) => string.Concat(value.EnumerateRunes().Take(MaximumPinyinAliasRunes));
     }
 }

@@ -31,19 +31,28 @@ public sealed class ResultActionExecutor(AppCatalogService catalog, EverythingCl
             case ShortcutTarget shortcut: return Shell(shortcut.ShortcutPath);
             case ExecutableTarget executable: return Shell(executable.Path);
             case PackagedTarget packaged:
+                if (!AppFolderIdValidator.IsPackageAumid(packaged.AppId)) throw new InvalidOperationException("打包应用标识无效。");
                 var packagedStart = Shell("explorer.exe");
                 packagedStart.ArgumentList.Add($@"shell:AppsFolder\{packaged.AppId}");
                 return packagedStart;
+            case AppFolderTarget appFolder:
+                if (!AppFolderIdValidator.IsValid(appFolder.AppId) || AppFolderIdValidator.IsPackageAumid(appFolder.AppId))
+                    throw new InvalidOperationException("Windows 应用标识无效。");
+                var appFolderStart = Shell("explorer.exe");
+                appFolderStart.ArgumentList.Add($@"shell:AppsFolder\{appFolder.AppId}");
+                return appFolderStart;
             case SystemTarget system:
                 var fileName = system.App switch
                 {
                     "file-explorer" => "explorer.exe",
                     "control-panel" => "control.exe",
                     "device-manager" => "mmc.exe",
+                    "disk-management" => "mmc.exe",
                     _ => throw new InvalidOperationException("未知系统应用。"),
                 };
                 var systemStart = Shell(fileName);
                 if (system.App == "device-manager") systemStart.ArgumentList.Add("devmgmt.msc");
+                else if (system.App == "disk-management") systemStart.ArgumentList.Add("diskmgmt.msc");
                 return systemStart;
             default: throw new InvalidOperationException("未知应用启动类型。");
         }

@@ -17,8 +17,27 @@ ${StrStr}
 !define TEST_UNINSTALL_KEY "${UNINSTALL_ROOT}\WebToolsNativePhase4FTest"
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
 
+!ifndef WEBTOOLS_PRODUCT_VERSION
+  !error "WEBTOOLS_PRODUCT_VERSION must be provided by the versioned build script."
+!endif
+!ifndef WEBTOOLS_FILE_VERSION
+  !error "WEBTOOLS_FILE_VERSION must be provided by the versioned build script."
+!endif
+!ifndef WEBTOOLS_CHANNEL
+  !error "WEBTOOLS_CHANNEL must be provided by the versioned build script."
+!endif
+
 Name "${PRODUCT_NAME}"
-OutFile "WebTools-Setup-0.1.0.exe"
+!if "${WEBTOOLS_CHANNEL}" == "stable"
+  OutFile "WebTools-Setup-${WEBTOOLS_PRODUCT_VERSION}.exe"
+!else
+  OutFile "WebTools-Setup-${WEBTOOLS_PRODUCT_VERSION}-${WEBTOOLS_CHANNEL}.exe"
+!endif
+VIProductVersion "${WEBTOOLS_FILE_VERSION}"
+VIAddVersionKey /LANG=2052 "ProductName" "${PRODUCT_NAME}"
+VIAddVersionKey /LANG=2052 "ProductVersion" "${WEBTOOLS_PRODUCT_VERSION}"
+VIAddVersionKey /LANG=2052 "FileVersion" "${WEBTOOLS_FILE_VERSION}"
+VIAddVersionKey /LANG=2052 "FileDescription" "WebTools Installer"
 InstallDir "$LOCALAPPDATA\Programs\WebTools"
 InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
 Icon "stage\app.ico"
@@ -234,6 +253,7 @@ Section "Install WebTools NativeHost and Manager" SEC_INSTALL
     FileWrite $R0 "test"
     FileClose $R0
     WriteRegStr HKCU "${TEST_UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME} Phase 4F Test"
+    WriteRegStr HKCU "${TEST_UNINSTALL_KEY}" "DisplayVersion" "${WEBTOOLS_PRODUCT_VERSION}"
     WriteRegStr HKCU "${TEST_UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKCU "${TEST_UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   ${Else}
@@ -246,6 +266,7 @@ Section "Install WebTools NativeHost and Manager" SEC_INSTALL
     CreateShortcut "$SMPROGRAMS\WebTools\WebTools.lnk" "$INSTDIR\WebTools.NativeHost.exe" "" "$INSTDIR\app.ico" 0 SW_SHOWNORMAL "" "Start WebTools Native Launcher"
     CreateShortcut "$DESKTOP\WebTools.lnk" "$INSTDIR\WebTools.NativeHost.exe" "" "$INSTDIR\app.ico" 0 SW_SHOWNORMAL "" "Start WebTools Native Launcher"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${WEBTOOLS_PRODUCT_VERSION}"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\app.ico"

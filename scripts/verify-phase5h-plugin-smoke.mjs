@@ -13,10 +13,12 @@ const isSameOrChildPath = (parent, candidate) => {
 }
 
 export function parsePhase5hSmokeArgs(args) {
-  if (!Array.isArray(args) || args.length !== 4 || args.some(value => typeof value !== 'string' || value.length === 0)) {
-    throw new Error('Phase 5H smoke requires four absolute paths: evidence root, NativeHost Release directory, Manager win-unpacked directory, and packed .wtplugin.')
+  if (!Array.isArray(args) || ![4, 5].includes(args.length) || args.some(value => typeof value !== 'string' || value.length === 0)) {
+    throw new Error('Phase 5H smoke requires four absolute paths: evidence root, NativeHost Release directory, Manager win-unpacked directory, and packed .wtplugin; optional fifth argument is --phase5i-manager-cycles=10.')
   }
-  return { root: args[0], nativeSource: args[1], managerRoot: args[2], pluginPackage: args[3] }
+  const managerCycles = args.length === 5 ? args[4] === '--phase5i-manager-cycles=10' ? 10 : null : 0
+  if (managerCycles === null) throw new Error('The only supported Phase 5I cycle count is exactly 10.')
+  return { root: args[0], nativeSource: args[1], managerRoot: args[2], pluginPackage: args[3], managerCycles }
 }
 
 async function regularFile(pathname, label) {
@@ -54,10 +56,12 @@ async function validateExistingLayout(paths) {
 }
 
 export async function runPhase5hSmoke(args) {
+  if (![undefined, 0, 10].includes(args.managerCycles)) throw new Error('The only supported Phase 5I cycle count is exactly 10.')
   const paths = await validateExistingLayout(args)
+  const cycleArgs = args.managerCycles === 10 ? ['--phase5i-manager-cycles=10'] : []
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [
-      '--experimental-strip-types', smoke, paths.root, paths.nativeSource, paths.managerRoot, '--phase5h', paths.pluginPackage,
+      '--experimental-strip-types', smoke, paths.root, paths.nativeSource, paths.managerRoot, '--phase5h', paths.pluginPackage, ...cycleArgs,
     ], { cwd: repo, windowsHide: true, stdio: 'inherit' })
     child.once('error', reject)
     child.once('exit', code => code === 0 ? resolve() : reject(new Error(`Packaged Phase 5H host smoke exited with code ${code}.`)))

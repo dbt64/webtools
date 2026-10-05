@@ -3,11 +3,12 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process'
 import { once } from 'node:events'
 import { createConnection, createServer } from 'node:net'
 import { createInterface } from 'node:readline'
-import { mkdir, readFile, readdir, writeFile, cp } from 'node:fs/promises'
+import { mkdir, readFile, readdir, writeFile, cp, rmdir } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertSafeManagerEvidenceRoot } from './lib/manager-lifecycle-evidence.mjs'
+import { withManagerCdpProbe } from './lib/manager-cdp-probe.mjs'
 import { createDefaultAppData } from '../src/shared/domain.ts'
 import { PluginManager } from '../electron/plugins/plugin-manager.ts'
 import { packageBytes, manifest } from '../electron/plugins/fixtures.mjs'
@@ -20,6 +21,11 @@ import { validatePackage } from '../electron/plugins/package-validator.ts'
 const phase5f = process.argv[5] === '--phase5f'
 const phase5g = process.argv[5] === '--phase5g'
 const phase5h = process.argv[5] === '--phase5h'
+const phase5iCycleArgs = process.argv.filter(value => value.startsWith('--phase5i-manager-cycles='))
+if (phase5iCycleArgs.length > 0 && (!phase5h || phase5iCycleArgs.length !== 1 || phase5iCycleArgs[0] !== '--phase5i-manager-cycles=10')) {
+  throw new Error('Phase 5I lifecycle smoke supports exactly 10 cycles on the Phase 5H isolated smoke only.')
+}
+const phase5iManagerCycles = phase5iCycleArgs.length === 1
 const reportFile = phase5h ? 'phase5h-plugin-smoke-report.json' : phase5g ? 'phase5g-translation-plugin-smoke-report.json' : phase5f ? 'phase5f-plugin-catalog-smoke-report.json' : 'phase5d-plugin-ui-smoke-report.json'
 const repo = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const root = assertSafeManagerEvidenceRoot(resolve(process.argv[2] ?? ''))
@@ -43,8 +49,9 @@ const data = createDefaultAppData()
 data.settings.quickSearchShortcut = 'Control+Alt+Shift+F12'
 data.settings.translation.engine = 'ai'
 await writeFile(join(profile, 'nook-data.json'), JSON.stringify(data))
-await writeFile(join(profile, 'launcher-state.json'), JSON.stringify({ schemaVersion: 1, quickSearchShortcut: data.settings.quickSearchShortcut, theme: 'dark', launcherDisplayMode: 'compact', launchOnStartup: false, searchEngines: data.settings.searchEngines, defaultSearchEngineId: 'google', everythingEnabled: false, everythingEsPath: '', websites: [], appSearchMemory: [] }))
+await writeFile(join(profile, 'launcher-state.json'), JSON.stringify({ schemaVersion: 1, quickSearchShortcut: data.settings.quickSearchShortcut, theme: 'dark', launcherDisplayMode: 'expanded', launchOnStartup: false, searchEngines: data.settings.searchEngines, defaultSearchEngineId: 'google', everythingEnabled: false, everythingEsPath: '', websites: [], appSearchMemory: [] }))
 await writeFile(join(profile, 'catalog.json'), JSON.stringify({ schemaVersion: 1, generatedAtUtc: new Date().toISOString(), apps: [] }))
+if (phase5h) await mkdir(join(profile, 'launcher-plugins.json')) // Recoverable derived-cache failure must not block Manager startup.
 
 const demoPackageBytes = phase5h ? new Uint8Array(await readFile(inputPackagePath)) : null
 const demo = phase5h
@@ -312,6 +319,13 @@ try {
   await evaluate('[...document.querySelectorAll(".nav-subitem:not(.plugin-nav-item)")].find(button => button.textContent.trim() === "插件管理")?.click()')
   await until(() => evaluate('!!document.querySelector(".plugin-manager-page")'), Boolean, 'plugin center route')
   await until(() => evaluate(`[...document.querySelectorAll('.plugin-list-row')].some(row => row.textContent.includes(${JSON.stringify(demo.name)}))`), Boolean, 'seeded plugin list')
+  if (phase5h) {
+    assert.equal((await evaluate('window.desktop.pluginCatalog.list()')).ok, true, 'authority is available despite cache failure')
+    await rmdir(join(profile, 'launcher-plugins.json'))
+    assert.equal((await evaluate('window.desktop.pluginCatalog.list()')).ok, true)
+    await until(() => control({ type: 'snapshot' }), state => state.pluginShortcuts.some(item => item.ref.kind === 'declarative' && item.ref.id === pluginId), 'Native cache recovers on explicit catalog refresh')
+    report.pluginProjectionCacheRecovery = 'Packaged Manager opened and authority catalog remained available despite a derived-cache path collision; removing only the isolated obstruction and refreshing repaired the projection.'
+  }
   if (phase5f) {
     const catalog = await evaluate('window.desktop.pluginCatalog.list()')
     assert.equal(catalog.ok, true)
@@ -413,6 +427,12 @@ try {
     assert.equal(await evaluate('document.querySelector(".translation-output")?.textContent.trim()'), '译文会显示在这里', 'no automatic provider request starts without configured credentials')
     const storedEnabled = JSON.parse(await readFile(join(profile, 'builtin-plugins', 'state.json'), 'utf8'))
     assert.equal(storedEnabled.plugins['webtools.translation']?.enabled, true, 'explicit enable is persisted')
+    assert.equal(await evaluate('[...document.querySelectorAll(".plugin-nav-item")].some(button => button.textContent.trim() === "翻译")'), true, 'Enable & Open refreshes navigation')
+    assert.equal((await evaluate('window.desktop.pluginCatalog.list()')).data.entries[0].state.enabled, true)
+    assert.ok((await control({ type: 'snapshot' })).pluginShortcuts.some(item => item.ref.kind === 'builtin'), 'Enable & Open publishes Native projection')
+    await control({ type: 'manager-translation', text: prefillText })
+    await until(() => evaluate('document.querySelector(".translate-page textarea")?.value'), value => value === prefillText, 'next handoff bypasses gate with exact text')
+    assert.equal(await evaluate('!!document.querySelector(".builtin-translation-gate")'), false)
     assert.equal(JSON.stringify(storedEnabled).includes(prefillText), false, 'exact text is not written to built-in state')
     const persistentStateAfterToggle = {
       files: await snapshotFiles(preservedFiles),
@@ -486,9 +506,11 @@ try {
     await evaluate(`[...document.querySelectorAll('.plugin-list-row')].find(row => row.textContent.includes(${JSON.stringify(demo.name)}))?.click()`)
     await evaluate('[...document.querySelectorAll(".plugin-actions button")].find(button => button.textContent.includes("停用插件"))?.click()')
     await until(async () => (await evaluate('window.desktop.plugins.list()')).data?.find(plugin => plugin.id === pluginId)?.status === 'installed-disabled', Boolean, 'SDK example disabled')
+    assert.equal((await control({ type: 'snapshot' })).pluginShortcuts.some(item => item.ref.kind === 'declarative' && item.ref.id === pluginId), false, 'disabled plugin immediately leaves Native cache')
     assert.equal(await evaluate('[...document.querySelectorAll(".plugin-nav-item")].some(button => button.textContent.includes("Private Notes"))'), false)
     await evaluate('[...document.querySelectorAll(".plugin-actions button")].find(button => button.textContent.includes("启用插件"))?.click()')
     await until(async () => (await evaluate('window.desktop.plugins.list()')).data?.find(plugin => plugin.id === pluginId)?.status === 'active', Boolean, 'SDK example re-enabled')
+    assert.equal((await control({ type: 'snapshot' })).pluginShortcuts.some(item => item.ref.kind === 'declarative' && item.ref.id === pluginId), true, 'enabled plugin returns without Native restart')
     assert.equal(await evaluate('[...document.querySelectorAll(".plugin-nav-item")].some(button => button.textContent.includes("Private Notes"))'), true)
     report.sdkPluginUi = 'Packaged WebTools accepted the generated Private Notes package; metadata and requested/granted storage permissions matched Manifest v1. The page wrote and read a value through the declared host actions, and disable/re-enable removed/restored its Apps navigation entry.'
     report.packagedInput = { path: inputPackagePath.slice(root.length + 1), sha256: createHash('sha256').update(demoPackageBytes).digest('hex'), bytes: demoPackageBytes.length, id: demo.id, version: demo.version }
@@ -561,6 +583,23 @@ try {
   await os('close', mainIdentity)
   const closed = await until(os, processes => group(processes).length === 0 && processes.some(process => process.pid === native.pid), 'ordinary Manager close returns Electron to zero')
   record('manager-closed-electron-zero-native-remains', closed)
+  if (phase5h) {
+    const shortcuts = await control({ type: 'show' })
+    assert.ok(shortcuts.pluginShortcuts.some(item => item.ref.kind === 'declarative' && item.ref.id === pluginId))
+    assert.equal(shortcuts.realizedPluginShortcutCount, shortcuts.pluginShortcuts.length, 'real WPF shortcut buttons are visible in expanded mode')
+    assert.equal(group(await os()).length, 0, 'showing cached shortcuts never starts Electron')
+    await control({ type: 'manager-plugin', kind: 'declarative', id: pluginId })
+    mainIdentity = group(await until(os, processes => group(processes).some(process => process.role === 'main'), 'Native shortcut starts Manager')).find(process => process.role === 'main')
+    await until(() => control({ type: 'manager-state' }), state => state.manager.rendererReady && state.manager.pendingRequestId === null, 'Native plugin page presented')
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
+    const page = pages.find(item => item.type === 'page')
+    await withManagerCdpProbe(new WebSocket(page.webSocketDebuggerUrl), {
+      label: 'Native declarative shortcut', expression: '(async()=>{const deadline=Date.now()+5000;while(!document.querySelector(".declarative-plugin-page")){if(Date.now()>deadline)throw new Error("Plugin page did not render");await new Promise(resolve=>requestAnimationFrame(resolve))}return {page:true,name:document.querySelector(".plugin-page-heading h1")?.textContent}})()',
+    }, value => { assert.equal(value.page, true); assert.equal(value.name, demo.name) })
+    await os('close', mainIdentity)
+    record('native-plugin-shortcut-open-normal-close', await until(os, processes => group(processes).length === 0, 'shortcut Manager normal close'))
+    report.nativePluginShortcuts = 'Real Named Pipe projection updated on disable/re-enable; cached real WPF shortcuts displayed with Electron=0; button click routed exact declarative PluginRef into a new Manager; normal close returned Electron=0.'
+  }
   if (phase5f || phase5g || phase5h) {
     const firstManager = mainIdentity
     await control({ type: 'manager-open', section: 'favorites' })
@@ -635,6 +674,65 @@ try {
       report.uninstallAndPrivateData = 'The actual PluginManager in the isolated profile retained plugin storage when the delete-data consent was declined; reinstall read the retained note; the second uninstall with delete-data consent removed that data. Native consent dialogs are mocked only in this TEMP test profile.'
       report.uninstallConsentSequence = lifecycleConsents
     } finally { lifecycle.close() }
+  }
+  if (phase5iManagerCycles) {
+    const cycles = []
+    const nativeBefore = (await os()).find(process => sameProcess(process, nativeIdentity, nativeExe))
+    assert.ok(nativeBefore, 'The isolated NativeHost must remain present before bounded Manager cycles.')
+    const seenManagers = new Set()
+    for (let index = 1; index <= 10; index++) {
+      const startedAt = Date.now()
+      await control({ type: 'manager-open', section: 'favorites' })
+      const opened = await until(os, processes => group(processes).filter(process => process.role === 'main').length === 1, `Phase 5I Manager cycle ${index} Main`)
+      const main = group(opened).find(process => process.role === 'main')
+      assert.equal(main.parentPid, native.pid, 'Manager Main must belong to the isolated NativeHost.')
+      assert.ok(sameProcess(main, { pid: main.pid, created: main.created }, managerExe), 'Manager path must be the candidate win-unpacked executable.')
+      const identity = `${main.pid}:${main.created}`
+      assert.ok(!seenManagers.has(identity), 'A Manager process identity must not be reused across normal-close cycles.')
+      seenManagers.add(identity)
+      const readyState = await until(async () => control({ type: 'manager-state' }), state => state.manager?.rendererReady && state.manager?.pendingRequestId === null, `Phase 5I Manager cycle ${index} renderer acknowledgement`)
+      assert.equal(readyState.manager.processId, main.pid)
+      const pages = await until(async () => {
+        try { return await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() } catch { return [] }
+      }, values => values.filter(page => page.type === 'page').length === 1, `Phase 5I Manager cycle ${index} renderer target`)
+      const page = pages.find(value => value.type === 'page')
+      assert.ok(page.url.startsWith('file:') && page.url.endsWith('/out/renderer/index.html'), 'Candidate Manager must use the packaged local renderer.')
+      const cycleSocket = new WebSocket(page.webSocketDebuggerUrl)
+      const managerMembers = await withManagerCdpProbe(cycleSocket, {
+        label: `Phase 5I Manager cycle ${index} renderer`,
+        expression: `!!document.querySelector('.favorites-page')`,
+      }, async rendered => {
+        assert.equal(rendered, true, 'Favorites renderer must be mounted before normal close.')
+        const members = group(await os())
+        assert.equal(members.filter(process => process.role === 'main').length, 1)
+        assert.equal(members.filter(process => process.role === 'renderer').length, 1)
+        assert.equal(members.find(process => process.pid === main.pid)?.windows.length, 1)
+        return members
+      })
+      await os('close', main)
+      const closed = await until(os, processes => group(processes).length === 0 && processes.some(process => sameProcess(process, nativeIdentity, nativeExe)), `Phase 5I Manager cycle ${index} normal close`)
+      assert.equal(native.exitCode, null, 'NativeHost must remain alive after Manager close.')
+      const nativeAfter = closed.find(process => sameProcess(process, nativeIdentity, nativeExe))
+      assert.ok(nativeAfter, 'The same isolated NativeHost must remain after Manager close.')
+      record(`phase5i-manager-cycle-${index}-closed`, closed)
+      cycles.push({ index, main: { pid: main.pid, created: main.created }, managerMemberCount: managerMembers.length, rendererCount: managerMembers.filter(process => process.role === 'renderer').length, electronAfterClose: group(closed).length, nativeHandlesAfterClose: nativeAfter.handles, nativeThreadsAfterClose: nativeAfter.threads, durationMs: Date.now() - startedAt })
+      console.log(`Phase 5I Manager cycle ${index}/10 PASS`)
+    }
+    const nativeAfterCycles = (await os()).find(process => sameProcess(process, nativeIdentity, nativeExe))
+    assert.ok(nativeAfterCycles, 'Same NativeHost identity must survive all Manager cycles.')
+    assert.equal(group(await os()).length, 0, 'No Manager/Electron process may remain after cycle 10.')
+    report.phase5iManagerCycles = {
+      result: 'PASS',
+      count: cycles.length,
+      sameNativeHost: { pid: nativeIdentity.pid, created: nativeIdentity.created },
+      managerIdentitiesUnique: seenManagers.size === 10,
+      nativeHandlesBefore: nativeBefore.handles,
+      nativeHandlesAfter: nativeAfterCycles.handles,
+      nativeThreadsBefore: nativeBefore.threads,
+      nativeThreadsAfter: nativeAfterCycles.threads,
+      processGate: 'one candidate Main and one Renderer while each Manager is open; zero candidate Electron processes after each ordinary WM_CLOSE; same isolated NativeHost remains',
+      cycles,
+    }
   }
   await os('close-native', nativeIdentity)
   const exited = await until(os, processes => processes.length === 0, 'isolated Native exit')

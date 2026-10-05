@@ -5,6 +5,7 @@ import { once } from 'node:events'
 import { join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
+import { parseProductVersion } from './release-contract.mjs'
 
 // Full NSIS uninstall/reinstall regression in a private registry and directory.
 // No production installation, shortcuts, startup entries, or user data are touched.
@@ -37,6 +38,14 @@ await mkdir(join(stage, 'updater'), { recursive: true })
 await copyFile(resolve(helperPath), join(stage, 'updater', 'WebTools.UpdateHelper.exe'))
 await copyFile('resources/app.ico', join(stage, 'app.ico'))
 const source = await readFile('scripts/native-production.nsi', 'utf8')
+const productManifest = JSON.parse(await readFile('package.json', 'utf8'))
+const productVersion = parseProductVersion(productManifest.version)
+const nsisDefinitions = [
+  `!define WEBTOOLS_PRODUCT_VERSION "${productVersion.version}"`,
+  `!define WEBTOOLS_FILE_VERSION "${productVersion.windowsFileVersion}"`,
+  '!define WEBTOOLS_CHANNEL "stable"',
+  '',
+].join('\n')
 const sandboxSource = source
   .replace('SetCompressor /SOLID lzma', 'SetCompressor zlib')
   .replace('Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', `${registry}\\Uninstall`)
@@ -61,13 +70,13 @@ try {
       }
       await copyFile(join(checks, 'WebTools.UpdateHelper.Checks.exe'), join(stage, 'manager', 'WebTools.exe'))
     }
-    let nsi = sandboxSource.replace('OutFile "WebTools-Setup-0.1.0.exe"', `OutFile "${generation}-setup.exe"`)
+    let nsi = sandboxSource.replace('OutFile "WebTools-Setup-${WEBTOOLS_PRODUCT_VERSION}.exe"', `OutFile "${generation}-setup.exe"`)
     if (generation === 'old') {
       // Deterministic delayed old uninstall catches an unwaited temporary child.
       nsi = nsi.replace('Section "Uninstall"', 'Section "Uninstall"\n  Sleep 1500')
       nsi = nsi.replace('  RMDir /r "$INSTDIR"', `  RMDir /r "$INSTDIR"\n  FileOpen $0 "${completedUninstall}" w\n  FileWrite $0 "complete"\n  FileClose $0`)
     }
-    await writeFile(join(fixture, `${generation}.nsi`), '\uFEFF' + nsi)
+    await writeFile(join(fixture, `${generation}.nsi`), '\uFEFF' + nsisDefinitions + nsi)
     assert.equal(await run(compiler, ['/V2', `${generation}.nsi`], { cwd: fixture, stdio: 'inherit' }), 0, `${generation} installer compilation`)
     if (generation === 'old') {
       assert.equal(await run(join(fixture, 'old-setup.exe'), ['/S', `/D=${installRoot}`], { windowsVerbatimArguments: true }), 0, 'Fresh old installation')

@@ -100,6 +100,14 @@ dotnet build .\native\WebTools.NativeHost\WebTools.NativeHost.csproj --configura
 dotnet run --project .\native\WebTools.NativeHost.Checks\WebTools.NativeHost.Checks.csproj --configuration Release
 ```
 
+准备版本化 Windows 构建时，先阅读 [Release Build & Version Contract](docs/release-build.md)。该流程要求干净工作区，并在 `release/` 下生成带有版本元数据和 SHA-256 清单的本地候选包：
+
+```powershell
+pnpm run release:preflight
+pnpm run release:build
+pnpm run release:verify -- release\<生成的产物目录>
+```
+
 `pnpm run build` 构建 Electron Manager renderer、Main 和 preload。`pnpm run native:dev` 启动 NativeHost 并按需启动 Manager；`pnpm run electron:dev` 仅用于单独调试 Manager。`pnpm run package:win` 生成 NativeHost 为入口、Electron Manager 单独安装在 `Manager/` 下的 Windows 安装包，并执行独立路径安装/卸载 smoke 验证。
 
 ## 当前状态

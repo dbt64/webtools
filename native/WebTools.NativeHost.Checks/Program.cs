@@ -115,6 +115,38 @@ static string BuildLegacyV2Profile(bool invalidOptionalDescription = false)
     return JsonSerializer.Serialize(profile, new JsonSerializerOptions { WriteIndented = true });
 }
 
+static string ClassifySystemCapability(bool? installed, bool discovered) => discovered
+    ? "AVAILABLE"
+    : installed == false ? "NOT INSTALLED / NOT AVAILABLE" : "DISCOVERY FAILURE";
+
+static bool? IsWindowsTerminalInstalled()
+{
+    using var process = new Process();
+    process.StartInfo = new ProcessStartInfo("powershell.exe")
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        StandardOutputEncoding = Encoding.UTF8,
+    };
+    foreach (var argument in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; if (Get-AppxPackage -Name Microsoft.WindowsTerminal -ErrorAction Stop | Select-Object -First 1) { 'installed' } else { 'absent' }" })
+        process.StartInfo.ArgumentList.Add(argument);
+    try
+    {
+        if (!process.Start()) return null;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        var output = process.StandardOutput.ReadToEndAsync(timeout.Token).GetAwaiter().GetResult().Trim();
+        process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
+        return process.ExitCode == 0 ? output switch { "installed" => true, "absent" => false, _ => null } : null;
+    }
+    catch
+    {
+        if (!process.HasExited) process.Kill(entireProcessTree: true);
+        return null;
+    }
+}
+
 var state = new LauncherInteractionState();
 var checks = new List<(string Name, Action Run)>
 {
@@ -137,10 +169,154 @@ var checks = new List<(string Name, Action Run)>
         Assert(search.Search(SearchCommand.Parse("wenjian"))[0].Id == "f000000000000003", "Full pinyin query");
         Assert(search.Search(SearchCommand.Parse("wjzy"))[0].Id == "f000000000000003", "Initials query");
     }),
-    ("translation candidate accepts extended Latin letters but excludes mixed scripts", () =>
+    ("translation contextual action accepts meaningful Unicode text and preserves command modes", () =>
     {
-        Assert(SearchCore.IsTranslationCandidate("café ḍ"), "Extended Latin phrase should be eligible.");
-        Assert(!SearchCore.IsTranslationCandidate("hello你好"), "Mixed Han and Latin should not show translation.");
+        var search = new SearchCore([], []);
+        foreach (var text in new[] { "hello world", "你好世界", "こんにちは", "Hello 中文", "Hello-WebTools 中文 日本語 🚀!", "don't", "！？—", "🚀", "https://example.com", "  exact 原文  " })
+        {
+            var result = search.Search(SearchCommand.Parse(text)).Single(item => item.Kind == ResultKind.Translation);
+            Assert(result.Action is OpenTranslationAction action && action.Text == text, "Any meaningful local query must offer exact Translation handoff.");
+        }
+        foreach (var text in new[] { "", " \t\n" }) Assert(search.Search(SearchCommand.Parse(text)).Count == 0, "Empty queries have no Translation action.");
+        foreach (var text in new[] { "?hello", "/hello", "file:hello" })
+            Assert(!search.Search(SearchCommand.Parse(text)).Any(item => item.Kind == ResultKind.Translation), "Command modes retain their existing behavior.");
+    }),
+    ("ordinary local queries offer a bounded Search Files action after Translation", () =>
+    {
+        var apps = Enumerable.Range(1, 9)
+            .Select(index => SearchEntry.Application(index.ToString("x16"), $"Host Tool {index:00}", []))
+            .ToArray();
+        var search = new SearchCore(apps, []);
+        var results = search.Search(SearchCommand.Parse("  host  "));
+        Assert(results.Count == 10, "Eight app results plus Translation and Search Files must remain bounded.");
+        Assert(results.Take(8).All(item => item.Kind == ResultKind.Application), "Local app results keep the existing eight-row cap.");
+        Assert(results[8].Kind == ResultKind.Translation, "Translation remains the first contextual action.");
+        Assert(results[9].Kind == ResultKind.SearchFiles && results[9].Action is SearchFilesAction { Query: "  host  " }, "Search Files is last and carries the exact original query without a file: prefix.");
+        Assert(FileSearchProjection.BuildSearchCommand((SearchFilesAction)results[9].Action) == "file:  host  ", "Search Files action preserves original query text while adding exactly one file: prefix.");
+        Assert(FileSearchProjection.BuildSearchCommand(new SearchFilesAction("file:host")) == "file:host", "A pre-prefixed query cannot receive a duplicate file: prefix.");
+        Assert(search.Search(SearchCommand.Parse("orphan")).Any(item => item.Action is SearchFilesAction { Query: "orphan" }), "Unmatched local queries still offer Search Files.");
+        var paddedAction = search.Search(SearchCommand.Parse("  host  ")).Single(item => item.Kind == ResultKind.SearchFiles);
+        Assert(paddedAction.Action is SearchFilesAction { Query: "  host  " }, "Search Files carries the exact original local query text, including edge whitespace.");
+        Assert(FileSearchProjection.BuildSearchCommand((SearchFilesAction)paddedAction.Action) == "file:  host  ", "Search Files prefixes the original query without normalizing it.");
+        Assert(search.Search(SearchCommand.Parse(" \t\n")).Count == 0, "Whitespace-only queries do not offer contextual actions.");
+        foreach (var text in new[] { "?host", "/host", "file:host" })
+            Assert(search.Search(SearchCommand.Parse(text)).All(item => item.Action is not SearchFilesAction), "Existing command modes must not get a Search Files action.");
+        Assert(search.Search(SearchCommand.Parse("host")).Select(item => item.Action.GetType().Name)
+            .SequenceEqual(results.Select(item => item.Action.GetType().Name)), "Contextual action order is deterministic across equivalent queries.");
+    }),
+    ("file search projection keeps its query, categories, result cap, and keyboard category selection", () =>
+    {
+        var projection = new FileSearchProjection();
+        projection.SetQuery("file:中文 文件");
+        Assert(projection.IsActive && projection.RawQuery == "file:中文 文件", "File mode preserves the exact command text.");
+        var paths = new[]
+        {
+            (Path: @"C:\测试\资料", Folder: true),
+            (Path: @"C:\测试\应用.exe", Folder: false),
+            (Path: @"C:\测试\报告.docx", Folder: false),
+            (Path: @"C:\测试\照片.png", Folder: false),
+            (Path: @"C:\测试\未知.zzz", Folder: false),
+            (Path: @"C:\测试\影片.mp4", Folder: false),
+            (Path: @"C:\测试\音频.mp3", Folder: false),
+            (Path: @"C:\测试\压缩.zip", Folder: false),
+        };
+        var results = paths.Select((item, index) => new SearchResult(Guid.NewGuid().ToString("N"),
+            item.Folder ? ResultKind.Folder : ResultKind.File, Path.GetFileName(item.Path), item.Path, index,
+            MatchKind.Name, new OpenFileAction(Guid.NewGuid().ToString("N")), item.Path)).ToArray();
+        projection.SetResults(results.Concat(Enumerable.Range(0, 20).Select(index => results[index % results.Length])).ToArray());
+        Assert(projection.Results.Count == 20, "File projection keeps the backend result cap at twenty.");
+        Assert(projection.SelectCategory(FileCategory.Folder) && projection.VisibleResults.Count > 0 && projection.VisibleResults.All(item => item.Title == "资料"), "Folder is classified independently.");
+        Assert(projection.SelectCategory(FileCategory.Application) && projection.VisibleResults.Count > 0 && projection.VisibleResults.All(item => item.Title == "应用.exe"), "Application extension category filters the bounded set.");
+        Assert(projection.SelectCategory(FileCategory.Document) && projection.VisibleResults.Count > 0 && projection.VisibleResults.All(item => item.Title == "报告.docx"), "Document extensions map to one maintained category.");
+        Assert(projection.SelectCategory(FileCategory.Image) && projection.VisibleResults.Count > 0 && projection.VisibleResults.All(item => item.Title == "照片.png"), "Image category filters correctly.");
+        Assert(projection.SelectCategory(FileCategory.Video) && projection.VisibleResults.Count > 0 && projection.VisibleResults.All(item => item.Title == "影片.mp4"), "Video category filters correctly.");
+        Assert(projection.SelectCategory(FileCategory.Audio) && projection.VisibleResults.Count > 0 && projection.VisibleResults.All(item => item.Title == "音频.mp3"), "Audio category filters correctly.");
+        Assert(projection.SelectCategory(FileCategory.Archive) && projection.VisibleResults.Count > 0 && projection.VisibleResults.All(item => item.Title == "压缩.zip"), "Archive category filters correctly.");
+        Assert(projection.SelectCategory(FileCategory.Other) && projection.VisibleResults.Count > 0 && projection.VisibleResults.All(item => item.Title == "未知.zzz"), "Unknown extensions map to Other.");
+        Assert(projection.RawQuery == "file:中文 文件", "Category changes do not rewrite the current query.");
+        projection.SetResults([results[0]]);
+        Assert(projection.SelectCategory(FileCategory.Document) && projection.VisibleResults.Count == 0, "An empty category remains selectable and presents an empty state without another search.");
+        projection.SetResults(results.Concat(Enumerable.Range(0, 20).Select(index => results[index % results.Length])).ToArray());
+        Assert(projection.SelectCategory(FileCategory.All) && projection.VisibleResults.Count == 20, "All restores the complete bounded result list.");
+        var selection = new LauncherInteractionState();
+        selection.SetResults(projection.VisibleResults);
+        selection.Select(1);
+        var selectedId = selection.GetSelectedResult()!.Id;
+        selection.SetResults(projection.VisibleResults, selectedId);
+        Assert(selection.GetSelectedResult()?.Id == selectedId, "A selected result that remains visible is retained across category changes.");
+        Assert(projection.SelectCategory(FileCategory.Folder), "Folder category remains selectable.");
+        selection.SetResults(projection.VisibleResults, selectedId);
+        Assert(selection.SelectedIndex is -1 || selection.SelectedIndex < selection.Results.Count, "A filtered-out selection cannot leave an out-of-range result index.");
+        Assert(selection.Results.All(item => item.Kind == ResultKind.Folder), "Selection state only contains results in the current category projection.");
+        for (var index = 0; index < 100; index++) selection.MoveSelection(index % 2 == 0 ? 1 : -1);
+        Assert(selection.SelectedIndex >= 0 && selection.SelectedIndex < selection.Results.Count, "Repeated keyboard moves remain bounded after category filtering.");
+        projection.SelectCategory(FileCategory.All);
+        Assert(projection.MoveCategorySelection(1) == 1 && projection.MoveCategorySelection(-1) == 0, "Category keyboard navigation moves predictably.");
+        Assert(projection.MoveCategorySelection(-1) == projection.Categories.Count - 1, "Category keyboard navigation wraps at the start.");
+        projection.SetQuery("ordinary");
+        Assert(!projection.IsActive && projection.RawQuery == "ordinary" && projection.VisibleResults.Count == 0, "Leaving file mode clears file presentation without changing shared search semantics.");
+        foreach (var mode in new[] { "?web", "/saved", "" })
+        {
+            projection.SetQuery(mode);
+            Assert(!projection.IsActive, $"{mode} must not activate the dedicated file presentation.");
+        }
+    }),
+    ("expanded website and plugin sections share a viewport without clipping the capped window", () =>
+    {
+        var budget = ShortcutViewportBudget.Calculate(24, true, 24, true, 344);
+        Assert(budget.Websites >= 60 && budget.Plugins >= 60 && budget.Websites + budget.Plugins <= 344, "Both grids must fit the available window viewport.");
+        var single = ShortcutViewportBudget.Calculate(24, true, 6, false, 344);
+        Assert(single.Websites == 240 && single.Plugins == 60, "Single-section four-row layout is preserved.");
+    }),
+    ("Launcher plugin cache is bounded, rejects authority/private fields, and preserves composite identities", () =>
+    {
+        foreach (var json in new[] {
+            "{\"projectionVersion\":\"1\",\"plugins\":[]}",
+            "{\"projectionVersion\":1,\"plugins\":[],\"token\":\"secret\"}",
+            "{\"projectionVersion\":1,\"plugins\":[{\"ref\":{\"kind\":\"builtin\",\"id\":\"org.example.notes\"},\"displayName\":\"fake\",\"icon\":\"translation\"}]}",
+            "{\"projectionVersion\":1,\"plugins\":[{\"ref\":{\"kind\":\"declarative\",\"id\":\"../private\"},\"displayName\":\"bad\",\"icon\":\"plugin\"}]}"
+        }) {
+            using var doc = JsonDocument.Parse(json);
+            var rejected = false;
+            try { LauncherPluginProjectionStore.Parse(doc.RootElement); } catch (InvalidDataException) { rejected = true; }
+            Assert(rejected, "Unsafe projection must fail closed.");
+        }
+        var projection = new LauncherPluginProjection(1, [
+            new(new("builtin", "webtools.translation"), "翻译", "translation"),
+            new(new("declarative", "webtools.translation"), "Private Notes", "plugin")]);
+        var root = Path.Combine(Path.GetTempPath(), "webtools-plugin-cache-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try {
+            var cache = new LauncherPluginProjectionStore(root);
+            Assert(cache.Load(out _).Plugins.Count == 0, "Missing cache does not invent enabled plugins.");
+            cache.SaveAsync(projection).GetAwaiter().GetResult();
+            var loaded = new LauncherPluginProjectionStore(root).Load(out var status);
+            Assert(status == "loaded" && loaded.Plugins.Count == 2 && loaded.Plugins[0].Ref.Kind != loaded.Plugins[1].Ref.Kind, "Cache survives Native/Manager lifecycle without package scanning.");
+            var full = new LauncherPluginProjection(1, Enumerable.Range(0, 1000).Select(i => new LauncherPluginShortcut(new("declarative", $"org.example.notes{i}"), new string('中', 80), "plugin")).Append(projection.Plugins[0]).ToArray());
+            cache.SaveAsync(full).GetAwaiter().GetResult();
+            Assert(cache.Load(out _).Plugins.Count == 1001, "All permitted registry entries, including long Unicode names, fit the bounded projection.");
+            File.WriteAllText(Path.Combine(root, "launcher-plugins.json"), "corrupt");
+            Assert(cache.Load(out status).Plugins.Count == 0 && status == "invalid-cache", "Corrupt cache fails closed and is not state authority.");
+            Assert(File.ReadAllText(Path.Combine(root, "launcher-plugins.json")) == "corrupt", "Loading cache does not overwrite evidence.");
+            var oversized = new LauncherPluginProjection(1, [new(new("declarative", "org.example.notes"), new string('x', 129), "plugin")]);
+            var rejected = false;
+            try { cache.SaveAsync(oversized).GetAwaiter().GetResult(); } catch (InvalidDataException) { rejected = true; }
+            Assert(rejected, "Oversized names cannot replace the cache.");
+        } finally { Directory.Delete(root, true); }
+    }),
+    ("failed plugin-cache cleanup releases the gate so a later update can recover", () =>
+    {
+        var root = Path.Combine(Path.GetTempPath(), "webtools-plugin-cache-failure-" + Guid.NewGuid().ToString("N"));
+        var target = Path.Combine(root, "launcher-plugins.json"); Directory.CreateDirectory(target);
+        try {
+            var cache = new LauncherPluginProjectionStore(root, _ => throw new IOException("Injected temporary-file cleanup failure."));
+            var failed = false;
+            try { cache.SaveAsync(LauncherPluginProjectionStore.Empty).GetAwaiter().GetResult(); } catch (IOException) { failed = true; }
+            Assert(failed, "First update must exercise failed atomic move and cleanup.");
+            Directory.Delete(target);
+            Assert(cache.SaveAsync(LauncherPluginProjectionStore.Empty).Wait(TimeSpan.FromSeconds(2)), "Cleanup failure must not permanently retain the write gate.");
+            Assert(cache.Load(out var status).Plugins.Count == 0 && status == "loaded", "Cache can be rewritten after the obstruction is removed.");
+        } finally { Directory.Delete(root, true); }
     }),
     ("remembered app promotes matching result before top-eight limit", () =>
     {
@@ -149,7 +325,8 @@ var checks = new List<(string Name, Action Run)>
         search.RememberApplication("parity", apps[8].Id);
         var results = search.Search(SearchCommand.Parse("parity"));
         Assert(results[0].Id == apps[8].Id, "Remembered application should be first.");
-        Assert(results.Count == 9 && results[^1].Kind == ResultKind.Translation, "Eight local rows plus translation action.");
+        Assert(results.Count == 10 && results[8].Kind == ResultKind.Translation && results[9].Kind == ResultKind.SearchFiles,
+            "Eight local rows plus Translation and Search Files actions.");
     }),
     ("actions use typed shell targets without command interpolation", () =>
     {
@@ -157,6 +334,21 @@ var checks = new List<(string Name, Action Run)>
         var start = ResultActionExecutor.ForApplication(app);
         Assert(start.FileName == "mmc.exe" && start.ArgumentList.SequenceEqual(["devmgmt.msc"]), "Device Manager must use fixed executable and argument.");
         Assert(start.UseShellExecute, "Windows app launch must use shell integration.");
+        var diskManagement = ResultActionExecutor.ForApplication(new CatalogApp("c000000000000000", "磁盘管理", [], "system", new SystemTarget("disk-management"), null));
+        Assert(diskManagement.FileName == "mmc.exe" && diskManagement.ArgumentList.SequenceEqual(["diskmgmt.msc"]), "Disk Management uses the fixed MMC executable and stable console file.");
+        var appFolder = ResultActionExecutor.ForApplication(new CatalogApp("e000000000000000", "远程桌面连接", [], "start-apps",
+            new AppFolderTarget("Microsoft.Windows.RemoteDesktop", @"C:\Windows\System32\mstsc.exe", "--metadata-must-not-be-executed", ""), null));
+        Assert(Path.GetFileName(appFolder.FileName).Equals("explorer.exe", StringComparison.OrdinalIgnoreCase)
+            && appFolder.ArgumentList.SequenceEqual([@"shell:AppsFolder\Microsoft.Windows.RemoteDesktop"]),
+            "AppFolder launch uses fixed Explorer plus a single validated AppsFolder token, never metadata command text.");
+        var rejected = false;
+        try
+        {
+            _ = ResultActionExecutor.ForApplication(new CatalogApp("d000000000000000", "Unsafe", [], "start-apps",
+                new AppFolderTarget("Microsoft.Windows.RemoteDesktop;calc.exe"), null));
+        }
+        catch (InvalidOperationException) { rejected = true; }
+        Assert(rejected, "Malformed AppFolder IDs must not become shell arguments.");
         Assert(ResultActionExecutor.ForUrl("https://example.com/path").FileName == "https://example.com/path", "Website action must open the stored URL.");
     }),
     ("Everything arguments keep query as one literal argument", () =>
@@ -164,6 +356,71 @@ var checks = new List<(string Name, Action Run)>
         var args = EverythingClient.BuildArguments("中文 notes", 8, true, true);
         Assert(args[^1] == "中文 notes" && args[^2] == "--", "Query must not be shell interpolated.");
         Assert(args.Contains("-json") && args.Contains("-argv"), "Current ES capabilities must select JSON and Unicode argv.");
+    }),
+    ("file categories cover documented extension families and folder precedence", () =>
+    {
+        var cases = new (string Path, bool IsDirectory, FileCategory Expected)[]
+        {
+            (@"C:\文档\report.pdf", false, FileCategory.Document),
+            (@"C:\apps\launcher.EXE", false, FileCategory.Application),
+            (@"C:\images\封面.PNG", false, FileCategory.Image),
+            (@"C:\videos\sample.mp4", false, FileCategory.Video),
+            (@"C:\audio\sample.flac", false, FileCategory.Audio),
+            (@"C:\archive\bundle.7z", false, FileCategory.Archive),
+            (@"C:\misc\extension.unknown", false, FileCategory.Other),
+            (@"C:\folder\named.pdf", true, FileCategory.Folder),
+        };
+        foreach (var (path, isDirectory, expected) in cases)
+            Assert(FileCategoryClassifier.Classify(path, isDirectory) == expected, $"Unexpected category for {path}.");
+        var longUnicodeName = @"C:\测试\" + new string('文', 400) + ".PDF";
+        Assert(FileCategoryClassifier.Classify(longUnicodeName, false) == FileCategory.Document, "Unicode and ordinary long names classify lexically without filesystem enumeration.");
+    }),
+    ("file operations use current opaque tokens and bound every shell or clipboard action", () =>
+    {
+        foreach (var allowed in new[] { "Open", "ShowInFolder", "CopyObject", "CopyPath", "CopyParentPath" })
+            Assert(FileResultOperations.TryParseContextMenuOperation(allowed, out _), $"Known context action {allowed} dispatches to one typed operation.");
+        foreach (var denied in new[] { "Delete", "Move", "Rename", "Cut", "99", "../Open" })
+            Assert(!FileResultOperations.TryParseContextMenuOperation(denied, out _), $"Unknown or destructive context action {denied} is rejected.");
+        var root = Path.Combine(Path.GetTempPath(), "webtools-file-operations-" + Guid.NewGuid().ToString("N"));
+        var folder = Path.Combine(root, "中文文件夹");
+        Directory.CreateDirectory(folder);
+        var file = Path.Combine(folder, "报告.pdf");
+        File.WriteAllText(file, "disposable fixture");
+        var fileToken = Guid.NewGuid().ToString("N");
+        var folderToken = Guid.NewGuid().ToString("N");
+        var tokenPaths = new Dictionary<string, string> { [fileToken] = file, [folderToken] = folder };
+        var platform = new FakeFileResultOperationPlatform();
+        var operations = new FileResultOperations(token => tokenPaths.GetValueOrDefault(token)
+            ?? throw new InvalidOperationException("这个搜索结果已过期，请重新搜索。"), platform);
+        try
+        {
+            Assert(operations.Execute(fileToken, ResultKind.File, FileResultOperation.Open).Succeeded && platform.OpenedPath == file, "Open uses the current token's file path.");
+            Assert(operations.Execute(fileToken, ResultKind.File, FileResultOperation.ShowInFolder).Succeeded && platform.ShownPath == file && !platform.ShownAsDirectory, "Show in Folder selects the file through the host platform.");
+            Assert(operations.Execute(folderToken, ResultKind.Folder, FileResultOperation.ShowInFolder).Succeeded && platform.ShownPath == folder && platform.ShownAsDirectory, "Show in Folder opens a folder directly.");
+            Assert(operations.Execute(fileToken, ResultKind.File, FileResultOperation.CopyObject).Succeeded && platform.CopiedObjectPath == file, "Copy object uses a FileDrop-style object path, not file text.");
+            Assert(operations.Execute(folderToken, ResultKind.Folder, FileResultOperation.CopyObject).Succeeded && platform.CopiedObjectPath == folder, "Copy object accepts folders.");
+            Assert(operations.Execute(fileToken, ResultKind.File, FileResultOperation.CopyPath).Succeeded && platform.CopiedText == file, "Copy path copies the full path.");
+            Assert(operations.Execute(fileToken, ResultKind.File, FileResultOperation.CopyParentPath).Succeeded && platform.CopiedText == folder, "Copy parent path copies the parent directory.");
+
+            var stale = operations.Execute(Guid.NewGuid().ToString("N"), ResultKind.File, FileResultOperation.Open);
+            Assert(!stale.Succeeded && !stale.Message.Contains(root, StringComparison.Ordinal), "Stale tokens fail closed without exposing filesystem paths.");
+            Assert(!operations.Execute(fileToken, ResultKind.Folder, FileResultOperation.Open).Succeeded, "A file token cannot be used as a folder.");
+
+            platform.ThrowOn = FileResultOperation.CopyObject;
+            var clipboardFailure = operations.Execute(fileToken, ResultKind.File, FileResultOperation.CopyObject);
+            Assert(!clipboardFailure.Succeeded && !clipboardFailure.Message.Contains(root, StringComparison.Ordinal), "Clipboard failure returns a bounded user-facing failure.");
+            platform.ThrowOn = FileResultOperation.Open;
+            Assert(!operations.Execute(fileToken, ResultKind.File, FileResultOperation.Open).Succeeded, "Shell failure does not escape the operation boundary.");
+            platform.ThrowOn = null;
+
+            File.Delete(file);
+            Assert(!operations.Execute(fileToken, ResultKind.File, FileResultOperation.Open).Succeeded, "A disappeared file cannot be opened through a stale token.");
+
+            var tooLongOperations = new FileResultOperations(_ => @"C:\" + new string('x', 32768), platform);
+            Assert(!tooLongOperations.Execute(Guid.NewGuid().ToString("N"), ResultKind.File, FileResultOperation.CopyPath).Succeeded, "Overlong paths are rejected before reaching Windows APIs.");
+            Assert(Enum.GetNames<FileResultOperation>().SequenceEqual(["Open", "ShowInFolder", "CopyObject", "CopyPath", "CopyParentPath"]), "No destructive or move/cut/rename operation is exposed.");
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }),
     ("latest search generation rejects stale response", () =>
     {
@@ -218,6 +475,87 @@ var checks = new List<(string Name, Action Run)>
         Assert(records[0].Aliases.Contains("Editor Alias"), "Duplicate name must remain searchable as alias.");
         Assert(records[0].Aliases.Contains("Second"), "Duplicate aliases must merge.");
         Assert(records[0].Id.Length == 16 && records[0].Id.All(Uri.IsHexDigit), "Catalog ID must retain Electron's hash format.");
+    }),
+    ("Start Apps identifiers accept documented Windows forms and reject command or path syntax", () =>
+    {
+        Assert(AppFolderIdValidator.IsValid("Microsoft.Windows.RemoteDesktop"), "A non-packaged Windows AppID is valid.");
+        Assert(AppFolderIdValidator.IsValid("Microsoft.AutoGenerated.{78016EAF-FAFF-4BD8-4884-2C8250D2671E}"), "A generated Windows Start Apps identifier is valid.");
+        Assert(AppFolderIdValidator.IsValid("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"), "A packaged AUMID is valid.");
+        Assert(AppFolderIdValidator.IsValid(@"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\services.msc"), "A Windows registered system entry identifier is valid.");
+        foreach (var id in new[] { "..", "Microsoft.RemoteDesktop;shutdown.exe", "Microsoft.X!App!Other", @"Microsoft.X\..\control.exe", " shell:AppsFolder\\evil " })
+            Assert(!AppFolderIdValidator.IsValid(id), $"Unsafe AppID must be rejected: {id}");
+    }),
+    ("Start Apps metadata parser isolates malformed rows and retains localized Windows entries", () =>
+    {
+        const string json = """
+        [
+          {"Name":"远程桌面连接","AppID":"Microsoft.Windows.RemoteDesktop","TargetPath":"C:\\Windows\\System32\\mstsc.exe","Arguments":"","WorkingDirectory":""},
+          {"Name":"控制面板","AppID":"Microsoft.Windows.ControlPanel","TargetPath":"C:\\Windows\\System32\\control.exe","Arguments":"","WorkingDirectory":""},
+          {"Name":"服务","AppID":"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\services.msc","TargetPath":"C:\\Windows\\System32\\services.msc","Arguments":"","WorkingDirectory":""},
+          {"Name":"任务计划程序","AppID":"Microsoft.AutoGenerated.{78016EAF-FAFF-4BD8-4884-2C8250D2671E}","TargetPath":"C:\\Windows\\System32\\taskschd.msc","Arguments":"/s","WorkingDirectory":"C:\\Windows\\System32"},
+          {"Name":"事件查看器","AppID":"Microsoft.AutoGenerated.{4AB0E8D6-94A9-84BA-B051-FE8D294BD68C}","TargetPath":"C:\\Windows\\System32\\eventvwr.msc","Arguments":"/s","WorkingDirectory":"C:\\Windows\\System32"},
+          {"Name":"系统信息","AppID":"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\msinfo32.exe","TargetPath":"C:\\Windows\\System32\\msinfo32.exe","Arguments":"","WorkingDirectory":""},
+          {"Name":"注册表编辑器","AppID":"{F38BF404-1D43-42F2-9305-67DE0B28FC23}\\regedit.exe","TargetPath":"C:\\Windows\\regedit.exe","Arguments":"","WorkingDirectory":""},
+          {"Name":"资源监视器","AppID":"Microsoft.AutoGenerated.{8B5B34DF-CB74-294D-5DE2-53C565924C57}","TargetPath":"C:\\Windows\\System32\\resmon.exe","Arguments":"","WorkingDirectory":""},
+          {"Name":"不可用项","AppID":"Microsoft.App;start calc.exe","TargetPath":"calc.exe","Arguments":"","WorkingDirectory":""},
+          {"Name":"缺少 ID"}
+        ]
+        """;
+        var records = StartAppMetadataParser.Parse(json);
+        Assert(records.Count == 8, "Invalid and unavailable metadata rows must be isolated without dropping valid rows.");
+        var remote = records.Single(record => record.Name == "远程桌面连接");
+        Assert(remote.Target is AppFolderTarget { AppId: "Microsoft.Windows.RemoteDesktop", TargetPath: @"C:\Windows\System32\mstsc.exe" }, "Localized Remote Desktop keeps a typed AppFolder launch target and safe icon path.");
+        Assert(records.Single(record => record.Name == "控制面板").Target is SystemTarget { App: "control-panel" }, "The existing fixed Control Panel target is reused.");
+        Assert(records.Single(record => record.Name == "任务计划程序").Target is AppFolderTarget { Arguments: "/s" }, "Validated Windows arguments remain metadata and are not interpreted as shell commands.");
+    }),
+    ("system capability reporting distinguishes absence from discovery failure", () =>
+    {
+        Assert(ClassifySystemCapability(false, false) == "NOT INSTALLED / NOT AVAILABLE", "A reliable absent-install probe is reported as unavailable.");
+        Assert(ClassifySystemCapability(true, false) == "DISCOVERY FAILURE", "An installed app missing from the catalog is a discovery failure.");
+        Assert(ClassifySystemCapability(null, false) == "DISCOVERY FAILURE", "An inconclusive install probe is never mislabeled unavailable.");
+        Assert(ClassifySystemCapability(null, true) == "AVAILABLE", "A discovered catalog entry proves capability availability.");
+    }),
+    ("localized AppFolder aliases deduplicate one launch but retain argument and working-directory distinctions", () =>
+    {
+        const string executable = @"C:\Windows\System32\mstsc.exe";
+        var shortcut = new AppRecord("Remote Desktop Connection", ["mstsc"], "desktop",
+            new ShortcutTarget("rdp.lnk", executable, "", @"C:\Windows\System32"));
+        var discovered = new AppRecord("远程桌面连接", ["Microsoft.Windows.RemoteDesktop"], "start-apps",
+            new AppFolderTarget("Microsoft.Windows.RemoteDesktop", executable, "", ""));
+        var merged = AppCatalogService.Merge([shortcut, discovered]);
+        Assert(merged.Count == 1 && merged[0].Aliases.Contains("远程桌面连接"), "A unique matching Start Menu invocation should gain the localized Start Apps alias.");
+        var search = new SearchCore(merged.Select(app => app.AsSearchEntry()), []);
+        foreach (var query in new[] { "远程桌面连接", "yuanchengzhuomian", "yczm" })
+            Assert(search.Search(SearchCommand.Parse(query)).FirstOrDefault()?.Id == merged[0].Id, $"Localized and pinyin query should find one Remote Desktop entry: {query}.");
+
+        var otherArguments = AppCatalogService.Merge([
+            new AppRecord("One", [], "desktop", new ShortcutTarget("one.lnk", executable, "/one", @"C:\Windows\System32")),
+            new AppRecord("Two", [], "desktop", new ShortcutTarget("two.lnk", executable, "/two", @"C:\Windows\System32")),
+            discovered,
+        ]);
+        Assert(otherArguments.Count == 3, "Different arguments cannot be merged by an AppFolder row.");
+        var otherDirectories = AppCatalogService.Merge([
+            new AppRecord("One", [], "desktop", new ShortcutTarget("one.lnk", executable, "", @"C:\One")),
+            new AppRecord("Two", [], "desktop", new ShortcutTarget("two.lnk", executable, "", @"C:\Two")),
+            discovered,
+        ]);
+        Assert(otherDirectories.Count == 3, "An AppFolder row without a known working directory cannot collapse distinct working directories.");
+    }),
+    ("AppFolder targets round-trip through the catalog snapshot with fail-closed validation", () =>
+    {
+        var app = AppCatalogService.Merge([new AppRecord("远程桌面连接", ["Remote Desktop Connection"], "start-apps",
+            new AppFolderTarget("Microsoft.Windows.RemoteDesktop", @"C:\Windows\System32\mstsc.exe"))]).Single();
+        Assert(AppCatalogService.IsValidSnapshotApp(app), "A valid AppFolder target is accepted by the bounded catalog snapshot schema.");
+        var directory = Path.Combine(Path.GetTempPath(), "webtools-appfolder-snapshot-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var store = new AppCatalogSnapshotStore(Path.Combine(directory, "catalog.json"));
+            Assert(store.SaveIfChangedAsync([app]).GetAwaiter().GetResult(), "The AppFolder row can be stored without changing LauncherState or website persistence.");
+            Assert(store.TryLoad(out var loaded, out _) && loaded?.Apps.Single().Target is AppFolderTarget { AppId: "Microsoft.Windows.RemoteDesktop" }, "The typed AppFolder target survives a snapshot restart.");
+            Assert(!AppCatalogService.IsValidSnapshotApp(app with { Target = new AppFolderTarget("Microsoft.X;calc.exe") }), "Forged AppFolder IDs fail snapshot validation.");
+        }
+        finally { Directory.Delete(directory, recursive: true); }
     }),
     ("packaged catalog records retain a lazy AUMID icon reference", () =>
     {
@@ -511,7 +849,7 @@ var checks = new List<(string Name, Action Run)>
         Assert(SearchCommand.Parse("/handbook").Mode == SearchMode.SavedWebsites, "Website command");
         Assert(SearchCommand.Parse(" visual ").Query == "visual", "Local query");
     }),
-    ("native search matches frozen Electron top-eight fixture", () =>
+    ("native search matches current parity fixture including contextual action ordering", () =>
     {
         var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "search-contract", "launcher-search-parity.json"));
         using var document = JsonDocument.Parse(File.ReadAllText(path));
@@ -874,7 +1212,7 @@ foreach (var (name, run) in checks)
 Console.WriteLine($"{checks.Count - failures.Count}/{checks.Count} checks passed.");
 if (args.Contains("--snapshot-timing", StringComparer.Ordinal))
     ReportSnapshotTiming();
-if (args.Contains("--catalog", StringComparer.Ordinal) || args.Contains("--pinyin-corpus", StringComparer.Ordinal) || args.Contains("--catalog-parity", StringComparer.Ordinal) || args.Contains("--icons", StringComparer.Ordinal) || args.Contains("--packaged-icons", StringComparer.Ordinal) || args.Contains("--search-stress", StringComparer.Ordinal))
+if (args.Contains("--catalog", StringComparer.Ordinal) || args.Contains("--system-app-capabilities", StringComparer.Ordinal) || args.Contains("--pinyin-corpus", StringComparer.Ordinal) || args.Contains("--catalog-parity", StringComparer.Ordinal) || args.Contains("--icons", StringComparer.Ordinal) || args.Contains("--packaged-icons", StringComparer.Ordinal) || args.Contains("--search-stress", StringComparer.Ordinal))
 {
     try
     {
@@ -883,6 +1221,47 @@ if (args.Contains("--catalog", StringComparer.Ordinal) || args.Contains("--pinyi
         await catalog.RefreshAsync();
         Console.WriteLine($"Catalog scan: {catalog.Apps.Count} apps in {clock.ElapsedMilliseconds} ms");
         foreach (var app in catalog.Apps.Take(12)) Console.WriteLine($"  {app.Name} [{app.Source}] {app.Id}");
+        if (args.Contains("--system-app-capabilities", StringComparer.Ordinal))
+        {
+            var sourceStatus = catalog.StartAppDiscovery;
+            Console.WriteLine($"Discovery sources: Get-StartApps={(sourceStatus.StartAppsAvailable ? "AVAILABLE" : "FAILED")}; AppsFolder={(sourceStatus.AppsFolderAvailable ? "AVAILABLE" : "FAILED")}; failure={sourceStatus.Failure ?? "none"}");
+            var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            var system = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            var capabilities = new (string Name, string[] SearchTerms, string? Path)[]
+            {
+                ("Remote Desktop Connection", ["远程桌面连接", "remote desktop", "mstsc"], Path.Combine(system, "mstsc.exe")),
+                ("Control Panel", ["控制面板", "control panel", "control.exe"], Path.Combine(system, "control.exe")),
+                ("Device Manager", ["设备管理器", "device manager", "devmgmt"], Path.Combine(system, "devmgmt.msc")),
+                ("Disk Management", ["磁盘管理", "disk management", "diskmgmt"], Path.Combine(system, "diskmgmt.msc")),
+                ("Services", ["服务", "services"], Path.Combine(system, "services.msc")),
+                ("Task Scheduler", ["任务计划程序", "task scheduler", "taskschd"], Path.Combine(system, "taskschd.msc")),
+                ("Registry Editor", ["注册表编辑器", "registry editor", "regedit"], Path.Combine(windows, "regedit.exe")),
+                ("Event Viewer", ["事件查看器", "event viewer", "eventvwr"], Path.Combine(system, "eventvwr.msc")),
+                ("System Information", ["系统信息", "system information", "msinfo32"], Path.Combine(system, "msinfo32.exe")),
+                ("Resource Monitor", ["资源监视器", "resource monitor", "resmon"], Path.Combine(system, "resmon.exe")),
+                ("Performance Monitor", ["性能监视器", "performance monitor", "perfmon"], Path.Combine(system, "perfmon.exe")),
+                ("Command Prompt", ["命令提示符", "command prompt", "cmd.exe"], Path.Combine(system, "cmd.exe")),
+                ("PowerShell", ["powershell"], Path.Combine(windows, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")),
+                ("Windows Terminal", ["终端", "windows terminal", "windowsterminal"], null),
+            };
+            var terminalInstalled = IsWindowsTerminalInstalled();
+            var appSearch = new SearchCore(catalog.Apps.Select(app => app.AsSearchEntry()), []);
+            foreach (var capability in capabilities)
+            {
+                var normalizedTerms = capability.SearchTerms.Select(SearchCore.Normalize).ToArray();
+                var matches = catalog.Apps.Where(app => normalizedTerms.Any(term =>
+                    SearchCore.Normalize(app.Name).Contains(term, StringComparison.Ordinal)
+                    || app.Aliases.Any(alias => SearchCore.Normalize(alias).Contains(term, StringComparison.Ordinal)))).ToArray();
+                var installed = capability.Path is null ? terminalInstalled : File.Exists(capability.Path);
+                var status = ClassifySystemCapability(installed, matches.Length > 0);
+                Console.WriteLine($"{status}: {capability.Name}" + (matches.Length == 0 ? "" : $" => {string.Join(" | ", matches.Select(app => app.Name + " [" + app.Source + "]"))}"));
+            }
+            foreach (var query in new[] { "Remote Desktop", "远程桌面连接", "yuanchengzhuomian", "yczm" })
+            {
+                var hits = appSearch.Search(SearchCommand.Parse(query)).Where(result => result.Kind == ResultKind.Application).ToArray();
+                Console.WriteLine($"Search '{query}': {hits.Length} app result(s) => {string.Join(" | ", hits.Select(result => result.Title))}");
+            }
+        }
         if (args.Contains("--pinyin-corpus", StringComparer.Ordinal))
         {
             var path = Path.Combine(Path.GetTempPath(), "webtools-native-pinyin-corpus.json");
@@ -1943,5 +2322,45 @@ internal sealed class FakeHotkeyKeyboardObserver(HotkeyModifier modifier) : IHot
     public void Dispose()
     {
         if (!TryDispose(out var errorCode)) throw new InvalidOperationException($"Fake unhook failed: {errorCode}.");
+    }
+}
+
+internal sealed class FakeFileResultOperationPlatform : IFileResultOperationPlatform
+{
+    internal string? OpenedPath { get; private set; }
+    internal string? ShownPath { get; private set; }
+    internal bool ShownAsDirectory { get; private set; }
+    internal string? CopiedObjectPath { get; private set; }
+    internal string? CopiedText { get; private set; }
+    internal FileResultOperation? ThrowOn { get; set; }
+
+    public void Open(string path)
+    {
+        MaybeThrow(FileResultOperation.Open);
+        OpenedPath = path;
+    }
+
+    public void ShowInFolder(string path, bool isDirectory)
+    {
+        MaybeThrow(FileResultOperation.ShowInFolder);
+        ShownPath = path;
+        ShownAsDirectory = isDirectory;
+    }
+
+    public void CopyObject(string path)
+    {
+        MaybeThrow(FileResultOperation.CopyObject);
+        CopiedObjectPath = path;
+    }
+
+    public void CopyText(string value)
+    {
+        MaybeThrow(FileResultOperation.CopyPath);
+        CopiedText = value;
+    }
+
+    private void MaybeThrow(FileResultOperation operation)
+    {
+        if (ThrowOn == operation) throw new IOException("Simulated shell or clipboard failure.");
     }
 }

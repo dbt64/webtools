@@ -1,4 +1,4 @@
-import { isTranslationLanguage, MYMEMORY_MAX_UTF8_BYTES } from '../../src/shared/translation-contracts.ts'
+import { isTranslationLanguage, MYMEMORY_MAX_UTF8_BYTES, type TranslationLanguageCode } from '../../src/shared/translation-contracts.ts'
 import { ServiceError } from './service-error.ts'
 
 export interface MyMemoryRequest {
@@ -16,12 +16,39 @@ interface MyMemoryResponse {
 
 type Fetcher = typeof fetch
 
+// MyMemory requires an explicit ISO/RFC3066 source. Keep local auto resolution
+// conservative: scripts alone cannot distinguish Latin languages or Han-only Japanese.
+const ENGLISH_WORDS = new Set(`
+  a an and are as at be been but by can could did do does for from good had has
+  have he hello her here hi how i in is it its me morning my not of on or our
+  please she should test text thank thanks that the their them there these they
+  this those time to today translate translation us was we were what when where
+  which who why will with world would you your
+`.trim().split(/\s+/))
+const ENGLISH_CLUES = /\b(?:hello|world|this|the|thanks|please|translate|translation|your|you|what|where|which|would|should)\b/i
+const CHINESE_CLUES = /你好|中文|[这们译测]/u
+
+function resolveAutomaticSource(text: string): TranslationLanguageCode {
+  const normalized = text.normalize('NFC')
+  const letters = (normalized.match(/\p{Letter}/gu) ?? []).join('')
+  if (/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー]+$/u.test(letters)
+    && /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(letters)
+    && !CHINESE_CLUES.test(letters)) return 'ja'
+  if (/^\p{Script=Han}+$/u.test(letters) && CHINESE_CLUES.test(letters)) return 'zh-CN'
+  if (/^[A-Za-z]+$/.test(letters) && !/\p{Mark}/u.test(normalized)) {
+    const words = normalized.toLowerCase().match(/[a-z]+/g) ?? []
+    if (ENGLISH_CLUES.test(normalized) && words.every(word => ENGLISH_WORDS.has(word))) return 'en'
+  }
+  throw new ServiceError('FREE_TRANSLATION_SOURCE_REQUIRED', 'MyMemory 无法可靠自动识别这段文字的来源语言；请手动选择来源语言后重试。')
+}
+
 export class MyMemoryAdapter {
   private readonly fetcher: Fetcher
 
   constructor(fetcher: Fetcher = fetch) { this.fetcher = fetcher }
 
   async translate(request: MyMemoryRequest): Promise<string> {
+    request.signal.throwIfAborted()
     if (typeof request.text !== 'string' || !request.text.trim()) {
       throw new ServiceError('INVALID_TRANSLATION', '请输入要翻译的文字。')
     }
@@ -35,9 +62,12 @@ export class MyMemoryAdapter {
       throw new ServiceError('INVALID_TRANSLATION', '目标语言无效。')
     }
 
+    const sourceLanguage = request.sourceLanguage === 'auto' ? resolveAutomaticSource(request.text) : request.sourceLanguage
+    if (sourceLanguage === request.targetLanguage) return request.text
+
     const url = new URL('https://api.mymemory.translated.net/get')
     url.searchParams.set('q', request.text)
-    url.searchParams.set('langpair', `${request.sourceLanguage === 'auto' ? 'autodetect' : request.sourceLanguage}|${request.targetLanguage}`)
+    url.searchParams.set('langpair', `${sourceLanguage}|${request.targetLanguage}`)
 
     let response: Response
     try {

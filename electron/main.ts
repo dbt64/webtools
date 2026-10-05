@@ -36,6 +36,8 @@ import { registerPluginIpcHandlers } from './ipc/plugin-handlers'
 import { registerPluginCatalogIpcHandlers } from './ipc/plugin-catalog-handlers'
 import { registerBuiltinTranslationHandoffHandlers } from './ipc/builtin-translation-handoff-handlers'
 import { PluginCatalog } from './plugins/plugin-catalog'
+import { NativePluginProjectionPublisher } from './services/native-plugin-projection-publisher'
+import type { PluginRef } from '../src/shared/plugin-catalog-contracts'
 import type { PluginManager } from './plugins/plugin-manager'
 
 const isDevelopment = !app.isPackaged
@@ -67,13 +69,14 @@ let managerRendererReady = false
 let quitting = false
 let pluginManager: PluginManager | null = null
 let pluginCatalog: PluginCatalog | null = null
+let nativePluginProjectionPublisher: NativePluginProjectionPublisher | null = null
 let disposeCatalogHandlers = () => {}
 let disposePluginHandlers: () => void = () => undefined
 let disposeBuiltinTranslationHandoffHandlers: () => void = () => undefined
 
 interface PendingNativeIntent {
   requestId: string
-  intent: { kind: 'open-page'; section: 'favorites' | 'entries' | 'settings' }
+  intent: { kind: 'open-page'; section: 'favorites' | 'entries' | 'settings' } | { kind: 'open-plugin'; ref: PluginRef }
   resolve: () => void
   reject: (error: Error) => void
 }
@@ -94,6 +97,12 @@ async function syncNativeWebsiteProjection(): Promise<void> {
   if (!nativeManaged) return
   if (!nativeManagerClient?.isConnected) throw new Error('Native Host is not connected; website changes were not synchronized.')
   await nativeManagerClient.request('websites-update', projectWebsitesForNative(dataStore.snapshot().webEntries))
+}
+
+async function syncNativePluginProjection(): Promise<void> {
+  // This is a recoverable derived presentation cache, not the plugin authority.
+  // Retry on the next explicit catalog read/mutation or Manager startup.
+  await nativePluginProjectionPublisher?.trySync(() => console.warn('[native-plugins] Launcher cache synchronization failed; catalog remains available.'))
 }
 
 async function updateNativeLauncherSettings(update: NativeLauncherSettingsUpdate) {
@@ -142,6 +151,16 @@ async function handleNativeManagerCommand(message: NativeManagerEnvelope): Promi
     builtinTranslationHandoff?.supersede()
     showManager()
     await waitForNativeIntentAcknowledgement(command.requestId, { kind: 'open-page', section: command.section })
+    return
+  }
+  if (command.kind === 'open-plugin') {
+    const catalog = pluginCatalog
+    if (!catalog) throw new NativeManagerRequestError('MANAGER_NOT_READY', 'Plugin catalog is unavailable.')
+    await catalog.open(command.ref, catalog.session) // Cached Native shortcuts never authorize opening a plugin.
+    if (command.ref.kind === 'builtin') { await beginNativeTranslationHandoff(command.requestId, null); return }
+    builtinTranslationHandoff?.supersede()
+    showManager()
+    await waitForNativeIntentAcknowledgement(command.requestId, { kind: 'open-plugin', ref: command.ref })
     return
   }
   if (!isValidTranslationText(command.text)) throw new NativeManagerRequestError('INVALID_TRANSLATION_TEXT', '翻译内容为空或超过 20,000 个字符。')
@@ -341,8 +360,20 @@ app.whenReady().then(async () => {
   try { await pluginHost.manager.initialize(); pluginManager = pluginHost.manager }
   catch { pluginHost.manager.close() } // Fail closed without preventing existing Manager pages from opening.
   pluginCatalog = new PluginCatalog(app.getVersion(), () => pluginManager, builtinTranslationLifecycle)
+  if (nativeManaged) {
+    nativePluginProjectionPublisher = new NativePluginProjectionPublisher(async () => {
+      const catalog = pluginCatalog
+      if (!catalog) throw new Error('Plugin catalog is unavailable.')
+      return catalog.launcherProjection(catalog.session)
+    }, async projection => {
+      if (!nativeManagerClient?.isConnected) throw new Error('Native Host is disconnected.')
+      return nativeManagerClient.request('plugins-update', projection)
+    })
+    await syncNativePluginProjection()
+  }
   disposeCatalogHandlers = registerPluginCatalogIpcHandlers(ipcMain, {
     getCatalog: () => pluginCatalog,
+    onCatalogChanged: syncNativePluginProjection,
     isManagerMainFrame: context => isCurrentWindowMainFrame(context, managerWindow),
     confirmBuiltinStateRecovery: async () => {
       const window = managerWindow
@@ -362,10 +393,12 @@ app.whenReady().then(async () => {
   })
   disposeBuiltinTranslationHandoffHandlers = registerBuiltinTranslationHandoffHandlers(ipcMain, {
     getHandoff: () => builtinTranslationHandoff,
+    onCatalogChanged: syncNativePluginProjection,
     isManagerMainFrame: context => isCurrentWindowMainFrame(context, managerWindow),
   })
   disposePluginHandlers = registerPluginIpcHandlers(ipcMain, {
     getManager: () => pluginManager,
+    onCatalogChanged: syncNativePluginProjection,
     isManagerMainFrame: context => isCurrentWindowMainFrame(context, managerWindow),
     choosePackage: pluginHost.choosePackage,
   })
@@ -416,5 +449,6 @@ app.on('before-quit', () => {
   pluginCatalog?.close()
   disposeCatalogHandlers()
   nativeManagerClient?.close()
+  nativePluginProjectionPublisher?.close()
   nativeManagerClient = null
 })

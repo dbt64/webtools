@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using WebTools.NativeHost.Data;
 
 namespace WebTools.NativeHost.Services;
 
@@ -36,6 +37,12 @@ public sealed class ManagerController : IDisposable
     {
         var intent = new OpenPageIntent(Guid.NewGuid().ToString("N"), page);
         QueueIntent(intent);
+    }
+    public void OpenPlugin(LauncherPluginRef reference)
+    {
+        if (!reference.IsValid) { _showError("插件入口无效。"); return; }
+        if (reference.Kind == "builtin") { OpenPage(ManagerPage.Translation); return; }
+        QueueIntent(new PluginIntent(Guid.NewGuid().ToString("N"), reference));
     }
 
     internal object CaptureLifecycleForResourceTest()
@@ -273,6 +280,7 @@ public sealed class ManagerController : IDisposable
                 {
                     OpenPageIntent page => _pipeServer.SendRequestAsync("open-page", new { requestId = page.RequestId, section = PageName(page.Page) }, TimeSpan.FromSeconds(45)),
                     TranslationIntent translation => _pipeServer.SendRequestAsync("translation-prefill", new { requestId = translation.RequestId, text = translation.Text }, TimeSpan.FromSeconds(45)),
+                    PluginIntent plugin => _pipeServer.SendRequestAsync("open-plugin", new { requestId = plugin.RequestId, @ref = plugin.Ref }, TimeSpan.FromSeconds(45)),
                     _ => throw new InvalidOperationException("Unsupported Manager intent."),
                 }).ConfigureAwait(false);
                 lock (_sync) if (ReferenceEquals(_pendingIntent, intent)) _pendingIntent = null;
@@ -374,4 +382,5 @@ public sealed class ManagerController : IDisposable
     }
     private sealed record OpenPageIntent(string Id, ManagerPage Page) : PendingManagerIntent(Id) { public override string Kind => $"page:{Page}"; }
     private sealed record TranslationIntent(string Id, string Text) : PendingManagerIntent(Id) { public override string Kind => "translation-prefill"; }
+    private sealed record PluginIntent(string Id, LauncherPluginRef Ref) : PendingManagerIntent(Id) { public override string Kind => "open-plugin"; }
 }

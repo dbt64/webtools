@@ -5,6 +5,13 @@ import { createRenderer, getCurrentInstance, h } from 'vue'
 import vue from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
 import { builtinPluginEntries } from '../../../electron/plugins/builtin-plugin-registry.ts'
+import { BuiltinPluginStateStore } from '../../../electron/plugins/builtin-plugin-state.ts'
+import { BuiltinTranslationLifecycle } from '../../../electron/plugins/builtin-translation-lifecycle.ts'
+import { BuiltinTranslationHandoff } from '../../../electron/services/builtin-translation-handoff.ts'
+import { PluginCatalog } from '../../../electron/plugins/plugin-catalog.ts'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const server = await createServer({ configFile: false, root: process.cwd(), plugins: [vue()], resolve: { alias: { '@': resolve(process.cwd(), 'src') } }, optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true }, appType: 'custom' })
 const { default: App } = await server.ssrLoadModule('/src/App.vue')
@@ -102,7 +109,9 @@ test('disabled Native Translation presents the gate, keeps exact text Main-owned
   let projection = { status: 'blocked', requestId: 'native-translation-1', generation: 1, uiGeneration: 1, reason: 'disabled', hasPrefill: true }
   const resolveCalls = []
   let providerCalls = 0
+  let revision = 0
   const env = mount({
+    pluginCatalog: { list: async () => ({ ok: true, data: { ...snapshot(++revision).data, entries: builtinPluginEntries('0.1.0', projection.status === 'ready' ? { status: 'ready', enabled: true } : { status: 'disabled', enabled: false }) } }) },
     onNativeManagerIntent: handler => { nativeIntent = handler; return () => {} },
     builtinTranslationHandoff: {
       get: async () => ({ ok: true, data: projection }),
@@ -178,4 +187,79 @@ test('pending handoff survives local navigation for resume or discard', async ()
     await tick(); await tick()
     assert.equal(env.state.translationHandoff.status, 'none')
   } finally { env.app.unmount() }
+})
+
+test('Enable & Open refreshes real persisted builtin state, catalog and navigation and survives Manager restart', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'webtools-enable-gate-'))
+  const lifecycle = new BuiltinTranslationLifecycle(new BuiltinPluginStateStore(root), () => {})
+  await lifecycle.initialize(); await lifecycle.setEnabled(false)
+  const catalog = new PluginCatalog('0.1.0', () => null, lifecycle)
+  const handoff = new BuiltinTranslationHandoff(lifecycle)
+  readyRenderer()
+  function readyRenderer() { handoff.rendererStarting(); handoff.rendererReady() }
+  let nativeIntent
+  const env = mount({
+    onNativeManagerIntent: handler => { nativeIntent = handler; return () => {} },
+    pluginCatalog: { list: async () => ({ ok: true, data: await catalog.list(catalog.session) }) },
+    builtinTranslationHandoff: {
+      get: async () => ({ ok: true, data: handoff.getProjection() }),
+      resolve: async request => ({ ok: true, data: await handoff.resolve(request) }),
+    },
+  })
+  const flush = async () => { for (let i = 0; i < 8; i++) await tick() }
+  const settled = async () => {
+    const deadline = Date.now() + 3000
+    while (env.state.handoffBusy && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(env.state.handoffBusy, false, 'handoff operation must finish')
+    await flush()
+  }
+  try {
+    await flush()
+    const cancelled = handoff.begin({ requestId: 'cancel-real', text: 'cancel me' })
+    nativeIntent({ kind: 'translation-handoff', requestId: 'cancel-real' }); await flush()
+    env.state.handleHandoffPresented(env.state.translationHandoff); await flush(); await cancelled
+    env.state.cancelTranslationHandoff(env.state.translationHandoff); await settled()
+    assert.equal(lifecycle.isEnabled(), false)
+    assert.equal(env.state.pluginNavItems.length, 0)
+
+    const text = "  Hello-WebTools 中文 日本語 🚀! don't\n  "
+    const presented = handoff.begin({ requestId: 'enable-real', text })
+    nativeIntent({ kind: 'translation-handoff', requestId: 'enable-real' }); await flush()
+    env.state.handleHandoffPresented(env.state.translationHandoff); await flush(); await presented
+    env.state.enableAndOpenTranslation(env.state.translationHandoff); await settled()
+    assert.equal(lifecycle.isEnabled(), true)
+    assert.equal(env.state.activeSection, 'translate')
+    assert.equal(env.state.translationPrefill.text, text)
+    assert.equal(env.state.catalogEntries[0].state.enabled, true, 'Plugin Center must receive the new authority projection')
+    assert.equal(env.state.pluginNavItems[0].ref.id, 'webtools.translation', 'enabled builtin must be in navigation')
+
+    const restarted = new BuiltinTranslationLifecycle(new BuiltinPluginStateStore(root), () => {})
+    await restarted.initialize()
+    assert.equal(restarted.isEnabled(), true, 'new Manager lifecycle reads persisted enable choice')
+    const next = new BuiltinTranslationHandoff(restarted)
+    const accepted = next.begin({ requestId: 'next-real', text: 'second' })
+    next.rendererStarting(); next.rendererReady()
+    const ready = next.getProjection()
+    assert.equal(ready.status, 'ready', 'next handoff must bypass the disabled gate')
+    await next.resolve({ ...ready, disposition: 'applied' }); await accepted; next.close()
+  } finally { env.app.unmount(); handoff.close(); lifecycle.close(); catalog.close(); await rm(root, { recursive: true, force: true }) }
+})
+
+test('Native declarative shortcut routes by exact composite ref after catalog refresh and acknowledges presentation', async () => {
+  let nativeIntent; const acknowledged = []
+  const plugin = { id: 'webtools.translation', name: 'Private Notes', version: '1.0.0', hash: 'a'.repeat(64), enabled: true, status: 'active', granted: ['manager.page'], requested: ['manager.page'], installedVersions: ['1.0.0'], source: 'local-unsigned' }
+  const core = { session: 'core', isSession: s => s === 'core', list: async () => [plugin], getPages: async id => ({ pluginId: id, version: '1.0.0', hash: 'a'.repeat(64), entry: { pageId: 'home', label: 'Private Notes' }, pages: [], settings: [], actions: [] }) }
+  const catalog = new PluginCatalog('0.1.0', () => core, { snapshot: () => ({ status: 'ready', enabled: true }), isEnabled: () => true })
+  const env = mount({ onNativeManagerIntent: handler => { nativeIntent = handler; return () => {} }, acknowledgeNativeManagerIntent: id => acknowledged.push(id), pluginCatalog: {
+    list: async () => ({ ok: true, data: await catalog.list(catalog.session) }), open: async ref => ({ ok: true, data: await catalog.open(ref, catalog.session) }),
+  } })
+  try {
+    await tick()
+    nativeIntent({ kind: 'open-plugin', requestId: 'native-plugin-1', ref: { kind: 'declarative', id: 'webtools.translation' } })
+    for (let i = 0; i < 8; i++) await tick()
+    assert.equal(env.state.activeSection, 'plugin-page')
+    assert.deepEqual({ ...env.state.activePluginRef }, { kind: 'declarative', id: 'webtools.translation' })
+    assert.equal(env.state.activePluginName, 'Private Notes')
+    assert.deepEqual(acknowledged, ['native-plugin-1'])
+  } finally { env.app.unmount(); catalog.close() }
 })

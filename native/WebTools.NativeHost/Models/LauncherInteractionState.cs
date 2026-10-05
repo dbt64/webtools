@@ -20,10 +20,11 @@ public sealed class LauncherInteractionState
         if (!ResultsVisible) SetResults([]);
     }
 
-    public void SetResults(IReadOnlyList<SearchResult> results)
+    public void SetResults(IReadOnlyList<SearchResult> results, string? preferredResultId = null)
     {
         _results = results;
-        SelectedIndex = results.Count > 0 ? 0 : -1;
+        var preferredIndex = preferredResultId is null ? -1 : IndexOfResult(results, preferredResultId);
+        SelectedIndex = preferredIndex >= 0 ? preferredIndex : results.Count > 0 ? 0 : -1;
     }
 
     public int MoveSelection(int offset)
@@ -56,5 +57,12 @@ public sealed class LauncherInteractionState
         Query = string.Empty;
         _results = [];
         SelectedIndex = -1;
+    }
+
+    private static int IndexOfResult(IReadOnlyList<SearchResult> results, string id)
+    {
+        for (var index = 0; index < results.Count; index++)
+            if (results[index].Id == id) return index;
+        return -1;
     }
 }

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import { parseNativeManagerIntent } from '../src/shared/native-manager-intent'
 import { IPC_CHANNELS, type DesktopApi } from '../src/shared/ipc'
 
 const desktopApi: DesktopApi = {
@@ -27,15 +28,8 @@ const desktopApi: DesktopApi = {
   managerReady: () => ipcRenderer.send(IPC_CHANNELS.managerReady),
   onNativeManagerIntent: (handler) => {
     const listener = (_event: Electron.IpcRendererEvent, value: unknown): void => {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) return
-      const intent = value as Record<string, unknown>
-      if (typeof intent.requestId !== 'string' || intent.requestId.length === 0 || intent.requestId.length > 128) return
-      if (intent.kind === 'open-page'
-        && (intent.section === 'favorites' || intent.section === 'entries' || intent.section === 'settings')) {
-        handler({ requestId: intent.requestId, kind: 'open-page', section: intent.section })
-      } else if (intent.kind === 'translation-handoff') {
-        handler({ requestId: intent.requestId, kind: 'translation-handoff' })
-      }
+      const intent = parseNativeManagerIntent(value)
+      if (intent) handler(intent)
     }
     ipcRenderer.on(IPC_CHANNELS.nativeManagerIntent, listener)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.nativeManagerIntent, listener)

@@ -1,13 +1,21 @@
 import { NativeManagerRequestError, type NativeManagerEnvelope } from './native-manager-protocol.ts'
+import { isLauncherPluginRef } from '../../src/shared/launcher-plugin-contracts.ts'
+import type { PluginRef } from '../../src/shared/plugin-catalog-contracts.ts'
 
 export type NativeManagerCommand =
   | { kind: 'open-page'; requestId: string; section: 'favorites' | 'entries' | 'settings' | 'translate' }
   | { kind: 'translation-prefill'; requestId: string; text: string }
   | { kind: 'shutdown-manager' }
+  | { kind: 'open-plugin'; requestId: string; ref: PluginRef }
 
 export function parseNativeManagerCommand(message: NativeManagerEnvelope): NativeManagerCommand {
   const payload = isRecord(message.payload) ? message.payload : null
   if (!payload) throw new NativeManagerRequestError('INVALID_NATIVE_COMMAND', 'Native Host sent an invalid Manager command.')
+  if (message.type === 'open-plugin') {
+    if (Object.keys(payload).length !== 2 || typeof payload.requestId !== 'string' || !payload.requestId || payload.requestId.length > 128 || !isLauncherPluginRef(payload.ref))
+      throw new NativeManagerRequestError('INVALID_NATIVE_COMMAND', 'Native Host sent an invalid plugin reference.')
+    return { kind: 'open-plugin', requestId: message.requestId, ref: payload.ref }
+  }
   if (message.type === 'open-page') {
     if (typeof payload.requestId !== 'string' || payload.requestId.length === 0 || payload.requestId.length > 128
       || !['favorites', 'entries', 'settings', 'translate'].includes(String(payload.section))) {

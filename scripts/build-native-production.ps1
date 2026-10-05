@@ -1,19 +1,45 @@
-param(
+﻿param(
     [string]$NodeExe,
-    [string]$DotnetExe = "dotnet"
+    [string]$DotnetExe = "dotnet",
+    [string]$OutputDirectory,
+    [ValidateSet("stable", "beta")]
+    [string]$Channel = "stable"
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$releaseRoot = Join-Path $repoRoot "release\native-production-$stamp"
+$packageManifest = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "package.json") | ConvertFrom-Json
+$productVersion = [string]$packageManifest.version
+$versionPattern = '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$'
+$versionMatch = [regex]::Match($productVersion, $versionPattern)
+if (-not $versionMatch.Success) { throw "package.json version is not valid SemVer: $productVersion" }
+$major = [int64]$versionMatch.Groups[1].Value
+$minor = [int64]$versionMatch.Groups[2].Value
+$patch = [int64]$versionMatch.Groups[3].Value
+if (@($major, $minor, $patch) | Where-Object { $_ -gt 65535 }) { throw "Product version components exceed the Windows file-version limit: $productVersion" }
+if ($Channel -eq "stable" -and $versionMatch.Groups[4].Success) { throw "Prerelease versions require the beta release channel." }
+$windowsFileVersion = "$major.$minor.$patch.0"
+$expectedPackageManager = ([regex]::Match([string]$packageManifest.packageManager, '^pnpm@([0-9]+\.[0-9]+\.[0-9]+)$')).Groups[1].Value
+if (-not $expectedPackageManager) { throw "package.json must pin an exact pnpm packageManager version." }
+if ($OutputDirectory) {
+    $releaseWorkRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "release\.phase6a-work"))
+    $releaseWorkPrefix = $releaseWorkRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $releaseRoot = [IO.Path]::GetFullPath($OutputDirectory)
+    if (-not $releaseRoot.StartsWith($releaseWorkPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Release build output must stay within the repository-owned release work directory."
+    }
+} else {
+    $releaseRoot = Join-Path $repoRoot "release\native-production-$stamp"
+}
 $stageRoot = Join-Path $releaseRoot "stage"
 $hostStage = Join-Path $stageRoot "host"
 $managerBuild = Join-Path $releaseRoot "manager-build"
 $managerStage = Join-Path $stageRoot "manager"
 $updaterStage = Join-Path $stageRoot "updater"
 $updateHelperExe = Join-Path $updaterStage "WebTools.UpdateHelper.exe"
-$installer = Join-Path $releaseRoot "WebTools-Setup-0.1.0.exe"
+$installerName = if ($Channel -eq "stable") { "WebTools-Setup-$productVersion.exe" } else { "WebTools-Setup-$productVersion-$Channel.exe" }
+$installer = Join-Path $releaseRoot $installerName
 $smokeInstall = Join-Path $releaseRoot "smoke-install\WebTools Phase 4F 中文 空格"
 $testUninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WebToolsNativePhase4FTest"
 
@@ -43,7 +69,7 @@ Remove-Item Env:COREPACK_ROOT -ErrorAction SilentlyContinue
 $pnpmVersion = ((& $pnpmExe --version) | Out-String).Trim()
 $pnpmExitCode = $LASTEXITCODE
 if ($pnpmExitCode -ne 0) { throw "Could not query pnpm version (exit code $pnpmExitCode)." }
-if ($pnpmVersion -ne "9.15.9") { throw "Expected pinned pnpm 9.15.9, found $pnpmVersion." }
+if ($pnpmVersion -ne $expectedPackageManager) { throw "Expected pnpm $expectedPackageManager from package.json, found $pnpmVersion." }
 
 New-Item -ItemType Directory -Path $hostStage, $managerStage, $updaterStage -Force | Out-Null
 
@@ -62,6 +88,8 @@ function Invoke-Nsis {
     $startInfo.FileName = $FilePath
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
     $startInfo.WorkingDirectory = (Get-Location).ProviderPath
     $formattedArguments = foreach ($argument in $ArgumentList) {
         # NSIS requires /D= to be the final raw argument and forbids quoting it,
@@ -73,16 +101,25 @@ function Invoke-Nsis {
     $startInfo.Arguments = $formattedArguments -join ' '
     $process = [System.Diagnostics.Process]::Start($startInfo)
     if (-not $process) { throw "Could not start process: $FilePath" }
+    $standardOutput = $process.StandardOutput.ReadToEndAsync()
+    $standardError = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit(300000)) {
         $process.Kill()
         throw "Process timed out: $FilePath $($ArgumentList -join ' ')"
     }
-    if ($process.ExitCode -ne 0) { throw "Process failed with exit code $($process.ExitCode): $FilePath" }
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) {
+        throw "Process failed with exit code $($process.ExitCode): $FilePath`n$($standardOutput.Result)`n$($standardError.Result)"
+    }
 }
 
 Invoke-Checked $pnpmExe @("run", "typecheck")
 Invoke-Checked $pnpmExe @("test")
 Invoke-Checked $pnpmExe @("run", "build")
+Invoke-Checked $DotnetExe @(
+    "run", "--project", "native\WebTools.NativeHost.Checks\WebTools.NativeHost.Checks.csproj",
+    "--configuration", "Release"
+)
 Invoke-Checked $DotnetExe @(
     "run", "--project", "native\WebTools.UpdateHelper.Checks\WebTools.UpdateHelper.Checks.csproj",
     "--configuration", "Release"
@@ -92,16 +129,29 @@ Invoke-Checked $DotnetExe @(
     "publish", "native\WebTools.NativeHost\WebTools.NativeHost.csproj",
     "--configuration", "Release", "--runtime", "win-x64", "--self-contained", "true",
     "-p:UseAppHost=true", "-p:PublishSingleFile=false", "-p:PublishTrimmed=false",
+    "-p:Version=$productVersion", "-p:AssemblyVersion=$windowsFileVersion", "-p:FileVersion=$windowsFileVersion",
+    "-p:InformationalVersion=$productVersion", "-p:IncludeSourceRevisionInInformationalVersion=false", "-p:Product=WebTools",
     "-o", $hostStage
 )
+
+$nativeHostVersion = (Get-Item -LiteralPath (Join-Path $hostStage "WebTools.NativeHost.exe")).VersionInfo
+if ($nativeHostVersion.FileVersion -ne $windowsFileVersion -or $nativeHostVersion.ProductVersion -ne $productVersion) {
+    throw "NativeHost version metadata does not match product version $productVersion."
+}
 
 Invoke-Checked $DotnetExe @(
     "publish", "native\WebTools.UpdateHelper\WebTools.UpdateHelper.csproj",
     "--configuration", "Release", "--runtime", "win-x64", "--self-contained", "true",
     "-p:UseAppHost=true", "-p:PublishSingleFile=true", "-p:IncludeNativeLibrariesForSelfExtract=true",
+    "-p:Version=$productVersion", "-p:AssemblyVersion=$windowsFileVersion", "-p:FileVersion=$windowsFileVersion",
+    "-p:InformationalVersion=$productVersion", "-p:IncludeSourceRevisionInInformationalVersion=false", "-p:Product=WebTools",
     "-o", $updaterStage
 )
 if (-not (Test-Path -LiteralPath $updateHelperExe)) { throw "Self-contained update helper was not published: $updateHelperExe" }
+$updateHelperVersion = (Get-Item -LiteralPath $updateHelperExe).VersionInfo
+if ($updateHelperVersion.FileVersion -ne $windowsFileVersion -or $updateHelperVersion.ProductVersion -ne $productVersion) {
+    throw "UpdateHelper version metadata does not match product version $productVersion."
+}
 
 $electronBuilder = Join-Path $repoRoot "node_modules\electron-builder\cli.js"
 Invoke-Checked $NodeExe @(
@@ -110,8 +160,14 @@ Invoke-Checked $NodeExe @(
 )
 
 $unpackedManager = Join-Path $managerBuild "win-unpacked"
-if (-not (Test-Path -LiteralPath (Join-Path $unpackedManager "WebTools.exe"))) {
+$managerExe = Join-Path $unpackedManager "WebTools.exe"
+if (-not (Test-Path -LiteralPath $managerExe)) {
     throw "electron-builder output did not contain win-unpacked\WebTools.exe."
+}
+$managerVersion = (Get-Item -LiteralPath $managerExe).VersionInfo
+$managerVersionForms = @("$major.$minor.$patch", $windowsFileVersion)
+if ($managerVersion.FileVersion -notin $managerVersionForms -or $managerVersion.ProductVersion -notin $managerVersionForms) {
+    throw "Manager version metadata does not match product version $productVersion."
 }
 Copy-Item -Path (Join-Path $unpackedManager "*") -Destination $managerStage -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "resources\app.ico") -Destination (Join-Path $stageRoot "app.ico")
@@ -126,7 +182,14 @@ $installerScriptText = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "n
 [System.IO.File]::WriteAllText($installerScript, $installerScriptText, [System.Text.UTF8Encoding]::new($true))
 
 Push-Location $releaseRoot
-try { Invoke-Nsis $makensis @("native-production.nsi") }
+try {
+    Invoke-Nsis $makensis @(
+        "-DWEBTOOLS_PRODUCT_VERSION=$productVersion",
+        "-DWEBTOOLS_FILE_VERSION=$windowsFileVersion",
+        "-DWEBTOOLS_CHANNEL=$Channel",
+        "native-production.nsi"
+    )
+}
 finally { Pop-Location }
 
 foreach ($required in @(
@@ -139,6 +202,8 @@ foreach ($required in @(
     if (-not (Test-Path -LiteralPath $required)) { throw "Required staged file missing: $required" }
 }
 if (-not (Test-Path -LiteralPath $installer)) { throw "Production candidate installer was not created: $installer" }
+$installerVersion = (Get-Item -LiteralPath $installer).VersionInfo
+if ($installerVersion.ProductVersion -ne $productVersion) { throw "Installer version metadata does not match product version $productVersion." }
 
 # Exercise the complete previous-uninstall/new-install chain in a private registry
 # namespace. Fresh smoke installation alone cannot detect unwaited uninstallers.
@@ -160,9 +225,11 @@ foreach ($required in @(
 
 if (-not (Test-Path -LiteralPath $testUninstallKey)) { throw "Isolated smoke-install registry entry was not written." }
 $installedLocation = (Get-ItemProperty -LiteralPath $testUninstallKey).InstallLocation
+$installedVersion = (Get-ItemProperty -LiteralPath $testUninstallKey).DisplayVersion
 if ([IO.Path]::GetFullPath($installedLocation) -ne [IO.Path]::GetFullPath($smokeInstall)) {
     throw "Smoke-install registry points to an unexpected directory: $installedLocation"
 }
+if ($installedVersion -ne $productVersion) { throw "Isolated install registered version $installedVersion instead of $productVersion." }
 
 Invoke-Checked $DotnetExe @(
     "run", "--project", "native\WebTools.NativeHost.Checks\WebTools.NativeHost.Checks.csproj",
@@ -179,6 +246,7 @@ if ((Test-Path -LiteralPath $smokeInstall) -or (Test-Path -LiteralPath $testUnin
 }
 
 Write-Output "Production candidate installer: $installer"
+Write-Output "Product version: $productVersion ($Channel)"
 Write-Output "NativeHost staged path: $(Join-Path $hostStage 'WebTools.NativeHost.exe')"
 Write-Output "Manager staged path: $(Join-Path $managerStage 'WebTools.exe')"
 Write-Output "Unicode/space install and self-uninstall: PASS ($smokeInstall)"

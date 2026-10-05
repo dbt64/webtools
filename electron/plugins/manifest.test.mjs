@@ -14,6 +14,16 @@ test('strict JSON rejects duplicate decoded keys, prototype keys, depth and trai
   for (const source of ['{"a":1,"a":2}', '{"a":1,"\\u0061":2}', '{"__proto__":{}}', '{"a":1} {}', '['.repeat(17) + '0' + ']'.repeat(17)]) assert.throws(() => parseStrictJson(source))
   assert.deepEqual(parseStrictJson('{"x":[true,null,1,"hello"]}'), { x: [true, null, 1, 'hello'] })
 })
+test('rejects unsupported manifest/API versions and fields that could claim host privileges', () => {
+  for (const value of [
+    manifest({ manifestVersion: 2 }),
+    manifest({ api: { apiMajor: 2, minHostVersion: '0.1.0' } }),
+    manifest({ builtin: true }),
+    manifest({ trusted: true }),
+    manifest({ secretStore: true }),
+    manifest({ ipcChannel: 'native:invoke' }),
+  ]) assert.throws(() => parse(value))
+})
 test('strict manifest rejects missing/unknown fields, identities, SemVer and closed types', () => {
   const missing = manifest(); delete missing.name
   const cases = [missing, manifest({ mystery: true }), manifest({ id: '../evil' }), manifest({ version: '01.0.0' }), manifest({ requestedCapabilities: ['filesystem.read'] }), manifest({ type: 'javascript' }), manifest({ author: { name: 'A', extra: true } }), manifest({ pages: [{ id: 'home', title: 'H', blocks: [{ type: 'html', text: '<script>' }] }] }), manifest({ actions: [{ id: 'a', type: 'eval' }] })]

@@ -9,17 +9,20 @@ interface PluginHandlerDependencies {
   getManager(): PluginManager | null
   isManagerMainFrame(context: IpcSenderContext): boolean
   choosePackage(): Promise<Uint8Array | null>
+  onCatalogChanged?(): Promise<void>
 }
 type Handler = (event: IpcSenderContext, ...args: unknown[]) => Promise<IpcResult<unknown>>
 function id(value: unknown): string { if (!validPluginId(value)) fail('INVALID_INPUT'); return value }
 export function createPluginHandlers(deps: PluginHandlerDependencies): Record<string, Handler> {
-  const guard = (count: number, action: (manager: PluginManager, session: string, args: unknown[]) => Promise<unknown>): Handler => async (event, ...args) => {
+  const guard = (count: number, action: (manager: PluginManager, session: string, args: unknown[]) => Promise<unknown>, refresh = false): Handler => async (event, ...args) => {
     try {
       if (!deps.isManagerMainFrame(event)) fail('PERMISSION_DENIED')
       if (args.length !== count) fail('INVALID_INPUT')
       const manager = deps.getManager(); if (!manager) fail('OPERATION_FAILED')
       const session = manager.session; if (!manager.isSession(session)) fail('SESSION_EXPIRED')
       const data = await action(manager, session, args)
+      if (!deps.isManagerMainFrame(event) || !manager.isSession(session)) fail('SESSION_EXPIRED')
+      if (refresh) await deps.onCatalogChanged?.()
       if (!deps.isManagerMainFrame(event) || !manager.isSession(session)) fail('SESSION_EXPIRED')
       return { ok: true, data }
     } catch (error) { return { ok: false, error: safePluginError(error) } }
@@ -29,15 +32,15 @@ export function createPluginHandlers(deps: PluginHandlerDependencies): Record<st
     [IPC_CHANNELS.pluginInstall]: guard(0, async (manager, session) => {
       const bytes = await deps.choosePackage(); if (!manager.isSession(session)) fail('SESSION_EXPIRED')
       return bytes ? manager.install(bytes, session) : { outcome: 'cancelled' }
-    }),
+    }, true),
     [IPC_CHANNELS.pluginSetEnabled]: guard(2, async (manager, session, args) => {
       if (typeof args[1] !== 'boolean') fail('INVALID_INPUT'); return manager.setEnabled(id(args[0]), args[1], session)
-    }),
+    }, true),
     [IPC_CHANNELS.pluginSetGrants]: guard(2, async (manager, session, args) => {
       const grants = args[1]
       if (!Array.isArray(grants) || grants.length > PLUGIN_CAPABILITIES.length || grants.some(cap => !PLUGIN_CAPABILITIES.includes(cap)) || new Set(grants).size !== grants.length) fail('INVALID_INPUT')
       return manager.setGrants(id(args[0]), grants as PluginCapability[], session)
-    }),
+    }, true),
     [IPC_CHANNELS.pluginGetPages]: guard(1, async (manager, session, args) => manager.getPages(id(args[0]), session)),
     [IPC_CHANNELS.pluginInvoke]: guard(1, async (manager, session, args) => {
       const request = record(args[0], ['pluginId', 'version', 'hash', 'actionId', 'input']); id(request.pluginId); versionParts(request.version); opaqueKey(request.actionId)
@@ -51,7 +54,7 @@ export function createPluginHandlers(deps: PluginHandlerDependencies): Record<st
     }),
     [IPC_CHANNELS.pluginAIReviewConfirm]: guard(1, async (manager, session, args) => manager.confirmAIReview(args[0], session)),
     [IPC_CHANNELS.pluginAIReviewCancel]: guard(1, async (manager, session, args) => manager.cancelAIReview(args[0], session)),
-    [IPC_CHANNELS.pluginUninstall]: guard(1, async (manager, session, args) => manager.uninstall(id(args[0]), session)),
+    [IPC_CHANNELS.pluginUninstall]: guard(1, async (manager, session, args) => manager.uninstall(id(args[0]), session), true),
   }
 }
 export function registerPluginIpcHandlers(ipc: { handle(channel: string, handler: Handler): void; removeHandler(channel: string): void }, deps: PluginHandlerDependencies): () => void {

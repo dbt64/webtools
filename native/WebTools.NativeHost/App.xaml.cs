@@ -28,6 +28,7 @@ public partial class App : WpfApplication
     private bool _useLoginStartupRegistry;
     private DiagnosticsService? _diagnostics;
     private LauncherStateStore? _stateStore;
+    private LauncherPluginProjectionStore? _pluginProjectionStore;
     private NativeManagerPipeServer? _pipeServer;
     private ManagerController? _managerController;
     private MainWindow? _launcherWindow;
@@ -74,6 +75,7 @@ public partial class App : WpfApplication
             var profileDirectory = allowDevelopmentManager ? "WebTools-Dev" : "Nook";
             var profilePath = resourceTest?.ProfileRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), profileDirectory);
             _stateStore = new LauncherStateStore(Path.Combine(profilePath, "launcher-state.json"));
+            _pluginProjectionStore = new LauncherPluginProjectionStore(profilePath);
             _useLoginStartupRegistry = !allowDevelopmentManager && resourceTest is null;
             var state = _stateStore.LoadOrMigrate(Path.Combine(profilePath, "nook-data.json"), out var migrationStatus);
             _diagnostics.Record("launcher_state_loaded", migrationStatus);
@@ -90,7 +92,8 @@ public partial class App : WpfApplication
                 ApplyLauncherSettingsAsync,
                 ReplaceWebsitesAsync,
                 RememberApplicationAsync,
-                _diagnostics);
+                _diagnostics,
+                ReplacePluginProjectionAsync);
             _pipeTask = _pipeServer.RunAsync(_hostCancellation.Token);
 
             var processLauncher = new ManagerProcessLauncher(allowDevelopmentManager, resourceTest?.ProfileRoot);
@@ -116,6 +119,8 @@ public partial class App : WpfApplication
                 _managerController,
                 resourceTest is not null);
             MainWindow = _launcherWindow;
+            _launcherWindow.ApplyPluginProjection(_pluginProjectionStore.Load(out var pluginCacheStatus));
+            _diagnostics.Record("launcher_plugin_cache", pluginCacheStatus);
             var handle = new WindowInteropHelper(_launcherWindow).EnsureHandle();
             _launcherWindow.RegisterHotkey(handle, resourceTest?.Hotkey);
             if (resourceTest is null)
@@ -231,6 +236,14 @@ public partial class App : WpfApplication
             catch (Exception error) { _diagnostics?.Record("launcher_settings_rollback_error", error.GetType().Name); }
             throw;
         }
+    }
+
+    private async Task ReplacePluginProjectionAsync(LauncherPluginProjection projection)
+    {
+        await (_pluginProjectionStore ?? throw new InvalidOperationException("Plugin cache is not ready.")).SaveAsync(projection).ConfigureAwait(false);
+        var window = _launcherWindow;
+        if (window is not null && !window.Dispatcher.HasShutdownStarted)
+            await window.Dispatcher.InvokeAsync(() => window.ApplyPluginProjection(projection));
     }
 
     private async Task<LauncherState> ReplaceWebsitesAsync(IReadOnlyList<LauncherWebsiteRecord> websites)

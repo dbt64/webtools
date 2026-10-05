@@ -36,6 +36,7 @@ public partial class MainWindow : Window
     private readonly ManagerController _managerController;
     private readonly LauncherInteractionState _state = new();
     private readonly AppCatalogService _catalog = new();
+    private readonly FileSearchProjection _fileSearchProjection = new();
     private readonly NativeIconCache _icons;
     private readonly LatestSearchGeneration _fileGeneration = new();
     private readonly LauncherResultSelectionController _selection;
@@ -59,7 +60,10 @@ public partial class MainWindow : Window
     private double _dragStartLeft;
     private double _dragStartTop;
     private bool _expanded;
+    private bool _pluginsExpanded;
+    private IReadOnlyList<LauncherPluginShortcut> _plugins = [];
     private bool _catalogLoading = true;
+    private bool _updatingFileCategories;
     private readonly bool _resourceTestMode;
     private bool _disposed;
     private string _themePreference = "system";
@@ -80,6 +84,9 @@ public partial class MainWindow : Window
         _actions = new ResultActionExecutor(_catalog, _everything);
         _icons = new NativeIconCache(64, outcome => _diagnostics.Record("packaged_icon_lookup", outcome));
         InitializeComponent();
+        FileCategoriesList.ItemsSource = _fileSearchProjection.Categories
+            .Select(category => new FileCategoryRow(category, GetFileCategoryLabel(category))).ToArray();
+        FileCategoriesList.SelectedIndex = 0;
         ApplyTheme(initialState.Theme);
         LoadBrandIcon();
         SystemEvents.UserPreferenceChanged += SystemPreferenceChanged;
@@ -103,6 +110,12 @@ public partial class MainWindow : Window
         await RebuildIndexAsync();
         if (_expanded) RefreshShortcuts();
         RenderQuery();
+    }
+    public void ApplyPluginProjection(LauncherPluginProjection projection)
+    {
+        _plugins = projection.Plugins;
+        if (_expanded && string.IsNullOrWhiteSpace(QueryBox.Text)) RefreshPluginShortcuts();
+        UpdateLayoutForResults();
     }
 
     public async Task InitializeSearchAsync()
@@ -151,6 +164,16 @@ public partial class MainWindow : Window
             var result = _state.Results.FirstOrDefault(item => item.Action is OpenTranslationAction);
             if (result is null) throw new InvalidOperationException("Test query has no Translation action.");
             ActivateResult(result);
+        });
+    }
+    internal async Task ActivatePluginFromResourceTestAsync(LauncherPluginRef reference)
+    {
+        if (!_resourceTestMode) throw new InvalidOperationException("The isolated test driver is not enabled.");
+        await Dispatcher.InvokeAsync(() => {
+            ShowLauncher();
+            var button = PluginShortcuts.Children.OfType<System.Windows.Controls.Button>().FirstOrDefault(item => item.Tag is LauncherPluginRef value && value == reference)
+                ?? throw new InvalidOperationException("Plugin shortcut is unavailable.");
+            button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
         });
     }
 
@@ -216,7 +239,9 @@ public partial class MainWindow : Window
             IsActive,
             QueryBox.IsKeyboardFocused,
             _snapshot.EverythingEnabled,
-            _rows.Select(row => row.Result.Kind.ToString()).ToArray());
+            _rows.Select(row => row.Result.Kind.ToString()).ToArray(),
+            _plugins.ToArray(),
+            PluginShortcuts.Children.OfType<System.Windows.Controls.Button>().Count(button => button.IsVisible));
     }
 
     private async Task RefreshCatalogAsync()
@@ -271,6 +296,7 @@ public partial class MainWindow : Window
         _awaitingShowFocus = true;
         _expanded = _snapshot.ExpandedByDefault;
         _websitesExpanded = false;
+        _pluginsExpanded = false;
         ExpandButton.Content = _expanded ? "收起 ↑" : "展开 ↓";
         if (_expanded) RefreshShortcuts();
         UpdateLayoutForResults();
@@ -308,14 +334,24 @@ public partial class MainWindow : Window
         _isDraggingSearchBar = false;
         _awaitingShowFocus = false;
         _fileGeneration.Next();
+        _everything.InvalidateCurrentResults();
+        _fileSearchProjection.SetQuery(string.Empty);
+        _fileSearchProjection.SetResults([]);
         ++_resultGeneration;
         _state.Reset();
         QueryBox.Clear();
         _rows = [];
         _selection.Clear(ResultsList);
+        _selection.Clear(FileResultsList);
+        FileSearchPanel.Visibility = Visibility.Collapsed;
+        FileResultsList.Visibility = Visibility.Collapsed;
+        FileEmptyText.Visibility = Visibility.Collapsed;
+        FileStatusText.Visibility = Visibility.Collapsed;
         _expanded = false;
         _websitesExpanded = false;
         WebsiteShortcuts.Children.Clear();
+        _pluginsExpanded = false;
+        PluginShortcuts.Children.Clear();
         ShortcutPanel.Visibility = Visibility.Collapsed;
         ResultsList.Visibility = Visibility.Collapsed;
         StatusText.Visibility = Visibility.Collapsed;
@@ -350,6 +386,8 @@ public partial class MainWindow : Window
     private void RenderQuery()
     {
         var command = SearchCommand.Parse(QueryBox.Text);
+        _fileSearchProjection.SetQuery(QueryBox.Text);
+        _everything.InvalidateCurrentResults();
         var generation = _fileGeneration.Next();
         var iconGeneration = ++_resultGeneration;
         _resourceFileSearchTask = Task.CompletedTask;
@@ -367,12 +405,12 @@ public partial class MainWindow : Window
         }
         else if (command.Mode == SearchMode.Files)
         {
-            Present([]);
-            if (!_snapshot.EverythingEnabled) SetStatus("请先在 WebTools 设置中启用 Everything 文件搜索。");
-            else if (command.Query.Length == 0) SetStatus("输入关键词搜索文件和文件夹。");
+            _fileSearchProjection.SetResults([]);
+            if (!_snapshot.EverythingEnabled) PresentFileResults("请先在 WebTools 设置中启用 Everything 文件搜索。");
+            else if (command.Query.Length == 0) PresentFileResults("输入关键词搜索文件和文件夹。");
             else
             {
-                SetStatus("正在搜索 Everything…");
+                PresentFileResults("正在搜索 Everything…");
                 _resourceFileSearchTask = SearchFilesAsync(command.Query, generation.Sequence, generation.Token, iconGeneration);
             }
         }
@@ -397,32 +435,105 @@ public partial class MainWindow : Window
             await Task.Delay(160, token);
             var results = await _everything.SearchAsync(query, token);
             if (!_fileGeneration.IsCurrent(sequence) || SearchCommand.Parse(QueryBox.Text) is not { Mode: SearchMode.Files } current || current.Query != query) return;
-            Present(results.Take(8).ToArray());
-            if (results.Count == 0) SetStatus("没有找到匹配的文件或文件夹。");
-            LoadVisibleIcons(iconGeneration);
+            _fileSearchProjection.SetResults(results);
+            PresentFileResults();
+            if (_fileSearchProjection.VisibleResults.Count > 0) LoadVisibleIcons(iconGeneration);
             UpdateLayoutForResults();
         }
         catch (OperationCanceledException) { /* newer query owns the UI */ }
         catch (Exception error)
         {
-            if (_fileGeneration.IsCurrent(sequence)) SetStatus(error.Message);
+            if (_fileGeneration.IsCurrent(sequence))
+            {
+                _fileSearchProjection.SetResults([]);
+                PresentFileResults("文件搜索失败，请检查 Everything 配置后重试。");
+                SetFileFeedback(BoundFileFeedback(error.Message));
+            }
         }
     }
 
     private void Present(IReadOnlyList<SearchResult> results)
     {
+        FileSearchPanel.Visibility = Visibility.Collapsed;
+        FileResultsList.Visibility = Visibility.Collapsed;
+        _selection.Clear(FileResultsList);
         _rows = results.Select(result => new ResultRow(result)).ToList();
         _selection.Present(ResultsList, results, _rows);
         ResultsList.Visibility = _rows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         StatusText.Visibility = Visibility.Collapsed;
     }
 
+    private void PresentFileResults(string? emptyMessage = null, bool preserveSelection = false)
+    {
+        var preferredResultId = preserveSelection ? _state.GetSelectedResult()?.Id : null;
+        FileSearchPanel.Visibility = Visibility.Visible;
+        ResultsList.Visibility = Visibility.Collapsed;
+        StatusText.Visibility = Visibility.Collapsed;
+        _selection.Clear(ResultsList);
+        var results = _fileSearchProjection.VisibleResults;
+        _rows = results.Select(result => new ResultRow(result)).ToList();
+        _selection.Present(FileResultsList, results, _rows, preferredResultId);
+        FileResultsList.Visibility = _rows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        FileEmptyText.Text = _rows.Count > 0 ? string.Empty : emptyMessage ??
+            (_fileSearchProjection.Results.Count == 0 ? "没有找到匹配的文件或文件夹。" : "此类型没有匹配的项目。");
+        FileEmptyText.Visibility = _rows.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
+        FileStatusText.Visibility = Visibility.Collapsed;
+        FileStatusText.Text = string.Empty;
+    }
+
     private void SetStatus(string message)
     {
+        if (_fileSearchProjection.IsActive)
+        {
+            SetFileFeedback(BoundFileFeedback(message));
+            return;
+        }
         StatusText.Text = message;
         StatusText.Visibility = Visibility.Visible;
         ResultsList.Visibility = Visibility.Collapsed;
         UpdateLayoutForResults();
+    }
+
+    private void SetFileFeedback(string message)
+    {
+        FileStatusText.Text = BoundFileFeedback(message);
+        FileStatusText.Visibility = Visibility.Visible;
+    }
+
+    private static string BoundFileFeedback(string message) => message.Length <= 180 ? message : message[..180] + "…";
+
+    private static string GetFileCategoryLabel(FileCategory category) => category switch
+    {
+        FileCategory.All => "全部",
+        FileCategory.Folder => "文件夹",
+        FileCategory.Application => "应用程序",
+        FileCategory.Document => "文档",
+        FileCategory.Image => "图片",
+        FileCategory.Video => "视频",
+        FileCategory.Audio => "音频",
+        FileCategory.Archive => "压缩文件",
+        FileCategory.Other => "其他",
+        _ => "其他",
+    };
+
+    private void FileCategoriesList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingFileCategories || FileCategoriesList.SelectedItem is not FileCategoryRow row) return;
+        ApplyFileCategory(row.Category, synchronizeList: false);
+    }
+
+    private void ApplyFileCategory(FileCategory category, bool synchronizeList)
+    {
+        if (!_fileSearchProjection.SelectCategory(category)) return;
+        if (synchronizeList)
+        {
+            _updatingFileCategories = true;
+            try { FileCategoriesList.SelectedIndex = _fileSearchProjection.SelectedCategoryIndex; }
+            finally { _updatingFileCategories = false; }
+        }
+        var iconGeneration = ++_resultGeneration;
+        PresentFileResults(preserveSelection: true);
+        if (_fileSearchProjection.VisibleResults.Count > 0) LoadVisibleIcons(iconGeneration);
     }
 
     private void LoadVisibleIcons(int generation)
@@ -460,18 +571,22 @@ public partial class MainWindow : Window
         var hasQuery = QueryBox.Text.Trim().Length > 0;
         FooterHints.Visibility = hasQuery ? Visibility.Visible : Visibility.Collapsed;
         ShortcutPanel.Visibility = !hasQuery && _expanded ? Visibility.Visible : Visibility.Collapsed;
-        if (!hasQuery) Height = _expanded ? ExpandedHeight + (_websitesExpanded ? Math.Min(3, Math.Max(0, (_snapshot.Websites.Count - 1) / 6)) * 60 : 0) : CompactHeight;
+        var viewport = ShortcutViewportBudget.Calculate(_snapshot.Websites.Count, _websitesExpanded, _plugins.Count, _pluginsExpanded, MaxHeight - (ExpandedHeight - 120));
+        WebsiteScroll.Height = viewport.Websites;
+        PluginScroll.Height = viewport.Plugins;
+        if (!hasQuery) Height = _expanded ? ExpandedHeight - 120 + viewport.Websites + viewport.Plugins : CompactHeight;
         else Height = SearchResultsHeight;
     }
 
     private void RefreshShortcuts()
     {
+        RefreshPluginShortcuts();
         WebsiteShortcuts.Children.Clear();
         WebsiteSectionToggle.IsEnabled = _snapshot.Websites.Count > 6;
         if (!WebsiteSectionToggle.IsEnabled) _websitesExpanded = false;
         WebsiteSectionToggle.Content = _websitesExpanded ? "收起 ↑" : "展开 ↓";
         WebsiteScroll.Height = _websitesExpanded ? Math.Min(4, Math.Max(1, (_snapshot.Websites.Count + 5) / 6)) * 60 : 60;
-        WebsiteScroll.VerticalScrollBarVisibility = _websitesExpanded && _snapshot.Websites.Count > 24
+        WebsiteScroll.VerticalScrollBarVisibility = _websitesExpanded
             ? ScrollBarVisibility.Auto : ScrollBarVisibility.Hidden;
         var icons = WebsiteFaviconReader.Read(_stateStore.WebsiteDataPath, _snapshot.Websites.Select(site => site.Id).ToArray());
         foreach (var site in _snapshot.Websites)
@@ -550,19 +665,42 @@ public partial class MainWindow : Window
         _websitesExpanded = false;
         ExpandButton.Content = _expanded ? "收起 ↑" : "展开 ↓";
         if (_expanded) RefreshShortcuts();
-        else WebsiteShortcuts.Children.Clear();
+        else { WebsiteShortcuts.Children.Clear(); PluginShortcuts.Children.Clear(); }
         UpdateLayoutForResults();
         QueryBox.Focus();
     }
 
-    private void TranslateShortcut_Click(object sender, RoutedEventArgs e)
+    private void RefreshPluginShortcuts()
     {
-        _expanded = false;
-        ExpandButton.Content = "展开 ↓";
-        WebsiteShortcuts.Children.Clear();
-        HideLauncher("open-translation-page");
-        _managerController.OpenPage(ManagerPage.Translation);
+        PluginShortcuts.Children.Clear();
+        PluginSectionToggle.IsEnabled = _plugins.Count > 6;
+        if (!PluginSectionToggle.IsEnabled) _pluginsExpanded = false;
+        PluginSectionToggle.Content = _pluginsExpanded ? "收起 ↑" : "展开 ↓";
+        PluginScroll.Height = _pluginsExpanded ? Math.Min(4, Math.Max(1, (_plugins.Count + 5) / 6)) * 60 : 60;
+        PluginScroll.VerticalScrollBarVisibility = _pluginsExpanded ? ScrollBarVisibility.Auto : ScrollBarVisibility.Hidden;
+        foreach (var item in _plugins)
+        {
+            var content = new StackPanel { Width = 109, Orientation = Orientation.Horizontal, HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
+            var glyph = new System.Windows.Shapes.Path {
+                Width = 18, Height = 18, Stretch = Stretch.Uniform, StrokeThickness = 2,
+                Data = Geometry.Parse(item.Icon == "translation" ? "M5,8 L11,14 M4,14 L10,8 12,5 H2 M2,5 H14 M7,2 H8 M22,22 L17,12 12,22 M14,18 H20" : "M3,3 H9 C7,0 15,0 13,3 H20 V9 C23,7 23,15 20,13 V20 H13 C15,23 7,23 9,20 H3 V13 C0,15 0,7 3,9 Z"),
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            };
+            glyph.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, "AccentBrush");
+            var icon = new Border { Width = 30, Height = 30, CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1), Child = glyph };
+            icon.SetResourceReference(Border.BackgroundProperty, "AccentSoftBrush"); icon.SetResourceReference(Border.BorderBrushProperty, "LineBrush");
+            content.Children.Add(icon);
+            var label = new TextBlock { Text = item.DisplayName, FontSize = 11, Width = 70, Margin = new Thickness(9, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+            label.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush"); content.Children.Add(label);
+            var button = new System.Windows.Controls.Button { Width = 127, Height = 54, Margin = new Thickness(0, 0, 6, 6), Content = content, ToolTip = item.DisplayName, Tag = item.Ref, Style = (Style)FindResource("LauncherShortcutButtonStyle") };
+            System.Windows.Automation.AutomationProperties.SetName(button, item.DisplayName);
+            button.Click += (_, _) => { HideLauncher("open-plugin"); _managerController.OpenPlugin(item.Ref); };
+            PluginShortcuts.Children.Add(button);
+        }
+        if (_plugins.Count == 0) PluginShortcuts.Children.Add(new TextBlock { Text = "启用的插件会显示在这里", Foreground = (Brush)FindResource("QuietBrush"), FontSize = 10 });
     }
+    private void PluginSectionToggle_Click(object sender, RoutedEventArgs e)
+    { if (_plugins.Count <= 6) return; _pluginsExpanded = !_pluginsExpanded; RefreshPluginShortcuts(); PluginScroll.ScrollToTop(); UpdateLayoutForResults(); QueryBox.Focus(); }
     private void QueryBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => CompleteShowFocusMeasurement();
 
     private void BrandButton_Click(object sender, RoutedEventArgs e) => _managerController.OpenPage(ManagerPage.Favorites);
@@ -620,23 +758,67 @@ public partial class MainWindow : Window
     {
         if (e.Key == Key.Escape)
         {
+            if (TryGetOpenFileContextMenu(out var openMenu))
+            {
+                openMenu.IsOpen = false;
+                e.Handled = true;
+                return;
+            }
             HideLauncher("escape");
+            e.Handled = true;
+            return;
+        }
+        if (TryGetOpenFileContextMenu(out _)) return;
+        if (_fileSearchProjection.IsActive && (e.Key == Key.Apps || e.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift)
+            && _state.SelectedIndex >= 0
+            && FileResultsList.ItemContainerGenerator.ContainerFromIndex(_state.SelectedIndex) is ListBoxItem { ContextMenu: { } contextMenu } item)
+        {
+            contextMenu.PlacementTarget = item;
+            contextMenu.IsOpen = true;
+            e.Handled = true;
+            return;
+        }
+        if (_fileSearchProjection.IsActive && FileSearchPanel.Visibility == Visibility.Visible
+            && FileCategoriesList.IsKeyboardFocusWithin && e.Key is Key.Down or Key.Up)
+        {
+            _fileSearchProjection.MoveCategorySelection(e.Key == Key.Down ? 1 : -1);
+            ApplyFileCategory(_fileSearchProjection.SelectedCategory, synchronizeList: true);
             e.Handled = true;
             return;
         }
         if (e.Key is Key.Down or Key.Up && _state.Results.Count > 0)
         {
-            SetSelectedIndex(_selection.MoveSelection(ResultsList, e.Key == Key.Down ? 1 : -1));
+            var activeList = _fileSearchProjection.IsActive ? FileResultsList : ResultsList;
+            SetSelectedIndex(_selection.MoveSelection(activeList, e.Key == Key.Down ? 1 : -1));
             e.Handled = true;
             return;
         }
         if (e.Key == Key.Enter)
         {
+            if (_fileSearchProjection.IsActive && FileCategoriesList.IsKeyboardFocusWithin)
+            {
+                if (_state.Results.Count > 0) FileResultsList.Focus();
+                e.Handled = true;
+                return;
+            }
             var command = SearchCommand.Parse(QueryBox.Text);
             if (command.Mode == SearchMode.Web && command.Query.Length > 0) OpenWebSearch(command.Query);
             else if (_state.GetSelectedResult() is { } result) ActivateResult(result);
             e.Handled = true;
         }
+    }
+
+    private bool TryGetOpenFileContextMenu(out System.Windows.Controls.ContextMenu contextMenu)
+    {
+        if (_fileSearchProjection.IsActive && _state.SelectedIndex >= 0
+            && FileResultsList.ItemContainerGenerator.ContainerFromIndex(_state.SelectedIndex) is ListBoxItem { ContextMenu.IsOpen: true } item
+            && item.ContextMenu is { } open)
+        {
+            contextMenu = open;
+            return true;
+        }
+        contextMenu = null!;
+        return false;
     }
 
     private void OpenWebSearch(string query)
@@ -651,16 +833,32 @@ public partial class MainWindow : Window
 
     private void SetSelectedIndex(int index)
     {
-        _selection.Select(ResultsList, index);
-        if (index >= 0 && ResultsList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement item) item.BringIntoView();
+        var activeList = _fileSearchProjection.IsActive ? FileResultsList : ResultsList;
+        _selection.Select(activeList, index);
+        if (index >= 0 && activeList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement item) item.BringIntoView();
     }
 
     private void ActivateResult(SearchResult result)
     {
+        if (result.Action is SearchFilesAction fileSearch)
+        {
+            QueryBox.Text = FileSearchProjection.BuildSearchCommand(fileSearch);
+            QueryBox.Focus();
+            QueryBox.CaretIndex = QueryBox.Text.Length;
+            return;
+        }
         if (result.Action is OpenTranslationAction translation)
         {
             HideLauncher("translation-handoff");
             _managerController.OpenTranslation(translation.Text);
+            return;
+        }
+        if (result.Action is OpenFileAction file && result.Kind is (ResultKind.File or ResultKind.Folder))
+        {
+            var operation = new FileResultOperations(_everything.ResolvePath, new WindowsFileResultOperationPlatform())
+                .Execute(file.Token, result.Kind, FileResultOperation.Open);
+            if (operation.Succeeded) HideLauncher("file-open");
+            else SetFileFeedback(operation.Message);
             return;
         }
         try
@@ -702,6 +900,54 @@ public partial class MainWindow : Window
             }
             if (current == ResultsList) return;
         }
+    }
+
+    private void FileResultsList_SelectionChanged(object sender, SelectionChangedEventArgs e) => _selection.AcceptUserSelection(FileResultsList);
+
+    private void FileResultsList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        for (DependencyObject? current = e.OriginalSource as DependencyObject; current is not null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is ListBoxItem { DataContext: ResultRow row })
+            {
+                ActivateResult(row.Result);
+                e.Handled = true;
+                return;
+            }
+            if (current == FileResultsList) return;
+        }
+    }
+
+    private void FileContextMenu_Opened(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.ContextMenu menu || menu.PlacementTarget is not ListBoxItem { DataContext: ResultRow row }) return;
+        FileResultsList.SelectedItem = row;
+        _selection.AcceptUserSelection(FileResultsList);
+        menu.Tag = row;
+        foreach (var item in menu.Items.OfType<System.Windows.Controls.MenuItem>())
+            if (item.Tag as string == nameof(FileResultOperation.CopyObject))
+                item.Header = row.Result.Kind == ResultKind.Folder ? "复制文件夹" : "复制文件";
+    }
+
+    private void FileContextMenu_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape || sender is not System.Windows.Controls.ContextMenu menu) return;
+        menu.IsOpen = false;
+        e.Handled = true;
+    }
+
+    private void FileContextMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.MenuItem { Tag: string operationName, Parent: System.Windows.Controls.ContextMenu menu } menuItem
+            || menu.Tag is not ResultRow row
+            || !FileResultOperations.TryParseContextMenuOperation(operationName, out var operation)) return;
+
+        var token = row.Result.Action is OpenFileAction action ? action.Token : string.Empty;
+        var result = new FileResultOperations(_everything.ResolvePath, new WindowsFileResultOperationPlatform())
+            .Execute(token, row.Result.Kind, operation);
+        if (operation == FileResultOperation.Open && result.Succeeded) HideLauncher("file-context-open");
+        else SetFileFeedback(result.Message);
+        menuItem.IsEnabled = true;
     }
 
     private void Window_Activated(object? sender, EventArgs e) => FocusQueryBox();
@@ -822,4 +1068,6 @@ public partial class MainWindow : Window
         public BitmapSource? Icon { get => _icon; set { _icon = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Icon))); } }
         public event PropertyChangedEventHandler? PropertyChanged;
     }
+
+    private sealed record FileCategoryRow(FileCategory Category, string Label);
 }

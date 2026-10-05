@@ -53,18 +53,19 @@ test('disabled Native translation is acknowledged when its gate is presented and
 
 test('explicit enable opens Translation with the exact original text and rejects stale UI actions', async () => {
   const { service, lifecycle } = setup()
-  const nativeAck = service.begin({ requestId: 'request-2', text: '\n hello, 世界 \t' })
+  const originalText = "  don't-stop 世界 日本語🙂—！？ \t\n"
+  const nativeAck = service.begin({ requestId: 'request-2', text: originalText })
   readyRenderer(service)
   const blocked = service.getProjection()
   await service.resolve({ ...blocked, disposition: 'gate-presented' })
   await nativeAck
   const ready = await service.resolve({ ...blocked, disposition: 'enable-and-open' })
   assert.equal(ready.status, 'ready')
-  assert.equal(ready.text, '\n hello, 世界 \t')
+  assert.equal(ready.text, originalText)
   assert.equal(lifecycle.calls.length, 1)
   service.rendererStarting()
   service.rendererReady()
-  assert.equal(service.getProjection().text, '\n hello, 世界 \t')
+  assert.equal(service.getProjection().text, originalText)
   await assert.rejects(service.resolve({ ...ready, disposition: 'applied' }), error => error.code === 'STALE_HANDOFF')
   const reprojected = service.getProjection()
   await service.resolve({ ...reprojected, disposition: 'applied' })
