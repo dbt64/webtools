@@ -8,6 +8,7 @@ Date: 2026-10-05 (Asia/Hong_Kong)
 - Phase 5H checkpoint / source HEAD: `4903ac22cabdda50605464bd6b23c00aea3bb8db` (`feat: add declarative plugin SDK and packer`).
 - Upstream: `origin/codex/shared-ai-translation-2.0`; synchronized before Phase 5I execution (`0 0`).
 - The checkout was clean at Phase 5I start. Current Phase 5I changes are limited to the plan/report, regression tests, and isolated acceptance-driver/build-script support. No product runtime behavior, dependency, package layout, user-data schema, installer configuration, or plugin architecture was changed.
+- Phase 5I checkpoint: `6096eb254ab2efe79cbfe718cffe55c4a052ce56` (`test: add phase 5i acceptance evidence`), pushed normally to `origin/codex/shared-ai-translation-2.0`. Post-push verification showed `0 0` ahead/behind and a clean worktree. This records the current engineering evidence; it does not change the manual-required final phase status below.
 - Evidence labels in this report mean:
   - **CURRENT AUTOMATED PASS** — current source test/check without physical GUI claims.
   - **CURRENT PACKAGED PASS** — current packaged binaries exercised in an isolated profile/process environment.
