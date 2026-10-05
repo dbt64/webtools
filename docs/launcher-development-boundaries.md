@@ -13,7 +13,7 @@ The deterministic behavior fixtures live in `tests/fixtures/launcher-parity.json
 
 - `?query` searches the selected web engine, `file:query` delegates to Everything, and `/query` searches saved websites only. Manager quick search converts `/query` to ordinary local search. Prefix recognition currently requires the first raw character; leading whitespace before a prefix remains local text.
 - Ordinary local search mixes applications and saved websites. `/` mode limits candidates to saved websites. Website names, URL aliases, and descriptions are indexed; opening a website uses its saved ID.
-- Search normalizes case, accents, and punctuation, supports pinyin, and sorts by the current rank tiers before name ordering. Ordinary app and website rows share an eight-result limit. An eligible Latin phrase can append a translation action after those rows, including as row nine.
+- Search normalizes case, accents, and punctuation, supports pinyin, and sorts by the current rank tiers before name ordering. Ordinary app and website rows share an eight-result limit. Any nonblank ordinary local text within the 20,000-character handoff bound appends a translation action after those rows, including as row nine. Chinese, mixed scripts, emoji and punctuation are eligible; `?`, `/`, and `file:` modes keep their existing behavior. Current action expectations are in `native/search-contract/launcher-search-parity.json`.
 - Native launcher row actions distinguish application, website, file, and translation. Web search is a command mode rather than a row action. App and website launches use stable IDs; file launch uses an opaque Everything result ID.
 
 ## Change rule

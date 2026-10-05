@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using WebTools.NativeHost;
 using WebTools.NativeHost.Services;
+using WebTools.NativeHost.Data;
 
 namespace WebTools.NativeHost.Diagnostics;
 
@@ -21,7 +22,9 @@ internal sealed record Phase4EResourcePresentation(
     bool IsActive,
     bool QueryHasKeyboardFocus,
     bool EverythingEnabled,
-    IReadOnlyList<string> ResultKinds);
+    IReadOnlyList<string> ResultKinds,
+    IReadOnlyList<LauncherPluginShortcut> PluginShortcuts,
+    int RealizedPluginShortcutCount);
 
 /// <summary>
 /// Local, current-user-only control surface used only by the explicitly opted-in Phase 4E resource test process.
@@ -89,6 +92,14 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
                                 _ => throw new ArgumentException("Unsupported Manager section."),
                             };
                             await window.Dispatcher.InvokeAsync(() => window.OpenManagerPage(page));
+                            response = new { ok = true, type, processId = Environment.ProcessId };
+                            break;
+                        }
+                        case "manager-plugin":
+                        {
+                            var reference = new LauncherPluginRef(root.GetProperty("kind").GetString() ?? "", root.GetProperty("id").GetString() ?? "");
+                            if (!reference.IsValid) throw new ArgumentException("Invalid test plugin reference.");
+                            await window.ActivatePluginFromResourceTestAsync(reference);
                             response = new { ok = true, type, processId = Environment.ProcessId };
                             break;
                         }
@@ -215,6 +226,8 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
             presentation.QueryHasKeyboardFocus,
             presentation.EverythingEnabled,
             presentation.ResultKinds,
+            presentation.PluginShortcuts,
+            presentation.RealizedPluginShortcutCount,
             managedHeapUsedBytes = GC.GetTotalMemory(forceFullCollection: false),
             managedHeapSizeBytes = memory.HeapSizeBytes,
             managedFragmentedBytes = memory.FragmentedBytes,
@@ -239,6 +252,8 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
         presentation.QueryHasKeyboardFocus,
         presentation.EverythingEnabled,
         presentation.ResultKinds,
+        presentation.PluginShortcuts,
+        presentation.RealizedPluginShortcutCount,
     };
 
     private static async Task WriteAsync(StreamWriter writer, object value, CancellationToken cancellationToken)

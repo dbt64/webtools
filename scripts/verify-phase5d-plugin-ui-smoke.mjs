@@ -3,7 +3,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process'
 import { once } from 'node:events'
 import { createConnection, createServer } from 'node:net'
 import { createInterface } from 'node:readline'
-import { mkdir, readFile, readdir, writeFile, cp } from 'node:fs/promises'
+import { mkdir, readFile, readdir, writeFile, cp, rmdir } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -49,8 +49,9 @@ const data = createDefaultAppData()
 data.settings.quickSearchShortcut = 'Control+Alt+Shift+F12'
 data.settings.translation.engine = 'ai'
 await writeFile(join(profile, 'nook-data.json'), JSON.stringify(data))
-await writeFile(join(profile, 'launcher-state.json'), JSON.stringify({ schemaVersion: 1, quickSearchShortcut: data.settings.quickSearchShortcut, theme: 'dark', launcherDisplayMode: 'compact', launchOnStartup: false, searchEngines: data.settings.searchEngines, defaultSearchEngineId: 'google', everythingEnabled: false, everythingEsPath: '', websites: [], appSearchMemory: [] }))
+await writeFile(join(profile, 'launcher-state.json'), JSON.stringify({ schemaVersion: 1, quickSearchShortcut: data.settings.quickSearchShortcut, theme: 'dark', launcherDisplayMode: 'expanded', launchOnStartup: false, searchEngines: data.settings.searchEngines, defaultSearchEngineId: 'google', everythingEnabled: false, everythingEsPath: '', websites: [], appSearchMemory: [] }))
 await writeFile(join(profile, 'catalog.json'), JSON.stringify({ schemaVersion: 1, generatedAtUtc: new Date().toISOString(), apps: [] }))
+if (phase5h) await mkdir(join(profile, 'launcher-plugins.json')) // Recoverable derived-cache failure must not block Manager startup.
 
 const demoPackageBytes = phase5h ? new Uint8Array(await readFile(inputPackagePath)) : null
 const demo = phase5h
@@ -318,6 +319,13 @@ try {
   await evaluate('[...document.querySelectorAll(".nav-subitem:not(.plugin-nav-item)")].find(button => button.textContent.trim() === "插件管理")?.click()')
   await until(() => evaluate('!!document.querySelector(".plugin-manager-page")'), Boolean, 'plugin center route')
   await until(() => evaluate(`[...document.querySelectorAll('.plugin-list-row')].some(row => row.textContent.includes(${JSON.stringify(demo.name)}))`), Boolean, 'seeded plugin list')
+  if (phase5h) {
+    assert.equal((await evaluate('window.desktop.pluginCatalog.list()')).ok, true, 'authority is available despite cache failure')
+    await rmdir(join(profile, 'launcher-plugins.json'))
+    assert.equal((await evaluate('window.desktop.pluginCatalog.list()')).ok, true)
+    await until(() => control({ type: 'snapshot' }), state => state.pluginShortcuts.some(item => item.ref.kind === 'declarative' && item.ref.id === pluginId), 'Native cache recovers on explicit catalog refresh')
+    report.pluginProjectionCacheRecovery = 'Packaged Manager opened and authority catalog remained available despite a derived-cache path collision; removing only the isolated obstruction and refreshing repaired the projection.'
+  }
   if (phase5f) {
     const catalog = await evaluate('window.desktop.pluginCatalog.list()')
     assert.equal(catalog.ok, true)
@@ -419,6 +427,12 @@ try {
     assert.equal(await evaluate('document.querySelector(".translation-output")?.textContent.trim()'), '译文会显示在这里', 'no automatic provider request starts without configured credentials')
     const storedEnabled = JSON.parse(await readFile(join(profile, 'builtin-plugins', 'state.json'), 'utf8'))
     assert.equal(storedEnabled.plugins['webtools.translation']?.enabled, true, 'explicit enable is persisted')
+    assert.equal(await evaluate('[...document.querySelectorAll(".plugin-nav-item")].some(button => button.textContent.trim() === "翻译")'), true, 'Enable & Open refreshes navigation')
+    assert.equal((await evaluate('window.desktop.pluginCatalog.list()')).data.entries[0].state.enabled, true)
+    assert.ok((await control({ type: 'snapshot' })).pluginShortcuts.some(item => item.ref.kind === 'builtin'), 'Enable & Open publishes Native projection')
+    await control({ type: 'manager-translation', text: prefillText })
+    await until(() => evaluate('document.querySelector(".translate-page textarea")?.value'), value => value === prefillText, 'next handoff bypasses gate with exact text')
+    assert.equal(await evaluate('!!document.querySelector(".builtin-translation-gate")'), false)
     assert.equal(JSON.stringify(storedEnabled).includes(prefillText), false, 'exact text is not written to built-in state')
     const persistentStateAfterToggle = {
       files: await snapshotFiles(preservedFiles),
@@ -492,9 +506,11 @@ try {
     await evaluate(`[...document.querySelectorAll('.plugin-list-row')].find(row => row.textContent.includes(${JSON.stringify(demo.name)}))?.click()`)
     await evaluate('[...document.querySelectorAll(".plugin-actions button")].find(button => button.textContent.includes("停用插件"))?.click()')
     await until(async () => (await evaluate('window.desktop.plugins.list()')).data?.find(plugin => plugin.id === pluginId)?.status === 'installed-disabled', Boolean, 'SDK example disabled')
+    assert.equal((await control({ type: 'snapshot' })).pluginShortcuts.some(item => item.ref.kind === 'declarative' && item.ref.id === pluginId), false, 'disabled plugin immediately leaves Native cache')
     assert.equal(await evaluate('[...document.querySelectorAll(".plugin-nav-item")].some(button => button.textContent.includes("Private Notes"))'), false)
     await evaluate('[...document.querySelectorAll(".plugin-actions button")].find(button => button.textContent.includes("启用插件"))?.click()')
     await until(async () => (await evaluate('window.desktop.plugins.list()')).data?.find(plugin => plugin.id === pluginId)?.status === 'active', Boolean, 'SDK example re-enabled')
+    assert.equal((await control({ type: 'snapshot' })).pluginShortcuts.some(item => item.ref.kind === 'declarative' && item.ref.id === pluginId), true, 'enabled plugin returns without Native restart')
     assert.equal(await evaluate('[...document.querySelectorAll(".plugin-nav-item")].some(button => button.textContent.includes("Private Notes"))'), true)
     report.sdkPluginUi = 'Packaged WebTools accepted the generated Private Notes package; metadata and requested/granted storage permissions matched Manifest v1. The page wrote and read a value through the declared host actions, and disable/re-enable removed/restored its Apps navigation entry.'
     report.packagedInput = { path: inputPackagePath.slice(root.length + 1), sha256: createHash('sha256').update(demoPackageBytes).digest('hex'), bytes: demoPackageBytes.length, id: demo.id, version: demo.version }
@@ -567,6 +583,23 @@ try {
   await os('close', mainIdentity)
   const closed = await until(os, processes => group(processes).length === 0 && processes.some(process => process.pid === native.pid), 'ordinary Manager close returns Electron to zero')
   record('manager-closed-electron-zero-native-remains', closed)
+  if (phase5h) {
+    const shortcuts = await control({ type: 'show' })
+    assert.ok(shortcuts.pluginShortcuts.some(item => item.ref.kind === 'declarative' && item.ref.id === pluginId))
+    assert.equal(shortcuts.realizedPluginShortcutCount, shortcuts.pluginShortcuts.length, 'real WPF shortcut buttons are visible in expanded mode')
+    assert.equal(group(await os()).length, 0, 'showing cached shortcuts never starts Electron')
+    await control({ type: 'manager-plugin', kind: 'declarative', id: pluginId })
+    mainIdentity = group(await until(os, processes => group(processes).some(process => process.role === 'main'), 'Native shortcut starts Manager')).find(process => process.role === 'main')
+    await until(() => control({ type: 'manager-state' }), state => state.manager.rendererReady && state.manager.pendingRequestId === null, 'Native plugin page presented')
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
+    const page = pages.find(item => item.type === 'page')
+    await withManagerCdpProbe(new WebSocket(page.webSocketDebuggerUrl), {
+      label: 'Native declarative shortcut', expression: '(async()=>{const deadline=Date.now()+5000;while(!document.querySelector(".declarative-plugin-page")){if(Date.now()>deadline)throw new Error("Plugin page did not render");await new Promise(resolve=>requestAnimationFrame(resolve))}return {page:true,name:document.querySelector(".plugin-page-heading h1")?.textContent}})()',
+    }, value => { assert.equal(value.page, true); assert.equal(value.name, demo.name) })
+    await os('close', mainIdentity)
+    record('native-plugin-shortcut-open-normal-close', await until(os, processes => group(processes).length === 0, 'shortcut Manager normal close'))
+    report.nativePluginShortcuts = 'Real Named Pipe projection updated on disable/re-enable; cached real WPF shortcuts displayed with Electron=0; button click routed exact declarative PluginRef into a new Manager; normal close returned Electron=0.'
+  }
   if (phase5f || phase5g || phase5h) {
     const firstManager = mainIdentity
     await control({ type: 'manager-open', section: 'favorites' })

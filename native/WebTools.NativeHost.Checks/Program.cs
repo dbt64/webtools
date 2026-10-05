@@ -137,10 +137,74 @@ var checks = new List<(string Name, Action Run)>
         Assert(search.Search(SearchCommand.Parse("wenjian"))[0].Id == "f000000000000003", "Full pinyin query");
         Assert(search.Search(SearchCommand.Parse("wjzy"))[0].Id == "f000000000000003", "Initials query");
     }),
-    ("translation candidate accepts extended Latin letters but excludes mixed scripts", () =>
+    ("translation contextual action accepts meaningful Unicode text and preserves command modes", () =>
     {
-        Assert(SearchCore.IsTranslationCandidate("café ḍ"), "Extended Latin phrase should be eligible.");
-        Assert(!SearchCore.IsTranslationCandidate("hello你好"), "Mixed Han and Latin should not show translation.");
+        var search = new SearchCore([], []);
+        foreach (var text in new[] { "hello world", "你好世界", "こんにちは", "Hello 中文", "Hello-WebTools 中文 日本語 🚀!", "don't", "！？—", "🚀", "https://example.com", "  exact 原文  " })
+        {
+            var result = search.Search(SearchCommand.Parse(text)).Single();
+            Assert(result.Action is OpenTranslationAction action && action.Text == text, "Any meaningful local query must offer exact Translation handoff.");
+        }
+        foreach (var text in new[] { "", " \t\n" }) Assert(search.Search(SearchCommand.Parse(text)).Count == 0, "Empty queries have no Translation action.");
+        foreach (var text in new[] { "?hello", "/hello", "file:hello" })
+            Assert(!search.Search(SearchCommand.Parse(text)).Any(item => item.Kind == ResultKind.Translation), "Command modes retain their existing behavior.");
+    }),
+    ("expanded website and plugin sections share a viewport without clipping the capped window", () =>
+    {
+        var budget = ShortcutViewportBudget.Calculate(24, true, 24, true, 344);
+        Assert(budget.Websites >= 60 && budget.Plugins >= 60 && budget.Websites + budget.Plugins <= 344, "Both grids must fit the available window viewport.");
+        var single = ShortcutViewportBudget.Calculate(24, true, 6, false, 344);
+        Assert(single.Websites == 240 && single.Plugins == 60, "Single-section four-row layout is preserved.");
+    }),
+    ("Launcher plugin cache is bounded, rejects authority/private fields, and preserves composite identities", () =>
+    {
+        foreach (var json in new[] {
+            "{\"projectionVersion\":\"1\",\"plugins\":[]}",
+            "{\"projectionVersion\":1,\"plugins\":[],\"token\":\"secret\"}",
+            "{\"projectionVersion\":1,\"plugins\":[{\"ref\":{\"kind\":\"builtin\",\"id\":\"org.example.notes\"},\"displayName\":\"fake\",\"icon\":\"translation\"}]}",
+            "{\"projectionVersion\":1,\"plugins\":[{\"ref\":{\"kind\":\"declarative\",\"id\":\"../private\"},\"displayName\":\"bad\",\"icon\":\"plugin\"}]}"
+        }) {
+            using var doc = JsonDocument.Parse(json);
+            var rejected = false;
+            try { LauncherPluginProjectionStore.Parse(doc.RootElement); } catch (InvalidDataException) { rejected = true; }
+            Assert(rejected, "Unsafe projection must fail closed.");
+        }
+        var projection = new LauncherPluginProjection(1, [
+            new(new("builtin", "webtools.translation"), "翻译", "translation"),
+            new(new("declarative", "webtools.translation"), "Private Notes", "plugin")]);
+        var root = Path.Combine(Path.GetTempPath(), "webtools-plugin-cache-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try {
+            var cache = new LauncherPluginProjectionStore(root);
+            Assert(cache.Load(out _).Plugins.Count == 0, "Missing cache does not invent enabled plugins.");
+            cache.SaveAsync(projection).GetAwaiter().GetResult();
+            var loaded = new LauncherPluginProjectionStore(root).Load(out var status);
+            Assert(status == "loaded" && loaded.Plugins.Count == 2 && loaded.Plugins[0].Ref.Kind != loaded.Plugins[1].Ref.Kind, "Cache survives Native/Manager lifecycle without package scanning.");
+            var full = new LauncherPluginProjection(1, Enumerable.Range(0, 1000).Select(i => new LauncherPluginShortcut(new("declarative", $"org.example.notes{i}"), new string('中', 80), "plugin")).Append(projection.Plugins[0]).ToArray());
+            cache.SaveAsync(full).GetAwaiter().GetResult();
+            Assert(cache.Load(out _).Plugins.Count == 1001, "All permitted registry entries, including long Unicode names, fit the bounded projection.");
+            File.WriteAllText(Path.Combine(root, "launcher-plugins.json"), "corrupt");
+            Assert(cache.Load(out status).Plugins.Count == 0 && status == "invalid-cache", "Corrupt cache fails closed and is not state authority.");
+            Assert(File.ReadAllText(Path.Combine(root, "launcher-plugins.json")) == "corrupt", "Loading cache does not overwrite evidence.");
+            var oversized = new LauncherPluginProjection(1, [new(new("declarative", "org.example.notes"), new string('x', 129), "plugin")]);
+            var rejected = false;
+            try { cache.SaveAsync(oversized).GetAwaiter().GetResult(); } catch (InvalidDataException) { rejected = true; }
+            Assert(rejected, "Oversized names cannot replace the cache.");
+        } finally { Directory.Delete(root, true); }
+    }),
+    ("failed plugin-cache cleanup releases the gate so a later update can recover", () =>
+    {
+        var root = Path.Combine(Path.GetTempPath(), "webtools-plugin-cache-failure-" + Guid.NewGuid().ToString("N"));
+        var target = Path.Combine(root, "launcher-plugins.json"); Directory.CreateDirectory(target);
+        try {
+            var cache = new LauncherPluginProjectionStore(root, _ => throw new IOException("Injected temporary-file cleanup failure."));
+            var failed = false;
+            try { cache.SaveAsync(LauncherPluginProjectionStore.Empty).GetAwaiter().GetResult(); } catch (IOException) { failed = true; }
+            Assert(failed, "First update must exercise failed atomic move and cleanup.");
+            Directory.Delete(target);
+            Assert(cache.SaveAsync(LauncherPluginProjectionStore.Empty).Wait(TimeSpan.FromSeconds(2)), "Cleanup failure must not permanently retain the write gate.");
+            Assert(cache.Load(out var status).Plugins.Count == 0 && status == "loaded", "Cache can be rewritten after the obstruction is removed.");
+        } finally { Directory.Delete(root, true); }
     }),
     ("remembered app promotes matching result before top-eight limit", () =>
     {
@@ -511,7 +575,7 @@ var checks = new List<(string Name, Action Run)>
         Assert(SearchCommand.Parse("/handbook").Mode == SearchMode.SavedWebsites, "Website command");
         Assert(SearchCommand.Parse(" visual ").Query == "visual", "Local query");
     }),
-    ("native search matches frozen Electron top-eight fixture", () =>
+    ("native search matches current parity fixture including contextual action ordering", () =>
     {
         var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "search-contract", "launcher-search-parity.json"));
         using var document = JsonDocument.Parse(File.ReadAllText(path));

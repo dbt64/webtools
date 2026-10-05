@@ -36,3 +36,17 @@ test('AI review IPC is narrow, sender-checked and rejects caller-supplied confir
   env.setCurrent(false)
   assert.equal((await env.handlers[IPC_CHANNELS.pluginAIReviewConfirm]({}, 'review')).error.code, 'PERMISSION_DENIED')
 })
+
+test('successful plugin mutations publish catalog refresh, denied inputs never publish, and late sessions fail closed', async () => {
+  const env = setup(); let publications = 0
+  env.deps.onCatalogChanged = async () => { publications += 1 }
+  env.deps.choosePackage = async () => new Uint8Array([1])
+  for (const [channel, args] of [[IPC_CHANNELS.pluginInstall, []], [IPC_CHANNELS.pluginSetEnabled, ['org.example.notes', true]], [IPC_CHANNELS.pluginSetGrants, ['org.example.notes', ['manager.page']]], [IPC_CHANNELS.pluginUninstall, ['org.example.notes']]])
+    assert.equal((await env.handlers[channel]({}, ...args)).ok, true)
+  assert.equal(publications, 4)
+  assert.equal((await env.handlers[IPC_CHANNELS.pluginSetEnabled]({}, '../bad', true)).ok, false)
+  env.setCurrent(false); assert.equal((await env.handlers[IPC_CHANNELS.pluginUninstall]({}, 'org.example.notes')).ok, false)
+  assert.equal(publications, 4)
+  env.setCurrent(true); env.deps.onCatalogChanged = async () => env.changeSession()
+  assert.equal((await env.handlers[IPC_CHANNELS.pluginSetEnabled]({}, 'org.example.notes', true)).error.code, 'SESSION_EXPIRED')
+})

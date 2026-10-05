@@ -124,6 +124,20 @@ function handleNativeManagerIntent(intent: NativeManagerIntent): void {
   translationHandoff.value = { status: 'none', uiGeneration: 0 }
   translationPrefill.value = null
   currentNativeRequestId.value = intent.requestId
+  if (intent.kind === 'open-plugin') {
+    activeSection.value = 'plugins'
+    appsExpanded.value = true
+    void (async () => {
+      if (!await refreshPlugins() || disposed || currentNativeRequestId.value !== intent.requestId || activeSection.value !== 'plugins') return
+      await openPluginPage(intent.ref)
+      await nextTick()
+      if (!disposed && currentNativeRequestId.value === intent.requestId) {
+        window.desktop.acknowledgeNativeManagerIntent(intent.requestId)
+        currentNativeRequestId.value = null
+      }
+    })()
+    return
+  }
   const targetSection: Section = intent.section === 'entries' ? 'favorites' : intent.section
   activeSection.value = targetSection
   void nextTick().then(() => {
@@ -217,6 +231,16 @@ async function resolveTranslationHandoff(
       if (activeSection.value === 'translation-gate') activeSection.value = 'favorites'
       return
     }
+    if (disposition === 'enable-and-open' && result.data.status === 'ready') {
+      const refreshed = await refreshPlugins()
+      const latest = translationHandoff.value
+      if (disposed || latest.status === 'none' || latest.requestId !== handoff.requestId || latest.generation !== handoff.generation) return
+      if (!refreshed || !catalogEntries.value.some(entry => entry.kind === 'builtin' && entry.id === 'webtools.translation' && catalogCanOpen(entry))) {
+        handoffError.value = '翻译已启用，但插件目录暂时无法刷新。请重试读取目录后继续。'
+        activeSection.value = 'plugins'
+        return
+      }
+    }
     if (navigateWhenReady && result.data.status !== 'none') navigateToHandoffProjection(result.data)
   } catch {
     handoffError.value = '翻译操作没有完成，请重试。'
@@ -250,15 +274,15 @@ async function handlePluginCenterChanged(): Promise<void> {
   if (translationHandoff.value.status !== 'none') await refreshTranslationHandoff(false)
 }
 
-async function refreshPlugins(): Promise<void> {
+async function refreshPlugins(): Promise<boolean> {
   const generation = ++pluginRefreshGeneration
   pluginsLoading.value = true
   pluginsError.value = ''
   try {
     const result = await window.desktop.pluginCatalog.list()
-    if (disposed || generation !== pluginRefreshGeneration) return
-    if (!result.ok) { pluginsError.value = result.error.message; return }
-    if (result.data.revision < catalogRevision) return
+    if (disposed || generation !== pluginRefreshGeneration) return false
+    if (!result.ok) { pluginsError.value = result.error.message; return false }
+    if (result.data.revision < catalogRevision) return false
     catalogRevision = result.data.revision
     catalogEntries.value = result.data.entries
     if (result.data.declarativeAvailability.status === 'unavailable') pluginsError.value = '第三方插件暂时无法读取；内置翻译仍可使用。请重试。'
@@ -267,7 +291,8 @@ async function refreshPlugins(): Promise<void> {
       if (!translationEntry || !catalogCanOpen(translationEntry)) returnToPluginCenter()
     }
     if (activeSection.value === 'plugin-page' && catalogShouldReturnToCenter(activePluginRef.value, result.data.entries)) returnToPluginCenter()
-  } catch { if (!disposed && generation === pluginRefreshGeneration) pluginsError.value = '无法读取插件目录，请重试。' }
+    return true
+  } catch { if (!disposed && generation === pluginRefreshGeneration) pluginsError.value = '无法读取插件目录，请重试。'; return false }
   finally { if (!disposed && generation === pluginRefreshGeneration) pluginsLoading.value = false }
 }
 

@@ -27,7 +27,7 @@ public sealed class SearchCore
     {
         if (command.Mode is SearchMode.Files or SearchMode.Web) return [];
         var normalized = Normalize(command.Query);
-        if (normalized.Length == 0) return [];
+        if (normalized.Length == 0) return command.Mode == SearchMode.Local && IsTranslationCandidate(command.Raw) ? [TranslationResult(command.Raw)] : [];
         var tokens = TokenPattern.Matches(command.Query.ToLowerInvariant()).Select(match => match.Value).ToArray();
         var candidates = command.Mode == SearchMode.SavedWebsites ? _websites.AsEnumerable() : _apps.Concat(_websites);
         var matches = candidates.Select(indexed => (indexed, match: Score(indexed, normalized, tokens)))
@@ -63,8 +63,7 @@ public sealed class SearchCore
         }).ToList();
 
         if (command.Mode == SearchMode.Local && IsTranslationCandidate(command.Raw))
-            results.Add(new SearchResult("translation", ResultKind.Translation, "翻译", $"翻译“{command.Raw.Trim()}”",
-                int.MaxValue, MatchKind.Name, new OpenTranslationAction(command.Raw)));
+            results.Add(TranslationResult(command.Raw));
         return results;
     }
 
@@ -96,30 +95,10 @@ public sealed class SearchCore
         return builder.ToString();
     }
 
-    public static bool IsTranslationCandidate(string raw)
-    {
-        var text = raw.Trim();
-        return text.Length > 0 && text.EnumerateRunes().Any(IsLatinLetter)
-            && text.EnumerateRunes().All(rune => Rune.IsWhiteSpace(rune)
-                || IsLatinLetter(rune)
-                || rune.Value is '\'' or '’' or '‘' or 0x02BC or '-' or >= 0x2010 and <= 0x2015);
-    }
+    public static bool IsTranslationCandidate(string raw) => raw.Length <= 20_000 && !string.IsNullOrWhiteSpace(raw);
 
-    private static bool IsLatinLetter(Rune rune)
-    {
-        var code = rune.Value;
-        return Rune.IsLetter(rune) && (code is >= 0x0041 and <= 0x007A
-            or >= 0x00C0 and <= 0x02AF
-            or >= 0x1D00 and <= 0x1DBF
-            or >= 0x1E00 and <= 0x1EFF
-            or >= 0x2C60 and <= 0x2C7F
-            or >= 0xA720 and <= 0xA7FF
-            or >= 0xAB30 and <= 0xAB6F
-            or >= 0xFB00 and <= 0xFB06
-            or >= 0xFF21 and <= 0xFF5A
-            or >= 0x10780 and <= 0x107BF
-            or >= 0x1DF00 and <= 0x1DFFF);
-    }
+    private static SearchResult TranslationResult(string raw) => new("translation", ResultKind.Translation, "翻译", $"翻译“{raw.Trim()}”",
+        int.MaxValue, MatchKind.Name, new OpenTranslationAction(raw));
 
     private static (int Rank, MatchKind Kind)? Score(IndexedEntry entry, string query, string[] queryTokens)
     {

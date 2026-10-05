@@ -70,6 +70,7 @@ export interface DesktopApi {
 }
 
 export type NativeManagerIntent =
+  | { requestId: string; kind: 'open-plugin'; ref: import('./plugin-catalog-contracts.ts').PluginRef }
   | { requestId: string; kind: 'open-page'; section: 'favorites' | 'entries' | 'settings' }
   | { requestId: string; kind: 'translation-handoff' }
 

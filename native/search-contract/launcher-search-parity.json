@@ -1,5 +1,5 @@
 {
-  "generatedFrom": "current Electron pure search functions",
+  "generatedFrom": "Historical Electron matching oracle; current Phase 5I local contextual Translation contract",
   "applications": [
     {
       "id": "a111111111111111",
@@ -315,6 +315,12 @@
           "id": "f000000000000002",
           "title": "文件资源管理器",
           "action": "launch-app"
+        },
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
         }
       ]
     },
@@ -322,7 +328,14 @@
       "raw": "设置",
       "mode": "local",
       "query": "设置",
-      "results": []
+      "results": [
+        {
+          "kind": "translation",
+          "id": "translation",
+          "title": "翻译",
+          "action": "open-translation"
+        }
+      ]
     },
     {
       "raw": "wenjian",

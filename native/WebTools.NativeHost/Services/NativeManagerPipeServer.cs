@@ -20,6 +20,7 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
     private readonly Func<IReadOnlyList<LauncherWebsiteRecord>, Task<LauncherState>> _updateWebsites;
     private readonly Func<string, string, Task<LauncherState>> _rememberApplication;
     private readonly DiagnosticsService _diagnostics;
+    private readonly Func<LauncherPluginProjection, Task>? _updatePlugins;
     private readonly SemaphoreSlim _connectionGate = new(1, 1);
     private PipeSession? _session;
     private bool _disposed;
@@ -30,7 +31,8 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
         Func<LauncherSettingsUpdate, Task<LauncherState>> updateSettings,
         Func<IReadOnlyList<LauncherWebsiteRecord>, Task<LauncherState>> updateWebsites,
         Func<string, string, Task<LauncherState>> rememberApplication,
-        DiagnosticsService diagnostics)
+        DiagnosticsService diagnostics,
+        Func<LauncherPluginProjection, Task>? updatePlugins = null)
     {
         _pipeName = pipeName;
         _stateStore = stateStore;
@@ -38,6 +40,7 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
         _updateWebsites = updateWebsites;
         _rememberApplication = rememberApplication;
         _diagnostics = diagnostics;
+        _updatePlugins = updatePlugins;
     }
 
     public bool IsConnected => _session is not null;
@@ -187,6 +190,12 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
                     var state = await _updateSettings(update).ConfigureAwait(false);
                     _diagnostics.Record("launcher_settings_updated", "fields-validated-and-persisted");
                     await session.ReplyAsync(message, true, state, null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "plugins-update":
+                    if (_updatePlugins is null) throw new InvalidDataException("Plugin projection is unavailable.");
+                    var projection = LauncherPluginProjectionStore.Parse(message.Payload);
+                    await _updatePlugins(projection).ConfigureAwait(false);
+                    await session.ReplyAsync(message, true, new { count = projection.Plugins.Count }, null, null, cancellationToken).ConfigureAwait(false);
                     return;
                 case "websites-update":
                     var websiteUpdate = message.Payload.Deserialize<WebsiteUpdatePayload>(JsonOptions)

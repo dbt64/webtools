@@ -28,6 +28,18 @@ function dependencies(catalog, overrides = {}) {
   return { getCatalog: () => catalog, isManagerMainFrame: () => true, confirmBuiltinStateRecovery: async () => true, ...overrides }
 }
 
+test('builtin toggles publish authoritative enabled Launcher projection and reject untrusted requests before publication', async () => {
+  const catalog = createCatalog(); const sent = []; let allowed = true
+  const handlers = createPluginCatalogHandlers(dependencies(catalog, { isManagerMainFrame: () => allowed, onCatalogChanged: async () => sent.push(await catalog.launcherProjection(catalog.session)) }))
+  const ref = { kind: 'builtin', id: 'webtools.translation' }
+  assert.equal((await handlers[IPC_CHANNELS.pluginCatalogSetEnabled]({}, ref, false)).ok, true)
+  assert.deepEqual(sent[0].plugins, [])
+  assert.equal((await handlers[IPC_CHANNELS.pluginCatalogSetEnabled]({}, ref, true)).ok, true)
+  assert.deepEqual(sent[1].plugins[0].ref, ref)
+  allowed = false; await handlers[IPC_CHANNELS.pluginCatalogSetEnabled]({}, ref, false)
+  assert.equal(sent.length, 2)
+})
+
 test('catalog IPC rejects sender, arity, unknown kind, forged builtin, extra paths and bare IDs', async () => {
   let allowed = true
   const catalog = createCatalog()

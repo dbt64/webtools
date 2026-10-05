@@ -7,6 +7,7 @@ import type { IpcSenderContext } from './window-security.ts'
 interface Dependencies {
   getHandoff(): BuiltinTranslationHandoff | null
   isManagerMainFrame(context: IpcSenderContext): boolean
+  onCatalogChanged?(): Promise<void>
 }
 type Handler = (event: IpcSenderContext, ...args: unknown[]) => Promise<IpcResult<unknown>>
 const dispositions = new Set<TranslationHandoffDisposition>(['gate-presented', 'enable-and-open', 'applied', 'cancel'])
@@ -40,7 +41,12 @@ export function createBuiltinTranslationHandoffHandlers(deps: Dependencies): Rec
   }
   return {
     [IPC_CHANNELS.builtinTranslationHandoffGet]: guard(0, handoff => handoff.getProjection()),
-    [IPC_CHANNELS.builtinTranslationHandoffResolve]: guard(1, (handoff, args) => handoff.resolve(token(args[0]))),
+    [IPC_CHANNELS.builtinTranslationHandoffResolve]: guard(1, async (handoff, args) => {
+      const request = token(args[0])
+      const projection = await handoff.resolve(request)
+      if (request.disposition === 'enable-and-open') await deps.onCatalogChanged?.()
+      return projection
+    }),
   }
 }
 

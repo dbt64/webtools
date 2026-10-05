@@ -165,7 +165,7 @@ A separate one-off isolated Native-only idle CPU sample used the same candidate 
 
 Summed process Working Set can double-count shared pages and must not be compared directly to Task Manager's grouped total. No forced GC, working-set trim, long soak, or arbitrary MB gate was used in Phase 5I.
 
-## 15. Security review findings
+## 15. Initial engineering security review findings (before manual acceptance)
 
 - P0: **0**.
 - P1: **0**.
@@ -174,7 +174,7 @@ Summed process Working Set can double-count shared pages and must not be compare
 - P3: existing non-blocking `MODULE_TYPELESS_PACKAGE_JSON`, transient WebSocket-port-in-use, and electron-builder missing-author warnings. They did not fail the recorded test/build/package runs. These are warnings, not confirmed product defects.
 - Final review minor P3 (deferred): rejected-package preservation tests snapshot installed package filenames rather than archive bytes, so an in-place archive mutation is not directly excluded by that assertion. Registry/private-data assertions remain intact; no product defect was observed. This optional test-hardening item is not included in the bounded review-fix pass.
 
-## 16. Physical Windows GUI acceptance
+## 16. Initial physical Windows GUI acceptance snapshot
 
 **USER MANUAL REQUIRED**. No **CURRENT PHYSICAL GUI PASS** is claimed. Packaged DOM automation and test-only consent are not physical mouse/keyboard/native-dialog acceptance.
 
@@ -243,7 +243,7 @@ The manifest records those original nine copied files only. The two post-review 
 
 The RC is a disposable unsigned acceptance candidate. Test install/profile roots and evidence are isolated and are not delivered as repo files. If manual acceptance fails, record the exact candidate hash, scenario, path, expected/actual result, and relevant logs; retain the current stable Phase 5H commit and do not install over production. The Phase 5I changes are ordinary test/documentation/acceptance-driver diffs, with no user-data migration. Do not delete evidence until the acceptance review is complete.
 
-## 23. Final decision
+## 23. Engineering checkpoint decision before user manual acceptance
 
 All current automated regression, adversarial plugin/security, SDK author workflow, isolated packaged plugin flow, current candidate build, fresh isolated installation/Manager discovery/self-uninstall smoke, and ten-cycle packaged Manager lifecycle checks passed. No P0, P1, or unresolved blocking P2 remains; the three acceptance-tool/evidence issues in §15 were corrected with the stated focused regression and read-only evidence review. Production installation and user data were not touched.
 
@@ -252,3 +252,83 @@ The physical GUI gates and current previous-version → candidate upgrade/data-r
 **PHASE 5I INCOMPLETE — MANUAL VERIFICATION REQUIRED**
 
 The candidate is ready for isolated user acceptance using §17. Completion requires the current candidate upgrade/data-retention gate as well as the listed physical GUI checks. Do not treat it as a published release. Do not start Phase 6, publish, tag, merge, create a PR, upload binaries, or modify the production installation as part of this report.
+
+## 24. Manual Acceptance Fix Pass 1 — 2026-10-05
+
+### User evidence and baseline
+
+The user confirmed Windows installer GUI, Native-only/Electron=0, Launcher hotkey/search/state clearing, Tray, Manager close/Electron=0, Manager navigation, keyboard/focus, resize, Light/Dark and basic Plugin Center UI as **USER CONFIRMED PASS**. The subsequent fix-pass request also confirms the `.wtplugin` Plugin Center lifecycle test passed. These confirmations are user evidence, not independently recorded physical operations; no user PID, install path, screenshots, registry values or operation time is invented.
+
+Manual testing subsequently found four new **P2 product issues**. The zero-blocker engineering snapshot in §15 is historical; it does not erase these later findings. Acceptance was paused for this bounded repair pass. Actual source HEAD was `d6d01381df5e77c3fd08571af2d79aae38e87cae` (documentation follow-up after checkpoint `6096eb254ab2efe79cbfe718cffe55c4a052ce56`), branch `codex/shared-ai-translation-2.0`, clean worktree, fetched upstream ahead/behind `0 0` before edits. No reset occurred.
+
+### Root causes, fixes and regression
+
+| Issue | Root cause / evidence | Fix | Verification and status |
+|---|---|---|---|
+| A — MyMemory Auto | Adapter sent `autodetect` as the source of `langpair`. [MyMemory's documented contract](https://mymemory.translated.net/doc/spec.php) requires explicit ISO/RFC3066 language codes. A bounded comparison returned unchanged `hello world` for the old mapping and translated it for explicit English. | Conservative provider-side resolution of supported unambiguous English/Chinese/kana Japanese; useful `FREE_TRANSLATION_SOURCE_REQUIRED` otherwise. Never unconditionally map Auto to English. Same resolved source/target returns exact input, and pre-aborted work exits immediately. | MyMemory focused tests 26/26: English, Chinese, Japanese, mixed/ambiguous Unicode, explicit source, same-language, provider failure, cancellation and timeout cleanup. A separate bounded real request using exactly `hello world test`, Auto → zh-CN, returned `你好世界`. **AUTOMATED PASS; USER RETEST REQUIRED**. |
+| B — Enable & Open | Existing Main lifecycle already persisted enable successfully; the Renderer gate path did not refresh its catalog/nav projection. The stale Plugin Center/nav symptom was reproduced against the real store/lifecycle/catalog. Fresh persisted state did not independently reproduce the user's reported second disabled gate; that path is now explicitly covered. | Await the current Main-owned catalog after enable before opening/consuming text; maintain the pending handoff if catalog refresh fails. Use the same lifecycle authority, with no Renderer-owned enabled flag. | Real temporary store test covers cancel remaining disabled, enable, catalog/nav, exact input, restart persistence and next ready handoff. Current packaged test covers enable/nav, next handoff without gate, exact prefill and restart. **AUTOMATED PASS; USER RETEST REQUIRED**. |
+| C — Contextual Translation | Native eligibility required only Latin letters and restricted punctuation; normalization also returned no rows for Emoji/punctuation-only input. | Any nonblank local input within the existing 20,000-character handoff bound appends Translation after at most eight ordinary rows; exact raw text retained. Per user's explicit clarification, `?`, `/`, `file:` do not add it. Disabled Translation still reaches the existing enable gate. | Native checks cover English/Chinese/Japanese/mixed/Emoji/punctuation/URL-like/whitespace/exact raw text and unchanged prefixes. Current parity fixture updated; complete ordered comparison retained. **AUTOMATED PASS; USER RETEST REQUIRED**. |
+| D — Plugin shortcuts | Native empty-query UI was a hard-coded Translation button and had no catalog projection or tagged plugin-open intent. First packaged attempt also exposed the old preload whitelist dropping the new `open-plugin` event. | Main `PluginCatalog` derives launchable `(kind,id)`, display name and fixed icon tokens; existing pipe publishes to a bounded, rebuildable Native cache. Native displays enabled launchable plugins, labels section `插件`, and opens exact tagged refs through start/reuse of Manager. Main revalidates availability; preload accepts only closed fixed schemas. | Real core lifecycle/IPC tests cover install/enable/disable/re-enable/uninstall, same bare ID across kinds, private-field exclusion and safe identities. Packaged real WPF/pipe/Manager test covers cache-failure recovery, disable/re-enable freshness, visible cached shortcuts with Electron=0, Native button → correct plugin page and normal close → Electron=0. **AUTOMATED PASS; USER RETEST REQUIRED**. |
+
+Auto is deliberately limited, not a general language detector: single ambiguous `test`, Han-only Japanese, unsupported scripts and mixed-language text require an explicit source. Provider errors settle/cancel through the existing TranslationService/UI lifecycle. The existing 450 ms behavior remains. Launcher does no language detection. No new dependency/provider or Manifest/API version was introduced.
+
+### Projection ownership and failure handling
+
+The new fixed `launcher-plugins.json` holds presentation only, not package data/grants/enable authority. It never contains raw manifest, archive, path, secret, HTML or command. It is limited to the existing 1,000-package registry plus one builtin (1,001 entries), 128-character display names/IDs and 2 MiB serialized bytes, including Unicode escaping. Icons are fixed host tokens, with generic plugin fallback. Native never scans packages or private PluginManager registry. A missing/invalid cache yields no invented enabled shortcuts; contextual Translation remains available, and Main publishes on its first start. A successful sync survives Manager close/restart without keeping Electron resident.
+
+Startup, successful mutations, builtin gate enable/recovery and explicit catalog refresh publish through a serialized queue. Cache failure is logged and is independently recoverable on the next explicit operation/start; it cannot invalidate an already successful authoritative mutation or prevent Manager UI startup. A stale cached hint cannot authorize opening because Main rechecks the exact tagged identity. Temporary cleanup always releases the cache semaphore, even on IO failure. Native shortcut controls clear on hide while the lightweight projection remains.
+
+Read-only spec and standards reviews identified and resolved cache failure blocking startup/authority results, insufficient count/Unicode byte bounds, temporary cleanup retaining the write gate, and simultaneous website/plugin expansion exceeding the capped window. Shared viewport budgeting and automatic overflow scrolling preserve the existing single-section four-row layout. Current-source scoped re-review found no remaining concrete blockers. The preload omission found by the first packaged test was then repaired with RED→GREEN parser tests and a new packaged run.
+
+### Current verification and artifact identity
+
+| Command / scenario | Actual result |
+|---|---|
+| `pnpm run typecheck` | PASS |
+| `pnpm test` after final changes | **313/313**, 0 failed / skipped |
+| Focused Translation, state, handoff, IPC and UI-lifecycle tests | **65/65** |
+| `pnpm run build` | PASS — Main / preload / Vue Renderer |
+| NativeHost Checks | **58/58**, including Unicode action, full parity, full projection bound, failed cleanup recovery and shared viewport |
+| UpdateHelper Checks | **10/10** inside final package build |
+| `pnpm run package:win` | PASS; isolated cover-install fixture, Unicode/space fresh installation, Manager discovery and self-uninstall PASS; smoke target/private key absent afterward |
+| Packaged SDK plugin/Native projection/Manager lifecycle | PASS, including a real WPF shortcut click through the new intent/preload path; no physical mouse/UIA claim |
+| Packaged builtin Translation lifecycle/handoff/Manager lifecycle | PASS; no paid AI request or real credential used |
+| `node --check` changed smoke driver | PASS |
+| `git diff --check` | PASS after report edits; cached check required before checkpoint |
+
+Final unsigned acceptance candidate: `D:\System default\Desktop\HomePage\release\native-production-20261005-170839\WebTools-Setup-0.1.0.exe`, **191,498,862 bytes**, SHA-256 **`efa1ede8be12d059cf05d9ca0f52ac5fbd83ecc15022fd68d0a4bf5a528b6bf9`**. Built from HEAD `d6d01381...` plus this uncommitted fix-pass source; it is an acceptance candidate, not a published release. The previous `native-production-20261005-170059` attempt is superseded and is not the retest candidate.
+
+Component hashes: NativeHost EXE `376e512b613eb313323e73ac335f3711cb354f41f0706c6aea9ba4551e504da6`; NativeHost DLL `6bac40ec9e911deaccc5e82ca6c89b385efa26b4c0aaa4ed1c0ac9a255045b98`; Manager `app.asar` **`ebc447212cf15077dbc7313a750c90cce4b309d1d2aaa1b5c6b8af40dbccab56`**. The isolated runtime copy's `app.asar` hash matches exactly.
+
+Primary evidence directory (outside Git): `D:\系统缓存\webtools-phase5i-fixpass1-final-7b148210059a4877b9718e50ba785301\`.
+
+| Exact file below that directory | SHA-256 / result |
+|---|---|
+| `plugin-smoke/phase5h-plugin-smoke-report.json` | `ca91c17096c4ed318767805562c9e1e3c384a0604918adbef256f40c58f29d22` |
+| `translation-smoke/phase5g-translation-plugin-smoke-report.json` | `2736a4db60f34130684761c72aca9cc399a4066794ff6612e818d477cecefd58` |
+| `source-files-before-report.json` | `b7c3fa7a0fa0e85220481787895d8ea3c66735a98f776f250f4258ad628b4fef` — source-file identity before this documentation append |
+| `final-node-tests.log` | Current 313/313 output |
+| `plugin-smoke-output.log`, `translation-smoke-output.log` | Successful final packaged run outputs |
+
+Additional exact external logs: `D:\系统缓存\webtools-phase5i-fixpass1-final-package.log` SHA-256 `66bfa14e798916d460edb0b1149471a81bd3a8e3b8a1972f256f2d605f4c84de`; `D:\系统缓存\webtools-phase5i-fixpass1-native-checks.log` SHA-256 `f862a1f2a8cbdff115dc6d6787247b314feeb51312274942950540019b9e63ce`; `D:\系统缓存\webtools-phase5i-fixpass1-focused-translation.log` SHA-256 `36a6479e68ed482f5fba1a0fcf2e60929a3127d0eb5939ef05228956bddaf0f0`.
+
+First failed packaged-run evidence is retained at `D:\系统缓存\webtools-phase5i-fixpass1-b1b069f41f9648a294ecbd6f24a4a324\plugin-smoke\phase5h-plugin-smoke-report.json`, SHA-256 `c97d646ddc28c891c771cb792eb49d779869138ebe409ce2705b616b58ef8132`; its `INCOMPLETE` result is not relabeled PASS. The failure was the missing preload forwarding of `open-plugin`; the later run fixes and verifies it. A separate Translation-driver preflight initially lacked its new empty evidence directory; creating that isolated directory resolved setup before any Host startup. It was not a product failure.
+
+Both final packaged reports end in `all-isolated-processes-exited` with no cleanup error. Every runtime used disposable profile, explicit Release binaries, unique pipe and exact-path/PID/creation-time cleanup. `D:\webtools`, real `%APPDATA%\Nook`, startup registration and real Secrets/AI Tokens were not operated on. No new machine-wide snapshot or unreported manual evidence is inferred. Existing unsigned/package warning and minor byte-level preservation-test limitations remain historical/nonblocking.
+
+### Very short user retest — pending
+
+Use this exact new candidate in the isolated acceptance environment:
+
+1. **A:** MyMemory, Auto → 简体中文, `hello world test`: obtain a translation and settled loading state.
+2. **B:** disable Translation → Launcher text → 翻译 → 启用并打开翻译. Nav and Plugin Center show enabled; restart Manager; next handoff has no enable gate and exact original text remains.
+3. **C:** ordinary Launcher `Hello-WebTools 中文 日本語 🚀!` offers 翻译. Whitespace-only does not; prefixes retain existing behavior.
+4. **D:** enable Private Notes: empty expanded Launcher shows `插件` with 翻译 and Private Notes. Open its shortcut; disable → disappears; enable → returns; uninstall → disappears, without Native restart. Manager close returns Electron=0.
+
+No post-fix physical acceptance is claimed. Current engineering review: P0=0, P1=0, unresolved implementation blocking P2=0; the four user-discovered P2 acceptance items require the above retest. The earlier real-upgrade/data-retention and remaining §17 gates are not automatically closed by this repair pass. No Phase 6 begins.
+
+## 25. Current final phase decision
+
+**PHASE 5I INCOMPLETE — MANUAL RETEST REQUIRED**
+
+Fix Pass 1 automated regression and isolated packaged checks passed. Stop after the reviewed fix checkpoint is normally pushed; wait for the user's A/B/C/D results. No PR, merge, tag, release or further manual acceptance was performed by this task.

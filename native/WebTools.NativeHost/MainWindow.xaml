@@ -258,24 +258,13 @@
                         <WrapPanel x:Name="WebsiteShortcuts" />
                     </ScrollViewer>
                     <Grid Height="18" Margin="0,10,0,5">
-                        <TextBlock Text="应用" Foreground="{DynamicResource TextBrush}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <Button HorizontalAlignment="Right" Style="{StaticResource SectionToggleStyle}" IsEnabled="False" Content="展开 ↓" />
+                        <TextBlock Text="插件" Foreground="{DynamicResource TextBrush}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <Button x:Name="PluginSectionToggle" HorizontalAlignment="Right" Style="{StaticResource SectionToggleStyle}" IsEnabled="False" Content="展开 ↓" Click="PluginSectionToggle_Click" />
                     </Grid>
-                    <Button Width="127" Height="54" HorizontalAlignment="Left" Style="{StaticResource LauncherShortcutButtonStyle}"
-                            AutomationProperties.Name="翻译" Click="TranslateShortcut_Click">
-                        <StackPanel Width="109" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
-                            <Border Width="30" Height="30" CornerRadius="8" BorderThickness="1"
-                                    BorderBrush="{DynamicResource LineBrush}" Background="{DynamicResource AccentSoftBrush}">
-                                <Viewbox Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                    <Path Width="24" Height="24" Data="M5,8 L11,14 M4,14 L10,8 12,5 H2 M2,5 H14 M7,2 H8 M22,22 L17,12 12,22 M14,18 H20"
-                                          Stroke="{DynamicResource AccentBrush}" StrokeThickness="2" StrokeStartLineCap="Round"
-                                          StrokeEndLineCap="Round" StrokeLineJoin="Round" Fill="Transparent" />
-                                </Viewbox>
-                            </Border>
-                            <TextBlock Text="翻译" Foreground="{DynamicResource TextBrush}" FontSize="11"
-                                       VerticalAlignment="Center" Margin="9,0,0,0" />
-                        </StackPanel>
-                    </Button>
+                    <ScrollViewer x:Name="PluginScroll" Height="60" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
+                        <ScrollViewer.Resources><Style TargetType="ScrollBar" BasedOn="{StaticResource LauncherScrollbarStyle}" /></ScrollViewer.Resources>
+                        <WrapPanel x:Name="PluginShortcuts" />
+                    </ScrollViewer>
                   </StackPanel>
                 </Border>
 

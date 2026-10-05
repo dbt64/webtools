@@ -125,3 +125,40 @@ test('real manifest-v1 core retains grants/data and controls same-ID catalog pag
   await assert.rejects(catalog.open(ref, catalog.session))
   assert.equal((await catalog.open({ kind: 'builtin', id: m.id }, catalog.session)).key, 'translation')
 })
+
+test('Launcher projection exposes only launchable composite identities, names and fixed safe icons', async () => {
+  const env = setup()
+  env.rows([{ ...summary, secret: 'must-not-cross', path: 'C:/private/archive' }])
+  assert.deepEqual(await env.catalog.launcherProjection(env.catalog.session), {
+    projectionVersion: 1,
+    plugins: [
+      { ref: { kind: 'builtin', id: 'webtools.translation' }, displayName: '翻译', icon: 'translation' },
+      { ref: { kind: 'declarative', id: 'webtools.translation' }, displayName: 'Untrusted Translation', icon: 'plugin' },
+    ],
+  })
+  for (const status of ['installed-disabled', 'invalid', 'incompatible', 'faulted', 'needs-permission']) {
+    env.rows([{ ...summary, status }])
+    assert.equal((await env.catalog.launcherProjection(env.catalog.session)).plugins.length, 1)
+  }
+  env.rows([{ ...summary, granted: [] }])
+  assert.equal((await env.catalog.launcherProjection(env.catalog.session)).plugins.length, 1)
+  await env.catalog.setEnabled({ kind: 'builtin', id: 'webtools.translation' }, false, env.catalog.session)
+  assert.deepEqual((await env.catalog.launcherProjection(env.catalog.session)).plugins, [])
+})
+
+test('real declarative install/enable/disable/re-enable/uninstall updates derived Launcher shortcuts', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'webtools-launcher-projection-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const core = new PluginManager({ userData: root, hostVersion: '0.1.0', confirm: async () => true, externalOpen: async () => {}, clipboardWrite() {}, ai: {} })
+  t.after(() => core.close())
+  await core.initialize()
+  const catalog = new PluginCatalog('0.1.0', () => core, builtinLifecycle())
+  const m = manifest({ id: 'org.example.private-notes', name: 'Private Notes' })
+  const ref = { kind: 'declarative', id: m.id }
+  const visible = async () => (await catalog.launcherProjection(catalog.session)).plugins.some(item => item.ref.kind === ref.kind && item.ref.id === ref.id)
+  await core.install(packageBytes(m), core.session); assert.equal(await visible(), false)
+  await catalog.setEnabled(ref, true, catalog.session); assert.equal(await visible(), true)
+  await catalog.setEnabled(ref, false, catalog.session); assert.equal(await visible(), false)
+  await catalog.setEnabled(ref, true, catalog.session); assert.equal(await visible(), true)
+  await core.uninstall(m.id, core.session); assert.equal(await visible(), false)
+})

@@ -59,6 +59,8 @@ public partial class MainWindow : Window
     private double _dragStartLeft;
     private double _dragStartTop;
     private bool _expanded;
+    private bool _pluginsExpanded;
+    private IReadOnlyList<LauncherPluginShortcut> _plugins = [];
     private bool _catalogLoading = true;
     private readonly bool _resourceTestMode;
     private bool _disposed;
@@ -103,6 +105,12 @@ public partial class MainWindow : Window
         await RebuildIndexAsync();
         if (_expanded) RefreshShortcuts();
         RenderQuery();
+    }
+    public void ApplyPluginProjection(LauncherPluginProjection projection)
+    {
+        _plugins = projection.Plugins;
+        if (_expanded && string.IsNullOrWhiteSpace(QueryBox.Text)) RefreshPluginShortcuts();
+        UpdateLayoutForResults();
     }
 
     public async Task InitializeSearchAsync()
@@ -151,6 +159,16 @@ public partial class MainWindow : Window
             var result = _state.Results.FirstOrDefault(item => item.Action is OpenTranslationAction);
             if (result is null) throw new InvalidOperationException("Test query has no Translation action.");
             ActivateResult(result);
+        });
+    }
+    internal async Task ActivatePluginFromResourceTestAsync(LauncherPluginRef reference)
+    {
+        if (!_resourceTestMode) throw new InvalidOperationException("The isolated test driver is not enabled.");
+        await Dispatcher.InvokeAsync(() => {
+            ShowLauncher();
+            var button = PluginShortcuts.Children.OfType<System.Windows.Controls.Button>().FirstOrDefault(item => item.Tag is LauncherPluginRef value && value == reference)
+                ?? throw new InvalidOperationException("Plugin shortcut is unavailable.");
+            button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
         });
     }
 
@@ -216,7 +234,9 @@ public partial class MainWindow : Window
             IsActive,
             QueryBox.IsKeyboardFocused,
             _snapshot.EverythingEnabled,
-            _rows.Select(row => row.Result.Kind.ToString()).ToArray());
+            _rows.Select(row => row.Result.Kind.ToString()).ToArray(),
+            _plugins.ToArray(),
+            PluginShortcuts.Children.OfType<System.Windows.Controls.Button>().Count(button => button.IsVisible));
     }
 
     private async Task RefreshCatalogAsync()
@@ -271,6 +291,7 @@ public partial class MainWindow : Window
         _awaitingShowFocus = true;
         _expanded = _snapshot.ExpandedByDefault;
         _websitesExpanded = false;
+        _pluginsExpanded = false;
         ExpandButton.Content = _expanded ? "收起 ↑" : "展开 ↓";
         if (_expanded) RefreshShortcuts();
         UpdateLayoutForResults();
@@ -316,6 +337,8 @@ public partial class MainWindow : Window
         _expanded = false;
         _websitesExpanded = false;
         WebsiteShortcuts.Children.Clear();
+        _pluginsExpanded = false;
+        PluginShortcuts.Children.Clear();
         ShortcutPanel.Visibility = Visibility.Collapsed;
         ResultsList.Visibility = Visibility.Collapsed;
         StatusText.Visibility = Visibility.Collapsed;
@@ -460,18 +483,22 @@ public partial class MainWindow : Window
         var hasQuery = QueryBox.Text.Trim().Length > 0;
         FooterHints.Visibility = hasQuery ? Visibility.Visible : Visibility.Collapsed;
         ShortcutPanel.Visibility = !hasQuery && _expanded ? Visibility.Visible : Visibility.Collapsed;
-        if (!hasQuery) Height = _expanded ? ExpandedHeight + (_websitesExpanded ? Math.Min(3, Math.Max(0, (_snapshot.Websites.Count - 1) / 6)) * 60 : 0) : CompactHeight;
+        var viewport = ShortcutViewportBudget.Calculate(_snapshot.Websites.Count, _websitesExpanded, _plugins.Count, _pluginsExpanded, MaxHeight - (ExpandedHeight - 120));
+        WebsiteScroll.Height = viewport.Websites;
+        PluginScroll.Height = viewport.Plugins;
+        if (!hasQuery) Height = _expanded ? ExpandedHeight - 120 + viewport.Websites + viewport.Plugins : CompactHeight;
         else Height = SearchResultsHeight;
     }
 
     private void RefreshShortcuts()
     {
+        RefreshPluginShortcuts();
         WebsiteShortcuts.Children.Clear();
         WebsiteSectionToggle.IsEnabled = _snapshot.Websites.Count > 6;
         if (!WebsiteSectionToggle.IsEnabled) _websitesExpanded = false;
         WebsiteSectionToggle.Content = _websitesExpanded ? "收起 ↑" : "展开 ↓";
         WebsiteScroll.Height = _websitesExpanded ? Math.Min(4, Math.Max(1, (_snapshot.Websites.Count + 5) / 6)) * 60 : 60;
-        WebsiteScroll.VerticalScrollBarVisibility = _websitesExpanded && _snapshot.Websites.Count > 24
+        WebsiteScroll.VerticalScrollBarVisibility = _websitesExpanded
             ? ScrollBarVisibility.Auto : ScrollBarVisibility.Hidden;
         var icons = WebsiteFaviconReader.Read(_stateStore.WebsiteDataPath, _snapshot.Websites.Select(site => site.Id).ToArray());
         foreach (var site in _snapshot.Websites)
@@ -550,19 +577,42 @@ public partial class MainWindow : Window
         _websitesExpanded = false;
         ExpandButton.Content = _expanded ? "收起 ↑" : "展开 ↓";
         if (_expanded) RefreshShortcuts();
-        else WebsiteShortcuts.Children.Clear();
+        else { WebsiteShortcuts.Children.Clear(); PluginShortcuts.Children.Clear(); }
         UpdateLayoutForResults();
         QueryBox.Focus();
     }
 
-    private void TranslateShortcut_Click(object sender, RoutedEventArgs e)
+    private void RefreshPluginShortcuts()
     {
-        _expanded = false;
-        ExpandButton.Content = "展开 ↓";
-        WebsiteShortcuts.Children.Clear();
-        HideLauncher("open-translation-page");
-        _managerController.OpenPage(ManagerPage.Translation);
+        PluginShortcuts.Children.Clear();
+        PluginSectionToggle.IsEnabled = _plugins.Count > 6;
+        if (!PluginSectionToggle.IsEnabled) _pluginsExpanded = false;
+        PluginSectionToggle.Content = _pluginsExpanded ? "收起 ↑" : "展开 ↓";
+        PluginScroll.Height = _pluginsExpanded ? Math.Min(4, Math.Max(1, (_plugins.Count + 5) / 6)) * 60 : 60;
+        PluginScroll.VerticalScrollBarVisibility = _pluginsExpanded ? ScrollBarVisibility.Auto : ScrollBarVisibility.Hidden;
+        foreach (var item in _plugins)
+        {
+            var content = new StackPanel { Width = 109, Orientation = Orientation.Horizontal, HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
+            var glyph = new System.Windows.Shapes.Path {
+                Width = 18, Height = 18, Stretch = Stretch.Uniform, StrokeThickness = 2,
+                Data = Geometry.Parse(item.Icon == "translation" ? "M5,8 L11,14 M4,14 L10,8 12,5 H2 M2,5 H14 M7,2 H8 M22,22 L17,12 12,22 M14,18 H20" : "M3,3 H9 C7,0 15,0 13,3 H20 V9 C23,7 23,15 20,13 V20 H13 C15,23 7,23 9,20 H3 V13 C0,15 0,7 3,9 Z"),
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            };
+            glyph.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, "AccentBrush");
+            var icon = new Border { Width = 30, Height = 30, CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1), Child = glyph };
+            icon.SetResourceReference(Border.BackgroundProperty, "AccentSoftBrush"); icon.SetResourceReference(Border.BorderBrushProperty, "LineBrush");
+            content.Children.Add(icon);
+            var label = new TextBlock { Text = item.DisplayName, FontSize = 11, Width = 70, Margin = new Thickness(9, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+            label.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush"); content.Children.Add(label);
+            var button = new System.Windows.Controls.Button { Width = 127, Height = 54, Margin = new Thickness(0, 0, 6, 6), Content = content, ToolTip = item.DisplayName, Tag = item.Ref, Style = (Style)FindResource("LauncherShortcutButtonStyle") };
+            System.Windows.Automation.AutomationProperties.SetName(button, item.DisplayName);
+            button.Click += (_, _) => { HideLauncher("open-plugin"); _managerController.OpenPlugin(item.Ref); };
+            PluginShortcuts.Children.Add(button);
+        }
+        if (_plugins.Count == 0) PluginShortcuts.Children.Add(new TextBlock { Text = "启用的插件会显示在这里", Foreground = (Brush)FindResource("QuietBrush"), FontSize = 10 });
     }
+    private void PluginSectionToggle_Click(object sender, RoutedEventArgs e)
+    { if (_plugins.Count <= 6) return; _pluginsExpanded = !_pluginsExpanded; RefreshPluginShortcuts(); PluginScroll.ScrollToTop(); UpdateLayoutForResults(); QueryBox.Focus(); }
     private void QueryBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => CompleteShowFocusMeasurement();
 
     private void BrandButton_Click(object sender, RoutedEventArgs e) => _managerController.OpenPage(ManagerPage.Favorites);
