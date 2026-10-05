@@ -8,6 +8,9 @@
 - [Launcher 开发边界](launcher-development-boundaries.md)：Launcher 的数据、IPC 与职责约束。
 - [Native Launcher 架构审计（Phase 4A）](native-launcher-phase4a-architecture.md)：Native-first 的迁移目标和 parity 审计。
 - [NativeHost 与 Electron Manager 集成（Phase 4D）](native-launcher-phase4d-integration.md)：Named Pipe、Manager 启动与设置/网址同步。
+- [Phase 6 Master Plan](phase6-master-plan.md)：Phase 6A–6H 的目标边界和阶段门槛；未实施阶段仍需单独计划与批准。
+- [Release Build & Version Contract](release-build.md)：产品/插件版本契约、Windows 发布构建、产物校验和数据保留约定。
+- [Release Notes Template](release-notes-template.md)：填写特定版本发布说明的空白模板。
 
 ## Native Launcher 迁移
 
