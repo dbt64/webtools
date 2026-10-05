@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertSafeManagerEvidenceRoot } from './lib/manager-lifecycle-evidence.mjs'
+import { withManagerCdpProbe } from './lib/manager-cdp-probe.mjs'
 import { createDefaultAppData } from '../src/shared/domain.ts'
 import { PluginManager } from '../electron/plugins/plugin-manager.ts'
 import { packageBytes, manifest } from '../electron/plugins/fixtures.mjs'
@@ -20,6 +21,11 @@ import { validatePackage } from '../electron/plugins/package-validator.ts'
 const phase5f = process.argv[5] === '--phase5f'
 const phase5g = process.argv[5] === '--phase5g'
 const phase5h = process.argv[5] === '--phase5h'
+const phase5iCycleArgs = process.argv.filter(value => value.startsWith('--phase5i-manager-cycles='))
+if (phase5iCycleArgs.length > 0 && (!phase5h || phase5iCycleArgs.length !== 1 || phase5iCycleArgs[0] !== '--phase5i-manager-cycles=10')) {
+  throw new Error('Phase 5I lifecycle smoke supports exactly 10 cycles on the Phase 5H isolated smoke only.')
+}
+const phase5iManagerCycles = phase5iCycleArgs.length === 1
 const reportFile = phase5h ? 'phase5h-plugin-smoke-report.json' : phase5g ? 'phase5g-translation-plugin-smoke-report.json' : phase5f ? 'phase5f-plugin-catalog-smoke-report.json' : 'phase5d-plugin-ui-smoke-report.json'
 const repo = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const root = assertSafeManagerEvidenceRoot(resolve(process.argv[2] ?? ''))
@@ -635,6 +641,65 @@ try {
       report.uninstallAndPrivateData = 'The actual PluginManager in the isolated profile retained plugin storage when the delete-data consent was declined; reinstall read the retained note; the second uninstall with delete-data consent removed that data. Native consent dialogs are mocked only in this TEMP test profile.'
       report.uninstallConsentSequence = lifecycleConsents
     } finally { lifecycle.close() }
+  }
+  if (phase5iManagerCycles) {
+    const cycles = []
+    const nativeBefore = (await os()).find(process => sameProcess(process, nativeIdentity, nativeExe))
+    assert.ok(nativeBefore, 'The isolated NativeHost must remain present before bounded Manager cycles.')
+    const seenManagers = new Set()
+    for (let index = 1; index <= 10; index++) {
+      const startedAt = Date.now()
+      await control({ type: 'manager-open', section: 'favorites' })
+      const opened = await until(os, processes => group(processes).filter(process => process.role === 'main').length === 1, `Phase 5I Manager cycle ${index} Main`)
+      const main = group(opened).find(process => process.role === 'main')
+      assert.equal(main.parentPid, native.pid, 'Manager Main must belong to the isolated NativeHost.')
+      assert.ok(sameProcess(main, { pid: main.pid, created: main.created }, managerExe), 'Manager path must be the candidate win-unpacked executable.')
+      const identity = `${main.pid}:${main.created}`
+      assert.ok(!seenManagers.has(identity), 'A Manager process identity must not be reused across normal-close cycles.')
+      seenManagers.add(identity)
+      const readyState = await until(async () => control({ type: 'manager-state' }), state => state.manager?.rendererReady && state.manager?.pendingRequestId === null, `Phase 5I Manager cycle ${index} renderer acknowledgement`)
+      assert.equal(readyState.manager.processId, main.pid)
+      const pages = await until(async () => {
+        try { return await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() } catch { return [] }
+      }, values => values.filter(page => page.type === 'page').length === 1, `Phase 5I Manager cycle ${index} renderer target`)
+      const page = pages.find(value => value.type === 'page')
+      assert.ok(page.url.startsWith('file:') && page.url.endsWith('/out/renderer/index.html'), 'Candidate Manager must use the packaged local renderer.')
+      const cycleSocket = new WebSocket(page.webSocketDebuggerUrl)
+      const managerMembers = await withManagerCdpProbe(cycleSocket, {
+        label: `Phase 5I Manager cycle ${index} renderer`,
+        expression: `!!document.querySelector('.favorites-page')`,
+      }, async rendered => {
+        assert.equal(rendered, true, 'Favorites renderer must be mounted before normal close.')
+        const members = group(await os())
+        assert.equal(members.filter(process => process.role === 'main').length, 1)
+        assert.equal(members.filter(process => process.role === 'renderer').length, 1)
+        assert.equal(members.find(process => process.pid === main.pid)?.windows.length, 1)
+        return members
+      })
+      await os('close', main)
+      const closed = await until(os, processes => group(processes).length === 0 && processes.some(process => sameProcess(process, nativeIdentity, nativeExe)), `Phase 5I Manager cycle ${index} normal close`)
+      assert.equal(native.exitCode, null, 'NativeHost must remain alive after Manager close.')
+      const nativeAfter = closed.find(process => sameProcess(process, nativeIdentity, nativeExe))
+      assert.ok(nativeAfter, 'The same isolated NativeHost must remain after Manager close.')
+      record(`phase5i-manager-cycle-${index}-closed`, closed)
+      cycles.push({ index, main: { pid: main.pid, created: main.created }, managerMemberCount: managerMembers.length, rendererCount: managerMembers.filter(process => process.role === 'renderer').length, electronAfterClose: group(closed).length, nativeHandlesAfterClose: nativeAfter.handles, nativeThreadsAfterClose: nativeAfter.threads, durationMs: Date.now() - startedAt })
+      console.log(`Phase 5I Manager cycle ${index}/10 PASS`)
+    }
+    const nativeAfterCycles = (await os()).find(process => sameProcess(process, nativeIdentity, nativeExe))
+    assert.ok(nativeAfterCycles, 'Same NativeHost identity must survive all Manager cycles.')
+    assert.equal(group(await os()).length, 0, 'No Manager/Electron process may remain after cycle 10.')
+    report.phase5iManagerCycles = {
+      result: 'PASS',
+      count: cycles.length,
+      sameNativeHost: { pid: nativeIdentity.pid, created: nativeIdentity.created },
+      managerIdentitiesUnique: seenManagers.size === 10,
+      nativeHandlesBefore: nativeBefore.handles,
+      nativeHandlesAfter: nativeAfterCycles.handles,
+      nativeThreadsBefore: nativeBefore.threads,
+      nativeThreadsAfter: nativeAfterCycles.threads,
+      processGate: 'one candidate Main and one Renderer while each Manager is open; zero candidate Electron processes after each ordinary WM_CLOSE; same isolated NativeHost remains',
+      cycles,
+    }
   }
   await os('close-native', nativeIdentity)
   const exited = await until(os, processes => processes.length === 0, 'isolated Native exit')

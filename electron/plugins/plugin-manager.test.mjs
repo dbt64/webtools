@@ -21,6 +21,36 @@ test('first install is disabled/ungranted and repeated identical import is idemp
   assert.equal((await env.manager.install(bytes, env.session)).outcome, 'already-installed')
   await assert.rejects(() => env.manager.getPages(first.plugin.id, env.session)); assert.equal(env.prompts.length, 1)
 })
+test('rejected adversarial packages leave installed registry, grants, and private data unchanged', async t => {
+  const env = await setup(t)
+  const preserved = await enabled(env, allManifest({ id: 'org.example.preserved' }))
+  await env.manager.invoke(request(preserved, 'write', { value: { sentinel: 'preserve' } }), env.session)
+
+  const registryPath = join(env.root, 'plugins', 'registry.json')
+  const dataPath = join(env.root, 'plugins', 'data', `${preserved.id}.json`)
+  const packagePath = join(env.root, 'plugins', 'packages', preserved.id, preserved.version)
+  const registryBefore = await readFile(registryPath)
+  const dataBefore = await readFile(dataPath)
+  const rowsBefore = await env.manager.list()
+  const packagesBefore = await readdir(packagePath)
+  const dataFilesBefore = await readdir(join(env.root, 'plugins', 'data'))
+
+  const malicious = [
+    packageBytes(manifest({ id: 'org.example.attack' }), [{ name: '../escape.txt', data: 'outside' }]),
+    packageBytes(manifest({ id: 'org.example.attack' }), [{ name: 'manifest.json', data: '{}' }]),
+    packageBytes(manifest({ id: 'webtools.translation', type: 'builtin', builtin: true })),
+    packageBytes(manifest({ id: 'org.example.attack', requestedCapabilities: ['filesystem.read'] })),
+  ]
+  for (const bytes of malicious) await assert.rejects(() => env.manager.install(bytes, env.session))
+
+  assert.deepEqual(await env.manager.list(), rowsBefore)
+  assert.deepEqual(await readFile(registryPath), registryBefore)
+  assert.deepEqual(await readFile(dataPath), dataBefore)
+  assert.deepEqual(await readdir(packagePath), packagesBefore)
+  assert.deepEqual(await readdir(join(env.root, 'plugins', 'data')), dataFilesBefore)
+  assert.deepEqual(await readdir(join(env.root, 'plugins', 'staging')), [])
+  await assert.rejects(() => readFile(join(env.root, 'plugins', 'data', 'org.example.attack.json')), { code: 'ENOENT' })
+})
 test('conflicting hash and downgrade require separate consent; upgrade retains rollback and data', async t => {
   const env = await setup(t); let p = await enabled(env)
   await env.manager.invoke(request(p, 'write', { value: { retained: true } }), env.session)
