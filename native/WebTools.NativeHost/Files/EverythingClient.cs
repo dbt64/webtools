@@ -15,6 +15,8 @@ public sealed class EverythingClient
 
     public EverythingClient(string configuredPath) => _configuredPath = configuredPath;
 
+    public void InvalidateCurrentResults() => _paths.Clear();
+
     public static string[] BuildArguments(string query, int maximum, bool json, bool utf8) =>
     [
         ..(json ? new[] { "-argv" } : Array.Empty<string>()),
@@ -25,7 +27,9 @@ public sealed class EverythingClient
 
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(string query, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
         query = query.Trim();
+        InvalidateCurrentResults();
         if (query.Length == 0) return [];
         if (query.Length > 300 || query.IndexOfAny(['\0', '\r', '\n']) >= 0) throw new ArgumentException("文件搜索关键词太长或包含无效字符。");
         var status = await DetectAsync(token);
@@ -47,7 +51,7 @@ public sealed class EverythingClient
             var id = Guid.NewGuid().ToString("N");
             nextPaths[id] = path;
             var name = Path.GetFileName(path);
-            var location = Path.GetFileName(Path.GetDirectoryName(path)) ?? Path.GetPathRoot(path) ?? "";
+            var location = Path.GetDirectoryName(path) ?? Path.GetPathRoot(path) ?? "";
             results.Add(new SearchResult(id, folder ? ResultKind.Folder : ResultKind.File, name, location,
                 results.Count, MatchKind.Name, new OpenFileAction(id), path));
         }

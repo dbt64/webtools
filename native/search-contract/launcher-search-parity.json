@@ -1,5 +1,5 @@
 {
-  "generatedFrom": "Historical Electron matching oracle; current Phase 5I local contextual Translation contract",
+  "generatedFrom": "Historical Electron matching oracle; current Phase 5I local contextual Translation contract; current local Search Files contextual action contract",
   "applications": [
     {
       "id": "a111111111111111",
@@ -232,6 +232,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -245,6 +251,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -264,6 +276,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -283,6 +301,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -302,6 +326,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -321,6 +351,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -334,6 +370,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -353,6 +395,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -372,6 +420,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -391,6 +445,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -410,6 +470,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -429,6 +495,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -490,6 +562,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -515,6 +593,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },
@@ -534,6 +618,12 @@
           "id": "translation",
           "title": "翻译",
           "action": "open-translation"
+        },
+        {
+          "kind": "search-files",
+          "id": "search-files",
+          "title": "搜索文件",
+          "action": "search-files"
         }
       ]
     },

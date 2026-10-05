@@ -9,9 +9,9 @@ internal sealed class LauncherResultSelectionController(LauncherInteractionState
 {
     private bool _synchronizing;
 
-    public void Present(WpfListBox list, IReadOnlyList<SearchResult> results, IEnumerable rows)
+    public void Present(WpfListBox list, IReadOnlyList<SearchResult> results, IEnumerable rows, string? preferredResultId = null)
     {
-        state.SetResults(results);
+        state.SetResults(results, preferredResultId);
         Synchronize(() =>
         {
             list.ItemsSource = rows;

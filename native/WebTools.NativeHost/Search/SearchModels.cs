@@ -1,7 +1,7 @@
 namespace WebTools.NativeHost.Search;
 
 public enum SearchMode { Local, Web, Files, SavedWebsites }
-public enum ResultKind { Application, Website, File, Folder, Translation }
+public enum ResultKind { Application, Website, File, Folder, Translation, SearchFiles }
 public enum MatchKind { Name, Alias, Pinyin, Initials }
 
 public sealed record SearchCommand(SearchMode Mode, string Query, string Raw)
@@ -20,6 +20,7 @@ public sealed record LaunchApplicationAction(string AppId) : ResultAction;
 public sealed record OpenWebsiteAction(string WebsiteId, string Url) : ResultAction;
 public sealed record OpenFileAction(string Token) : ResultAction;
 public sealed record OpenTranslationAction(string Text) : ResultAction;
+public sealed record SearchFilesAction(string Query) : ResultAction;
 
 public sealed record SearchResult(
     string Id, ResultKind Kind, string Title, string Subtitle, int Rank,

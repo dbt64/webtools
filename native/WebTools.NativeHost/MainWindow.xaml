@@ -268,6 +268,161 @@
                   </StackPanel>
                 </Border>
 
+                <Grid x:Name="FileSearchPanel" Grid.Row="1" Visibility="Collapsed" Background="{DynamicResource SurfaceBrush}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="154" />
+                        <ColumnDefinition Width="1" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0" Margin="10,10,8,10" LastChildFill="True">
+                        <TextBlock DockPanel.Dock="Top" Text="文件类型" Foreground="{DynamicResource MutedBrush}"
+                                   FontSize="10" FontWeight="SemiBold" Margin="4,0,0,7" />
+                        <ListBox x:Name="FileCategoriesList" Background="Transparent" Foreground="{DynamicResource TextBrush}"
+                                 BorderThickness="0" SelectedIndex="0" SelectionChanged="FileCategoriesList_SelectionChanged"
+                                 KeyboardNavigation.TabNavigation="Once" AutomationProperties.Name="文件类型筛选">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="Focusable" Value="True" />
+                                    <Setter Property="Padding" Value="8,6" />
+                                    <Setter Property="Margin" Value="0,1" />
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ListBoxItem">
+                                                <Border x:Name="CategoryBorder" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" CornerRadius="6"
+                                                        Padding="{TemplateBinding Padding}">
+                                                    <ContentPresenter />
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="CategoryBorder" Property="Background" Value="{DynamicResource HoverBrush}" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsSelected" Value="True">
+                                                        <Setter TargetName="CategoryBorder" Property="Background" Value="{DynamicResource SelectedBrush}" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                                        <Setter TargetName="CategoryBorder" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                                        <Setter TargetName="CategoryBorder" Property="BorderThickness" Value="1" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Label}" Foreground="{DynamicResource TextBrush}" FontSize="11" />
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </DockPanel>
+                    <Border Grid.Column="1" Background="{DynamicResource LineBrush}" />
+                    <Grid Grid.Column="2" Margin="14,10,10,10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="26" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="文件搜索结果" VerticalAlignment="Center" Foreground="{DynamicResource TextBrush}"
+                                       FontSize="11" FontWeight="SemiBold" />
+                            <TextBlock x:Name="FileStatusText" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource MutedBrush}" FontSize="10" TextTrimming="CharacterEllipsis"
+                                       Visibility="Collapsed" />
+                        </Grid>
+                        <Grid Grid.Row="1">
+                            <ListBox x:Name="FileResultsList" Background="{DynamicResource SurfaceBrush}"
+                                     Foreground="{DynamicResource TextBrush}" BorderThickness="0" Visibility="Collapsed"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True"
+                                     VirtualizingPanel.VirtualizationMode="Recycling"
+                                     AutomationProperties.Name="文件搜索结果"
+                                     SelectionChanged="FileResultsList_SelectionChanged"
+                                     PreviewMouseLeftButtonUp="FileResultsList_PreviewMouseLeftButtonUp">
+                                <ListBox.Resources>
+                                    <Style TargetType="ScrollBar" BasedOn="{StaticResource LauncherScrollbarStyle}" />
+                                </ListBox.Resources>
+                                <ListBox.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <VirtualizingStackPanel />
+                                    </ItemsPanelTemplate>
+                                </ListBox.ItemsPanel>
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource ResultItemStyle}">
+                                        <Setter Property="ContextMenu">
+                                            <Setter.Value>
+                                                <ContextMenu Opened="FileContextMenu_Opened" PreviewKeyDown="FileContextMenu_PreviewKeyDown">
+                                                    <MenuItem Header="打开" Tag="Open" Click="FileContextMenuItem_Click" />
+                                                    <MenuItem Header="在文件夹中显示" Tag="ShowInFolder" Click="FileContextMenuItem_Click" />
+                                                    <Separator />
+                                                    <MenuItem Header="复制文件" Tag="CopyObject" Click="FileContextMenuItem_Click" />
+                                                    <MenuItem Header="复制文件路径" Tag="CopyPath" Click="FileContextMenuItem_Click" />
+                                                    <MenuItem Header="复制上级文件夹路径" Tag="CopyParentPath" Click="FileContextMenuItem_Click" />
+                                                </ContextMenu>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid MinHeight="34" ToolTip="{Binding Subtitle}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="34" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="18" />
+                                            </Grid.ColumnDefinitions>
+                                            <Border Grid.Column="0" Width="34" Height="34" CornerRadius="9"
+                                                    Background="{DynamicResource AccentSoftBrush}" VerticalAlignment="Center">
+                                                <Grid>
+                                                    <TextBlock Text="{Binding IconGlyph}" FontSize="16" Foreground="{DynamicResource AccentBrush}"
+                                                               HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding Icon}" Value="{x:Null}">
+                                                                        <Setter Property="Visibility" Value="Visible" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                    <Image Source="{Binding Icon}" Width="24" Height="24" Stretch="Uniform" />
+                                                </Grid>
+                                            </Border>
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0">
+                                                <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="Medium" Foreground="{DynamicResource TextBrush}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding Subtitle}" Foreground="{DynamicResource MutedBrush}" FontSize="10"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="2" Text="↵" VerticalAlignment="Center" HorizontalAlignment="Center"
+                                                       Foreground="{DynamicResource MutedBrush}" FontSize="15">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <TextBlock x:Name="FileEmptyText" Visibility="Collapsed" Foreground="{DynamicResource MutedBrush}"
+                                       FontSize="12" TextWrapping="Wrap" VerticalAlignment="Top" Margin="8,12,8,0" />
+                        </Grid>
+                    </Grid>
+                </Grid>
+
                 <ListBox x:Name="ResultsList" Grid.Row="1" Margin="0,0,4,0" Background="{DynamicResource SurfaceBrush}"
                          Foreground="{DynamicResource TextBrush}" BorderThickness="0" Visibility="Collapsed"
                          ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
