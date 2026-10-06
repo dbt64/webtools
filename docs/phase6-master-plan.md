@@ -1,15 +1,15 @@
 # WebTools Phase 6 Master Plan
 
-**Purpose:** guide the next product cycle after the Native-first migration and declarative plugin foundation. This file defines phase boundaries and gates; only Phase 6A has an approved, implemented scope at this checkpoint. The later phases are planning placeholders, not completed designs or implementation authorization.
+**Purpose:** guide the product cycle after the Native-first migration and declarative plugin foundation. This file preserves the original Phase 6A history and tracks the current phase status. Phase 6A and 6B are complete; Phase 6C architecture is frozen as design only; Phase 6D is not started and requires separate implementation authorization.
 
 ## Phase map
 
 | Phase | Goal | Status / dependency |
 |---|---|---|
-| 6A — Release Engineering & Version Contract | Establish a canonical product version, traceable Windows build identity, safe artifact layout, hash verification and documented release process. | Complete at this checkpoint; 6B planning requires separate user approval. |
-| 6B — Plugin Developer Experience | Improve the workflow for authoring, validating and testing declarative plugins with the public SDK. | Planned; depends on 6A contracts and a separately reviewed plan. |
-| 6C — Plugin Capability Expansion | Evaluate any proposed declarative capability against least privilege, consent, validation and compatibility boundaries. | Planned; depends on the 6B workflow and an explicit capability design. |
-| 6D — First-party Plugin Expansion | Add first-party functions only where plugin contracts provide a safe fit and existing product behavior remains covered. | Planned; depends on 6C decisions and per-feature acceptance. |
+| 6A — Release Engineering & Version Contract | Establish a canonical product version, traceable Windows build identity, safe artifact layout, hash verification and documented release process. | COMPLETE; historical acceptance record retained below. |
+| 6B — Plugin Developer Experience | Improve the workflow for authoring, validating and testing declarative plugins with the public SDK. | COMPLETE; see the Phase 6B report. |
+| 6C — Plugin Platform Architecture | Audit and freeze the Feature, Context, Manifest v2, projection and sandboxed Web Plugin runtime design. | Phase 6C-1 COMPLETE; 6C-2 APPROVED WITH DESIGN REVISIONS; 6C-3 COMPLETE. Design only. |
+| 6D — Web Plugin Runtime & Feature Integration | Implement the frozen Web Feature architecture in the approved dependency order. | NOT STARTED; requires separate implementation authorization and all mandatory security gates. |
 | 6E — Launcher 2.0 | Consider a separately designed next iteration of the Native Launcher and its discovery experience. | Planned; requires product/UI design and compatibility review. |
 | 6F — Update & Release Channels | Design stable/beta delivery and update behavior using the build identity and upgrade contract from 6A. | Planned; depends on 6A and a dedicated update/security design. |
 | 6G — Performance & UX | Address measured performance or UX issues after the relevant baselines and product requirements are approved. | Planned; requires evidence and a bounded optimization plan. |
@@ -66,42 +66,29 @@ Make a Windows build traceable to a canonical product version and source revisio
 
 ### Transition gate
 
-Phase 6A may be closed only after its regression and isolated package smoke pass, the metadata and artifact hashes verify, and its checkpoint is reviewed. This does not approve Phase 6B implementation; Phase 6B requires its own design and authorization.
+Historical Phase 6A transition gate: 6A was closed only after its regression and isolated package smoke passed, metadata and artifact hashes verified, and its checkpoint was reviewed. That gate did not itself authorize Phase 6B; Phase 6B was later separately designed, approved and completed as recorded below.
 
-## Future phase boundaries (not approved for implementation)
+## Phase 6B–6D status and boundaries
 
 ### Phase 6B — Plugin Developer Experience
 
-- **Goal:** make the existing declarative SDK workflow easier to discover and operate.
-- **In scope:** plan and evaluate authoring, local validation, examples and diagnostics around the existing contract.
-- **Out of scope:** publishing to npm, executing JavaScript plugins, adding host capabilities or changing Manifest/API contracts by implication.
-- **Dependencies:** Phase 6A release/version contract; separate approval.
-- **Security:** keep packages declarative, validate before install and preserve least privilege.
-- **Acceptance:** a future plan must define the developer workflow, compatibility and security tests.
-- **Expected artifacts:** to be decided in the 6B plan.
-- **Transition gate:** reviewed 6B criteria pass before considering 6C.
+- **Status:** COMPLETE. The standalone SDK 1.1.0 workflow, starter, pack/inspect path, external author workflow and manual acceptance are recorded in [the Phase 6B report](webtools-phase6b-plugin-developer-experience.md).
+- This completed phase did not authorize a runtime implementation. Preserve the independent Product Version, Plugin API major, Manifest version and SDK package version domains.
 
-### Phase 6C — Plugin Capability Expansion
+### Phase 6C — Plugin Platform Architecture
 
-- **Goal:** decide whether the declarative host needs additional bounded capabilities.
-- **In scope:** capability-specific threat models, contracts and tests.
-- **Out of scope:** arbitrary code execution, raw Node/filesystem/IPC access, unreviewed secret access.
-- **Dependencies:** Phase 6B workflow and explicit capability proposal.
-- **Security:** every new capability must be host-mediated, validated and consented where appropriate; unknown capability/API versions remain rejected.
-- **Acceptance:** each capability needs negative tests and compatibility rules.
-- **Expected artifacts:** only those approved by its future plan.
-- **Transition gate:** explicit security/product review before 6D.
+- **Status:** architecture frozen, design only. Phase 6C-1 audit, 6C-2 specification and approved 6C-3 revisions are linked from [the architecture freeze](phase6c-architecture-freeze.md).
+- **Frozen scope:** Plugin/Feature separation, shared Native Feature registry/projection/matcher/context model, immutable Manifest v1 with one synthetic compatibility Feature, Manifest v2 Web Feature packages, one NativeHost process, on-demand Manager and sandboxed one-at-a-time Web runtime.
+- **No Phase 6C production implementation is included in this checkpoint.** WASM remains browser-side computation, not a Host capability. Business algorithms remain in plugins. The freeze report is authoritative for capacity, clipboard, network, compatibility and security-gate details.
 
-### Phase 6D — First-party Plugin Expansion
+### Phase 6D — Web Plugin Runtime & Feature Integration
 
-- **Goal:** evaluate additional built-in experiences on the established plugin foundation.
-- **In scope:** individually specified built-in modules and migration/rollback decisions.
-- **Out of scope:** migrating existing features merely for architectural uniformity or changing persistence without a separate decision.
-- **Dependencies:** 6C contract decisions, where relevant, and per-feature product approval.
-- **Security:** preserve host ownership of built-ins, user data and shared AI/secret services.
-- **Acceptance:** feature parity, settings/data compatibility and disable/restore behavior must be specified per module.
-- **Expected artifacts:** future feature plans and acceptance evidence.
-- **Transition gate:** only completed, approved modules can enter 6E integration.
+- **Status:** NOT STARTED. This is the implementation phase for the frozen Web Feature platform, not a first-party feature migration.
+- **Authorization:** Phase 6C-3 freezes design only. Phase 6D production work requires a separate explicit approval.
+- **Dependency order and acceptance:** follow the 17-step order and four mandatory security gates in [phase6c-architecture-freeze.md](phase6c-architecture-freeze.md). network.mode none may proceed independently; network.domains remains disabled until its connection-level enforcement gate passes.
+- **Boundary:** no new resident helper process, no Web runtime in the Launcher, no hidden runtime pool, no expanded Host business-algorithm API, and no change to existing search command behavior.
+
+## Future phase boundaries
 
 ### Phase 6E — Launcher 2.0
 
