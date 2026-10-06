@@ -50,3 +50,120 @@ test('Feature presentation text normalizes Unicode and enforces scalar-value bou
   assert.equal(normalizeFeatureText(42, 80), null)
   assert.equal(normalizeFeatureText('\uD800', 80), null)
 })
+
+function projectionRow(overrides = {}) {
+  return {
+    ref: { pluginId: 'org.example.editor', featureId: 'legacy-manager-page' },
+    pluginName: 'Editor Tools',
+    title: 'Editor',
+    commands: ['editor'],
+    acceptedContexts: [],
+    iconToken: 'plugin',
+    featureKind: 'declarative-compatibility',
+    group: 'plugin-features',
+    ...overrides,
+  }
+}
+
+function projection(features = []) {
+  return {
+    projectionVersion: 2,
+    hostSessionId: '2e83e777-81e5-47bb-8a5e-1f52e5d7bd34',
+    revision: 1,
+    generatedAtUnixMs: 1791296400000,
+    features,
+  }
+}
+
+function projectionParser() {
+  const parse = contracts().parseFeatureProjectionV2
+  assert.equal(typeof parse, 'function', 'Feature Projection v2 parser must be exported')
+  return parse
+}
+
+test('Feature Projection v2 accepts a closed snapshot and returns a defensive normalized copy', () => {
+  const parse = projectionParser()
+  const source = projection([projectionRow({ title: '  Cafe\u0301  Editor ', commands: ['  edit\ttext  '] })])
+  const parsed = parse(source)
+  assert.deepEqual(parsed?.features[0].title, 'Café Editor')
+  assert.deepEqual(parsed?.features[0].commands, ['edit text'])
+  assert.notEqual(parsed, source)
+  parsed.features[0].commands.push('mutated')
+  assert.deepEqual(source.features[0].commands, ['  edit\ttext  '])
+})
+
+test('Feature Projection v2 rejects malformed identities, unknown fields, duplicate refs, and invalid enums', () => {
+  const parse = projectionParser()
+  assert.equal(parse({ ...projection(), projectionVersion: 1 }), null)
+  assert.equal(parse({ ...projection(), extra: true }), null)
+  assert.equal(parse(projection([projectionRow({ ref: { pluginId: 'org.example.editor', featureId: 'bad id' } })])), null)
+  assert.equal(parse(projection([projectionRow(), projectionRow()])), null)
+  assert.equal(parse(projection([projectionRow({ featureKind: 'web' })])), null)
+  assert.equal(parse(projection([projectionRow({ iconToken: 'C:/private/icon.png' })])), null)
+  assert.equal(parse({ ...projection(), revision: 0 }), null)
+  assert.equal(parse({ ...projection(), hostSessionId: 'not-a-session' }), null)
+})
+
+test('Feature Projection v2 rejects overlong and duplicate text plus malformed contexts', () => {
+  const parse = projectionParser()
+  assert.equal(parse(projection([projectionRow({ pluginName: '😀'.repeat(81) })])), null)
+  assert.equal(parse(projection([projectionRow({ title: '😀'.repeat(81) })])), null)
+  assert.equal(parse(projection([projectionRow({ commands: ['x'.repeat(49)] })])), null)
+  assert.equal(parse(projection([projectionRow({ commands: ['Edit', ' edit '] })])), null)
+  assert.equal(parse(projection([projectionRow({ commands: Array(9).fill('command') })])), null)
+  assert.equal(parse(projection([projectionRow({ acceptedContexts: [{ type: 'clipboard', sources: ['clipboard'] }] })])), null)
+  assert.equal(parse(projection([projectionRow({ acceptedContexts: [{ type: 'text', sources: ['filesystem'] }] })])), null)
+  assert.equal(parse(projection([projectionRow({ acceptedContexts: [{ type: 'text', sources: [] }] })])), null)
+})
+
+test('Feature Projection v2 enforces per-plugin and global feature-count limits', () => {
+  const parse = projectionParser()
+  const perPlugin = Array.from({ length: 16 }, (_, index) => projectionRow({
+    ref: { pluginId: 'org.example.editor', featureId: `feature-${index}` },
+  }))
+  assert.notEqual(parse(projection(perPlugin)), null)
+  const tooManyForPlugin = [...perPlugin, projectionRow({ ref: { pluginId: 'org.example.editor', featureId: 'feature-16' } })]
+  assert.equal(parse(projection(tooManyForPlugin)), null)
+  const globalLimit = Array.from({ length: 2000 }, (_, index) => projectionRow({
+    ref: { pluginId: `org.example.p${index}`, featureId: 'feature' },
+  }))
+  assert.notEqual(parse(projection(globalLimit)), null)
+  assert.equal(parse(projection([...globalLimit, projectionRow({ ref: { pluginId: 'org.example.over', featureId: 'feature' } })])), null)
+})
+
+test('Feature Projection v2 measures the exact 3 MiB UTF-8 boundary, including multibyte text', () => {
+  const parse = projectionParser()
+  const maxBytes = 3 * 1024 * 1024
+  let exact = null
+  for (let repeatedEmoji = 47; repeatedEmoji >= 0 && !exact; repeatedEmoji -= 1) {
+    const features = Array.from({ length: 2000 }, (_, index) => projectionRow({
+      ref: { pluginId: `org.example.p${index}`, featureId: 'feature' },
+      commands: Array.from({ length: 8 }, (_, alias) => `${String.fromCharCode(97 + alias)}${'😀'.repeat(repeatedEmoji)}`),
+    }))
+    const candidate = projection(features)
+    const bytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8')
+    if (bytes > maxBytes) continue
+    let remaining = maxBytes - bytes
+    for (const row of candidate.features) {
+      const added = Math.min(remaining, 80 - row.pluginName.length)
+      if (added > 0) { row.pluginName += 'p'.repeat(added); remaining -= added }
+      if (remaining === 0) break
+    }
+    if (remaining === 0 && Buffer.byteLength(JSON.stringify(candidate), 'utf8') === maxBytes) exact = candidate
+  }
+  assert.ok(exact, 'test fixture must land exactly on the UTF-8 byte cap')
+  assert.ok(Buffer.byteLength(JSON.stringify(exact), 'utf8') === maxBytes)
+  assert.notEqual(parse(exact), null)
+  const oneByteOver = structuredClone(exact)
+  oneByteOver.generatedAtUnixMs = 17912964000000
+  assert.equal(Buffer.byteLength(JSON.stringify(oneByteOver), 'utf8'), maxBytes + 1)
+  assert.equal(parse(oneByteOver), null)
+})
+
+test('Feature Projection content identity ignores diagnostics, session and revision fields', () => {
+  const { featureProjectionContentIdentity } = contracts()
+  const one = projection([projectionRow()])
+  const two = { ...one, hostSessionId: '1e83e777-81e5-47bb-8a5e-1f52e5d7bd34', revision: 9, generatedAtUnixMs: 1791296401000 }
+  assert.equal(featureProjectionContentIdentity(one), featureProjectionContentIdentity(two))
+  assert.notEqual(featureProjectionContentIdentity(one), featureProjectionContentIdentity(projection([projectionRow({ title: 'Changed' })])))
+})

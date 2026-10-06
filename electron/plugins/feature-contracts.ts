@@ -32,12 +32,17 @@ export interface BuiltInResolvedFeature extends ResolvedFeatureBase {
 
 export type MainResolvedFeature = DeclarativeCompatibilityFeature | BuiltInResolvedFeature
 
+export interface DeclarativeFeatureCandidate {
+  readonly pluginName: string
+  readonly feature: DeclarativeCompatibilityFeature
+}
+
 /** Metadata identity only; enablement remains owned by BuiltinTranslationLifecycle. */
 export const BUILTIN_TRANSLATION_FEATURE: BuiltInResolvedFeature = Object.freeze({
   ref: Object.freeze({ pluginId: 'webtools.translation', featureId: 'translate-text' }),
   sourceKind: 'built-in',
   title: '翻译',
-  commands: Object.freeze([]),
+  commands: Object.freeze(['Translate', 'Translation']),
   icon: 'translation',
   requiredCapabilities: Object.freeze([]),
   acceptedContexts: Object.freeze([] as const),

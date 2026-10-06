@@ -121,3 +121,29 @@ test('Manager session invalidation rejects an old toggle and does not change cur
   assert.equal(lifecycle.isEnabled(), true)
   assert.equal(lifecycle.snapshot().status, 'ready')
 })
+
+test('stable Translation state changes notify derived Feature readers after commit or fail-closed completion', async () => {
+  let fail = false
+  const store = {
+    load: async () => ready(true),
+    setEnabled: async (_id, enabled) => {
+      if (fail) throw Object.assign(new Error('write failed'), { code: 'STATE_WRITE_FAILED' })
+      return ready(enabled)
+    },
+    recoverToDefault: async () => ready(true),
+  }
+  const lifecycle = createLifecycle(store)
+  const notifications = []
+  const dispose = lifecycle.subscribeFeatureStateChanged(() => notifications.push(lifecycle.isEnabled()))
+  await lifecycle.initialize()
+  assert.deepEqual(notifications, [])
+  await lifecycle.setEnabled(false)
+  assert.deepEqual(notifications, [false])
+  fail = true
+  await assert.rejects(lifecycle.setEnabled(true), { code: 'STATE_WRITE_FAILED' })
+  assert.deepEqual(notifications, [false, false])
+  dispose()
+  fail = false
+  await lifecycle.setEnabled(true)
+  assert.deepEqual(notifications, [false, false])
+})

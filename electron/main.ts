@@ -36,6 +36,7 @@ import { registerPluginIpcHandlers } from './ipc/plugin-handlers'
 import { registerPluginCatalogIpcHandlers } from './ipc/plugin-catalog-handlers'
 import { registerBuiltinTranslationHandoffHandlers } from './ipc/builtin-translation-handoff-handlers'
 import { PluginCatalog } from './plugins/plugin-catalog'
+import { FeatureRegistry } from './plugins/feature-registry'
 import { NativePluginProjectionPublisher } from './services/native-plugin-projection-publisher'
 import type { PluginRef } from '../src/shared/plugin-catalog-contracts'
 import type { PluginManager } from './plugins/plugin-manager'
@@ -69,10 +70,13 @@ let managerRendererReady = false
 let quitting = false
 let pluginManager: PluginManager | null = null
 let pluginCatalog: PluginCatalog | null = null
+let featureRegistry: FeatureRegistry | null = null
 let nativePluginProjectionPublisher: NativePluginProjectionPublisher | null = null
 let disposeCatalogHandlers = () => {}
 let disposePluginHandlers: () => void = () => undefined
 let disposeBuiltinTranslationHandoffHandlers: () => void = () => undefined
+let disposeFeatureManagerSubscription: () => void = () => undefined
+let disposeBuiltinFeatureSubscription: () => void = () => undefined
 
 interface PendingNativeIntent {
   requestId: string
@@ -103,6 +107,11 @@ async function syncNativePluginProjection(): Promise<void> {
   // This is a recoverable derived presentation cache, not the plugin authority.
   // Retry on the next explicit catalog read/mutation or Manager startup.
   await nativePluginProjectionPublisher?.trySync(() => console.warn('[native-plugins] Launcher cache synchronization failed; catalog remains available.'))
+}
+
+async function refreshFeatureRegistry(): Promise<void> {
+  try { await featureRegistry?.refresh() }
+  catch (error) { console.warn('[native-features] derived Feature projection refresh failed.', error) }
 }
 
 async function updateNativeLauncherSettings(update: NativeLauncherSettingsUpdate) {
@@ -236,7 +245,7 @@ function createWindow(): void {
     cancelActiveAIRequests()
     pluginManager?.beginSession()
     pluginCatalog?.beginSession()
-    void pluginManager?.restoreSession()
+    void pluginManager?.restoreSession().catch(error => console.warn('[plugins] Manager session restore failed.', error))
     if (nativeManaged && nativeManagerClient?.isConnected) {
       void nativeManagerClient.request('manager-renderer-not-ready', {}).catch((error) => console.error('[native-manager] renderer-not-ready failed', error))
     }
@@ -359,6 +368,17 @@ app.whenReady().then(async () => {
   const pluginHost = createElectronPluginHost({ userData: app.getPath('userData'), hostVersion: app.getVersion(), sharedAI: sharedAIService, dataStore, getWindow: () => managerWindow })
   try { await pluginHost.manager.initialize(); pluginManager = pluginHost.manager }
   catch { pluginHost.manager.close() } // Fail closed without preventing existing Manager pages from opening.
+  featureRegistry = new FeatureRegistry({
+    listDeclarativeFeatures: () => pluginManager?.listFeatureCandidates() ?? Promise.resolve([]),
+    isTranslationEnabled: () => builtinTranslationLifecycle?.isEnabled() ?? false,
+  })
+  if (pluginManager) {
+    disposeFeatureManagerSubscription = pluginManager.subscribeFeatureAuthorityChanged(() => { void refreshFeatureRegistry() })
+  }
+  if (builtinTranslationLifecycle) {
+    disposeBuiltinFeatureSubscription = builtinTranslationLifecycle.subscribeFeatureStateChanged(() => { void refreshFeatureRegistry() })
+  }
+  await refreshFeatureRegistry()
   pluginCatalog = new PluginCatalog(app.getVersion(), () => pluginManager, builtinTranslationLifecycle)
   if (nativeManaged) {
     nativePluginProjectionPublisher = new NativePluginProjectionPublisher(async () => {
@@ -442,6 +462,10 @@ app.on('window-all-closed', () => app.quit())
 app.on('before-quit', () => {
   quitting = true
   cancelActiveAIRequests()
+  disposeFeatureManagerSubscription()
+  disposeBuiltinFeatureSubscription()
+  featureRegistry?.close()
+  featureRegistry = null
   builtinTranslationLifecycle?.close()
   pluginManager?.close()
   disposePluginHandlers()

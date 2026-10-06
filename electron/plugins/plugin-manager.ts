@@ -8,6 +8,8 @@ import { PluginRegistry, type PluginRecord, type RegistryData, type InstalledVer
 import { PluginStore } from './plugin-store.ts'
 import { validatePackage, type ValidatedPackage } from './package-validator.ts'
 import { DeclarativeRuntime } from './declarative-runtime.ts'
+import { adaptDeclarativeV1Feature } from './declarative-feature-adapter.ts'
+import type { DeclarativeFeatureCandidate } from './feature-contracts.ts'
 import { PermissionBroker, providerIdentity, validateActionInput, type PluginConsent, type PluginHostEffects, type PluginProviderInfo } from './permission-broker.ts'
 import { fail, safePluginError } from './errors.ts'
 
@@ -25,6 +27,7 @@ export class PluginManager {
   private readonly runtimes = new Map<string, DeclarativeRuntime>()
   private readonly intents = new Map<string, { generation: number; blocked: boolean }>()
   private readonly pendingAIReviews = new Map<string, PendingAIReview>()
+  private readonly featureAuthorityListeners = new Set<() => void>()
   private readonly reviewGenerations = new Map<string, number>()
   private readonly preparingAIReviews = new Map<string, number>()
   private reviewExpiryTimer: ReturnType<typeof setTimeout> | undefined
@@ -45,6 +48,16 @@ export class PluginManager {
     const pkg = await validatePackage(bytes, this.deps.hostVersion, this.deps.pngDecoder)
     if (pkg.manifest.id !== p.id || pkg.manifest.version !== p.current.version) fail('INTEGRITY_FAILED')
     return pkg
+  }
+  subscribeFeatureAuthorityChanged(listener: () => void): () => void {
+    if (this.closed || typeof listener !== 'function') return () => undefined
+    this.featureAuthorityListeners.add(listener)
+    return () => { this.featureAuthorityListeners.delete(listener) }
+  }
+  private notifyFeatureAuthorityChanged(): void {
+    for (const listener of [...this.featureAuthorityListeners]) {
+      try { listener() } catch (error) { console.error('[plugins] Feature authority listener failed.', error) }
+    }
   }
   private stop(id: string): void { this.invalidateAIReview(id); this.runtimes.get(id)?.stop(); this.runtimes.delete(id) }
   private beginIntent(id: string, stop: boolean): number {
@@ -134,6 +147,7 @@ export class PluginManager {
       catch (error) { p.enabled = false; p.status = safePluginError(error).code === 'INCOMPATIBLE_PLUGIN' ? 'incompatible' : 'invalid'; p.errorCode = safePluginError(error).code; this.stop(p.id) }
     }
     await this.registry.save(this.data)
+    this.notifyFeatureAuthorityChanged()
   }
   private async recover(): Promise<RegistryData> {
     const groups = new Map<string, Array<{ name: string; description: string; author: { name: string; url?: string }; api: { apiMajor: 1; minHostVersion: string }; requested: PluginCapability[]; identity: InstalledVersion }>>()
@@ -160,6 +174,26 @@ export class PluginManager {
   }
   async list(): Promise<PluginSummary[]> {
     return this.data.plugins.map(p => ({ id: p.id, name: p.name, version: p.current.version, hash: p.current.hash, enabled: p.enabled, status: this.intents.get(p.id)?.blocked ? 'stopping' : this.runtimes.get(p.id)?.invoking ? 'invoking' : p.status, requested: p.requested.slice(), granted: p.granted.slice(), installedVersions: [...new Set(p.versions.map(v => v.version))], source: 'local-unsigned', ...(p.description !== undefined ? { description: p.description } : {}), ...(p.author ? { author: structuredClone(p.author) } : {}), ...(p.api ? { api: structuredClone(p.api) } : {}), ...(this.runtimes.get(p.id)?.iconDataUrl ? { iconDataUrl: this.runtimes.get(p.id)?.iconDataUrl } : {}), ...(p.errorCode ? { errorCode: p.errorCode } : {}) }))
+  }
+  /** Returns only safe Main-owned metadata for currently eligible v1 page Features. */
+  async listFeatureCandidates(): Promise<DeclarativeFeatureCandidate[]> {
+    const session = this.session
+    return this.queue.run(async () => {
+      this.assertSession(session)
+      const candidates: DeclarativeFeatureCandidate[] = []
+      for (const plugin of this.data.plugins) {
+        if (!plugin.enabled || !plugin.requested.includes('manager.page') || !plugin.granted.includes('manager.page')) continue
+        let pkg: ValidatedPackage
+        try { pkg = await this.load(plugin) } catch { continue }
+        this.assertSession(session)
+        if (!pkg.manifest.requestedCapabilities.includes('manager.page')) continue
+        const feature = adaptDeclarativeV1Feature(pkg.manifest)
+        if (!feature) continue
+        candidates.push({ pluginName: pkg.manifest.name, feature: structuredClone(feature) })
+      }
+      this.assertSession(session)
+      return candidates
+    })
   }
   private async summary(id: string): Promise<PluginSummary> { return (await this.list()).find(p => p.id === id)! }
   private async confirm(request: PluginConsent, session: string): Promise<boolean> { this.assertSession(session); const accepted = await this.deps.confirm(request); this.assertSession(session); return accepted }
@@ -208,6 +242,7 @@ export class PluginManager {
         if (old) { this.stop(old.id); stoppedOld = true; await this.store.flush(); await this.store.readConfig(m) }
         await this.registry.save(next, () => this.isSession(session))
         this.data = next; if (this.isSession(session)) this.activate(p, pkg)
+        this.notifyFeatureAuthorityChanged()
         return { outcome: 'installed', plugin: await this.summary(m.id), change: versionChange }
       } catch (error) {
         if (created) await this.fs.remove(await this.fs.path(destinationLogical))
@@ -230,10 +265,10 @@ export class PluginManager {
         if (missing.length && !await this.confirm({ kind: 'grant', pluginId: id, name: p.name, version: p.current.version, capabilities: missing }, session)) return this.summary(id)
         p.granted = pkg.manifest.requestedCapabilities.slice(); p.enabled = true; p.status = 'active'; delete p.errorCode
         const next = { registryVersion: 1 as const, plugins: this.data.plugins.map(item => item.id === id ? p : item) }
-        await this.registry.save(next, () => this.isSession(session)); this.data = next; this.finishIntent(id, intent); this.activate(p, pkg); return this.summary(id)
+        await this.registry.save(next, () => this.isSession(session)); this.data = next; this.finishIntent(id, intent); this.activate(p, pkg); this.notifyFeatureAuthorityChanged(); return this.summary(id)
       }
       const next = { registryVersion: 1 as const, plugins: this.data.plugins.map(item => item.id === id ? p : item) }
-      await this.registry.save(next, () => this.isSession(session)); this.data = next; this.finishIntent(id, intent); return this.summary(id)
+      await this.registry.save(next, () => this.isSession(session)); this.data = next; this.finishIntent(id, intent); this.notifyFeatureAuthorityChanged(); return this.summary(id)
     })
   }
   async setGrants(id: string, grants: PluginCapability[], session: string): Promise<PluginSummary> {
@@ -250,7 +285,7 @@ export class PluginManager {
       await this.store.flush(); const p = { ...structuredClone(old), granted: grants.slice() }
       p.status = p.enabled ? pkg.manifest.requestedCapabilities.some(cap => !grants.includes(cap)) ? 'needs-permission' : 'active' : 'installed-disabled'
       const next = { registryVersion: 1 as const, plugins: this.data.plugins.map(item => item.id === id ? p : item) }
-      await this.registry.save(next, () => this.isSession(session)); this.data = next; this.finishIntent(id, intent); this.activate(p, pkg); return this.summary(id)
+      await this.registry.save(next, () => this.isSession(session)); this.data = next; this.finishIntent(id, intent); this.activate(p, pkg); this.notifyFeatureAuthorityChanged(); return this.summary(id)
     })
   }
   private current(id: string, runtime: DeclarativeRuntime, session: string): boolean { const p = this.data.plugins.find(item => item.id === id); return this.isSession(session) && !this.intents.get(id)?.blocked && this.runtimes.get(id) === runtime && Boolean(p?.enabled) && p?.current.hash === runtime.hash && p?.status === 'active' }
@@ -266,7 +301,9 @@ export class PluginManager {
   private async verifyIntegrity(p: PluginRecord): Promise<void> {
     try { await this.load(p) } catch (error) {
       this.stop(p.id); p.enabled = false; p.status = 'invalid'; p.errorCode = safePluginError(error).code
-      await this.queue.run(async () => this.registry.save(this.data)); throw error
+      try { await this.queue.run(async () => this.registry.save(this.data)) }
+      finally { this.notifyFeatureAuthorityChanged() }
+      throw error
     }
   }
   async invoke(value: PluginInvokeRequest, session: string): Promise<PluginActionResult> {
@@ -347,16 +384,18 @@ export class PluginManager {
       this.stop(id); p.enabled = false; p.status = 'stopping'; await this.store.flush()
       // Persist disabled before removal; an interrupted uninstall never auto-enables leftovers.
       await this.registry.save(this.data, () => this.isSession(session))
+      this.notifyFeatureAuthorityChanged()
       const target = await this.fs.path('packages', id); this.assertSession(session); await this.fs.remove(target)
       if (deleteData) { this.assertSession(session); await this.store.deletePrivateData(id) }
       const next = { registryVersion: 1 as const, plugins: this.data.plugins.filter(item => item.id !== id) }
-      await this.registry.save(next, () => this.isSession(session)); this.data = next; this.broker.forget(id); this.intents.delete(id); return { removed: true }
+      await this.registry.save(next, () => this.isSession(session)); this.data = next; this.broker.forget(id); this.intents.delete(id); this.notifyFeatureAuthorityChanged(); return { removed: true }
     })
   }
   beginSession(): void { if (this.closed) return; this.clearAIReviews(); for (const runtime of this.runtimes.values()) runtime.stop(); this.currentSession = randomUUID(); this.runtimes.clear() }
   async restoreSession(): Promise<void> {
     const session = this.session
     await this.queue.run(async () => { for (const p of this.data.plugins) { if (!this.isSession(session)) return; if (p.enabled) { try { const pkg = await this.load(p); if (this.isSession(session)) this.activate(p, pkg) } catch { p.enabled = false; p.status = 'invalid' } } } })
+    if (this.isSession(session)) this.notifyFeatureAuthorityChanged()
   }
-  close(): void { this.closed = true; this.clearAIReviews(); this.currentSession = randomUUID(); for (const runtime of this.runtimes.values()) runtime.stop(); this.runtimes.clear(); this.broker.clear() }
+  close(): void { this.closed = true; this.clearAIReviews(); this.currentSession = randomUUID(); for (const runtime of this.runtimes.values()) runtime.stop(); this.runtimes.clear(); this.broker.clear(); this.featureAuthorityListeners.clear() }
 }

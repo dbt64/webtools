@@ -55,7 +55,7 @@ export interface FeatureProjectionRowV2 {
     sources: Array<'launcher-input' | 'clipboard'>
   }>
   iconToken: 'plugin' | 'sparkles' | 'document' | 'globe' | 'translate'
-  featureKind: 'declarative-compatibility' | 'web'
+  featureKind: 'declarative-compatibility' | 'built-in'
   group: 'plugin-features'
 }
 ~~~
@@ -122,15 +122,13 @@ Important current-code boundary: NativeManagerPipeServer creates a CurrentUserOn
     "generatedAtUnixMs": 1791296400000,
     "features": [
       {
-        "ref": { "pluginId": "org.example.text-tools", "featureId": "word-count" },
-        "pluginName": "Text Tools",
-        "title": "Word Count",
-        "commands": ["count words", "word count"],
-        "acceptedContexts": [
-          { "type": "text", "sources": ["launcher-input"] }
-        ],
-        "iconToken": "plugin",
-        "featureKind": "web",
+        "ref": { "pluginId": "webtools.translation", "featureId": "translate-text" },
+        "pluginName": "翻译",
+        "title": "翻译",
+        "commands": ["Translate", "Translation"],
+        "acceptedContexts": [],
+        "iconToken": "translate",
+        "featureKind": "built-in",
         "group": "plugin-features"
       }
     ]
