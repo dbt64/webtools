@@ -4,9 +4,13 @@
 
 ## Status
 
-Implementation, automated verification, and the Task 7 review are complete. The real Plugin Center file picker, consent, enable/render, and uninstall flow still requires the user's manual Developer Workflow Acceptance; no UI pass is claimed here.
+Implementation, automated verification, Task 7 review, and user-confirmed manual Developer Workflow Acceptance are complete. Automated results and manual observations are recorded separately below.
 
-**Current result:** `AUTOMATED IMPLEMENTATION / WORKFLOW PASS — MANUAL DEVELOPER WORKFLOW ACCEPTANCE REQUIRED`
+**Final phase status:** `PHASE 6B COMPLETE`
+
+**Automated status:** `AUTOMATED IMPLEMENTATION / WORKFLOW PASS`
+
+**Manual status:** `USER CONFIRMED PASS`
 
 ## Locked contract preserved
 
@@ -84,13 +88,32 @@ The workflow records command durations as observations only; no performance thre
 
 Phase 6B changes are limited to the SDK facade/types/parser/CLI/starter/inspection code and tests, the external workflow runner and tests, the SDK/Private Notes/developer documentation, root/docs links, release SDK version row, this report, and the Phase 6C backlog. Four pre-existing Launcher modifications are preserved separately and must remain unchanged and unstaged.
 
-## Manual Developer Workflow Acceptance still required
+## Manual Developer Workflow Acceptance
 
-- Obtain the SDK 1.1.0 `.tgz` from the reviewed test build/output.
-- In a fresh directory outside the checkout, follow `docs/plugin-development.md` using only that tarball; verify create, frozen install, typecheck, validate, pack, and inspect.
-- In a test WebTools profile, install the resulting `.wtplugin` through the normal Plugin Center file picker; review and grant the existing `manager.page` consent, enable it, confirm the basic page renders, and uninstall it.
-- Confirm this declarative plugin does not execute plugin-supplied JavaScript and that the normal Host install-time validation/consent remains in effect.
-- Private Notes UI/storage acceptance is optional for the basic starter flow; it remains a distinct example.
+The user completed the previously requested external developer workflow and real Plugin Center acceptance and confirmed all listed steps passed. These results are **USER CONFIRMED PASS**, not independently machine-recorded UI evidence. No unprovided PID, screenshot, timestamp, or additional environment details are asserted.
+
+### External SDK workflow — USER CONFIRMED PASS
+
+- External working directory: `D:\System default\Desktop\WebTools-Plugin-Test`.
+- Used the local `@webtools/plugin-sdk@1.1.0` tarball outside the repository; installed it in the tooling project and the generated plugin project. The user reports the frozen pnpm install completed successfully, and `pnpm exec webtools-plugin --help` listed `create`, `validate`, `pack`, and `inspect`.
+- Generated the independent basic declarative plugin `com.example.hello-webtools` (`Hello WebTools`, version `1.0.0`, description `My first WebTools plugin`, author `dialog`; Manifest 1, Plugin API major 1, minimum Host `0.1.0`) requesting only `manager.page`.
+- The generated project passed `pnpm run typecheck`, `pnpm run validate`, `pnpm run plugin:pack`, and `pnpm run inspect`. Validation's `GENERIC_ICON` diagnostic was expected for the basic starter and was non-blocking.
+- Generated archive: `dist/hello-webtools.wtplugin`, 445 bytes, SHA-256 `04c66d34d61a1ae704d293c6cce5e41904d4185621d13b54e5e29daacbcd44db`.
+
+### Real Plugin Center acceptance — USER CONFIRMED PASS
+
+- The user imported the generated `.wtplugin` through the installed WebTools Plugin Center file picker. The existing installed WebTools `0.1.0` recognized the plugin metadata and API compatibility; this is user-observed compatibility evidence, not an independent Host runtime capture.
+- Plugin Center displayed the same SHA-256 as SDK pack/inspect. It showed only the requested `manager.page` capability; the user saw no undeclared Shared AI, storage, clipboard, or `external.open` capabilities and granted consent through the normal UI.
+- The user enabled the plugin, confirmed it appeared in unified plugin navigation, and confirmed its declarative page displayed the expected `Hello WebTools` heading and `My first WebTools plugin` text.
+- Disable, re-enable/page restoration, and uninstall all passed; after uninstall, the plugin navigation entry disappeared. The user observed no crash, blank page, capability, or lifecycle issue.
+- This acceptance exercised the normal Host validation/consent path. The Host/runtime and declarative execution contract remains supported by the automated package and Host validation evidence recorded above; this manual pass is not represented as an instrumented execution trace.
+
+### Evidence classification and remaining limits
+
+- **Automated PASS:** the commands and test results in Task 7 above were executed by the recorded automated workflow.
+- **USER CONFIRMED PASS:** the external generated-project workflow and real installed Plugin Center steps in this section were completed by the user.
+- No independent PID, screenshot, timestamp, process trace, or filesystem capture was supplied for the manual UI steps; none is inferred here.
+- Private Notes remains a separate official example. Its UI/storage acceptance was optional and was not part of this basic starter acceptance.
 
 ## Findings
 
@@ -103,4 +126,4 @@ Phase 6B changes are limited to the SDK facade/types/parser/CLI/starter/inspecti
 
 ## Phase boundary
 
-Phase 6B does not authorize capability expansion, npm publication, a product runtime change, or Phase 6C. Stop after the implementation checkpoint and wait for manual Developer Workflow Acceptance.
+Phase 6B does not authorize capability expansion, npm publication, a product runtime change, or Phase 6C. Phase 6B is closed; Phase 6C has not started and requires separate approval.
