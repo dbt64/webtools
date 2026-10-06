@@ -114,6 +114,8 @@ pnpm run release:verify -- release\<生成的产物目录>
 
 Native Launcher 迁移已完成。NativeHost 负责常驻搜索、系统托盘、全局快捷键和开机启动；Electron Manager 按需启动。实现与验收细节见 [Phase 4F 报告](docs/native-launcher-phase4f-removal.md)。
 
+插件开发者可参考[声明式插件开发指南](docs/plugin-development.md)，了解本地 SDK tarball、基础脚手架、CLI 验证/打包和 Host 安装权限边界。
+
 ## 项目结构
 
 ```text

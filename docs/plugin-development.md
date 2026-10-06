@@ -1,85 +1,156 @@
 # WebTools Declarative Plugin Development
 
-This guide describes the locally distributed WebTools SDK for declarative plugins. It targets **Manifest v1 / plugin API major 1**. It does not describe a JavaScript plugin runtime.
+This guide describes the supported local author workflow for WebTools declarative plugins. It targets **Manifest v1 / Plugin API major 1** and the standalone **`@webtools/plugin-sdk` 1.1.0** package. The SDK is distributed as a local `.tgz`; it is not published to npm or a plugin marketplace.
 
-## Built-in and third-party plugins
+Third-party plugins describe fixed pages, settings, and a closed set of host actions. They do not provide executable plugin code. WebTools' normal Plugin Center install-time validation, consent, grants, and lifecycle remain authoritative even after SDK validation succeeds.
 
-Built-in plugins are first-party modules integrated with WebTools. The Translation page is built-in and remains managed by WebTools. Third-party packages use `type: "declarative-manager"`; they can describe fixed pages, settings and a closed set of host actions, but cannot provide or execute code.
+## Requirements
 
-Third-party packages cannot load JavaScript, Vue, HTML or modules; access Node/Electron, the filesystem or SecretStore; register a built-in identity; or invoke arbitrary IPC. A page is rendered by WebTools from the manifest's fixed block types.
+- A supported WebTools host. The commands below use product version `0.1.0`; pass the version you actually target.
+- Node.js `>=20.19`.
+- pnpm `9.15.9`.
+- The locally supplied `webtools-plugin-sdk-1.1.0.tgz` file from the matching WebTools developer build.
 
-## Obtain the SDK locally
+The local tarball contains the author CLI and public types. Its `yauzl@3.4.0` dependency and the generated starter's TypeScript compiler are resolved by pnpm during installation. TypeScript is author tooling only; it is not part of the WebTools runtime. Do not obtain the SDK with `pnpm add @webtools/plugin-sdk` from a public registry.
 
-The SDK is currently a local package tarball built with WebTools. It is not published to npm or a plugin marketplace. The isolated Phase 5H author workflow builds `webtools-plugin-sdk-1.0.0.tgz` and tested installing it into a separate project outside the checkout. Use the tarball supplied with the matching WebTools build.
+## Create and validate a basic plugin
 
-Add the local tarball and the TypeScript compiler to the author project's `devDependencies`, then install with the pinned package manager. The tested author project used this shape:
+Keep the SDK tarball in a local `artifacts` directory. Create a separate tooling project that depends on that exact tarball:
+
+```text
+plugin-workspace/
+  artifacts/
+    webtools-plugin-sdk-1.1.0.tgz
+  tooling/
+```
+
+In `tooling/package.json`, add the local SDK and pnpm pin:
 
 ```json
 {
+  "name": "local-webtools-plugin-tools",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@9.15.9",
   "devDependencies": {
-    "@webtools/plugin-sdk": "file:../artifacts/webtools-plugin-sdk-1.0.0.tgz",
-    "typescript": "5.9.2"
+    "@webtools/plugin-sdk": "file:../artifacts/webtools-plugin-sdk-1.1.0.tgz"
   }
 }
 ```
 
-From that project directory:
+From `tooling/`, install the package and generate one basic project. The generated directory must be a relative descendant of the current directory; absolute, traversal, existing-target, and symlink/junction paths are rejected.
 
 ```powershell
 pnpm install --no-frozen-lockfile --ignore-scripts
 pnpm install --frozen-lockfile --ignore-scripts
+pnpm exec webtools-plugin --help
+pnpm exec webtools-plugin create basic-plugin --host-version 0.1.0
 ```
 
-The second command is the reproducibility check after the first has written the project's lockfile. The SDK package uses the already-hosted exact `yauzl@3.4.0` dependency for ZIP inspection. It does not add dependencies to the WebTools root project.
+The starter contains `manifest.json`, `manifest.typecheck.ts`, `package.json`, `README.md`, `.gitignore`, and an empty `dist/`. Its default capability is only `manager.page`; the starter does not include plugin storage, network, executable code, or assets. Review and edit the generated manifest fields and page content as needed.
 
-## Author contract
-
-The SDK exports `PluginManifestV1`, the closed setting/block/action/capability unions, v1/API 1 constants, and `LIMITS_V1`. The JSON Schema is available from `@webtools/plugin-sdk/manifest.schema.json`.
-
-The manifest declares:
-
-- identity, display name, author, semantic version and API compatibility;
-- an optional PNG icon, entry page, settings and declarative page blocks;
-- requested capabilities and only the fixed actions those capabilities cover.
-
-Capabilities include `manager.page`, plugin config read/write, plugin-private storage read/write, HTTPS external open, clipboard write and the reviewed Shared AI action. WebTools decides whether to grant them. New packages start disabled; enabling a package may request consent for its capabilities. External open and clipboard actions have host confirmation. Shared AI requests go through the host's review flow; the package does not receive an AI credential or direct provider access.
-
-Storage keys are namespaced to the plugin. They do not expose other plugins' data or WebTools settings. Uninstall separately asks whether to remove private plugin data; keeping the data allows it to remain available if the plugin is installed again.
-
-## Validation layers
-
-Use the CLI before sharing a package. The commands below were exercised in the independent author project with the supplied sample:
+The tooling project's `basic-plugin/` folder is also a separate pnpm project. Add the same local SDK tarball as its development dependency, then install its lockfile:
 
 ```powershell
-pnpm exec tsc --noEmit --strict --skipLibCheck --moduleResolution bundler --module ESNext --target ES2022 plugin/manifest.typecheck.ts
-pnpm exec webtools-plugin validate ./plugin --host-version 0.1.0
-New-Item -ItemType Directory -Force dist | Out-Null
-pnpm exec webtools-plugin pack ./plugin --out ./dist/plugin.wtplugin --host-version 0.1.0
-pnpm exec webtools-plugin validate ./dist/plugin.wtplugin --host-version 0.1.0
+Set-Location .\basic-plugin
+pnpm add --save-dev --ignore-scripts file:..\..\artifacts\webtools-plugin-sdk-1.1.0.tgz
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm run typecheck
+pnpm run validate
+pnpm run plugin:pack
+pnpm run inspect
 ```
 
-Replace `0.1.0` with the WebTools host version being targeted.
+`pnpm run plugin:pack` writes the validated package to `dist/basic-plugin.wtplugin`. The script is named `plugin:pack` to avoid colliding with pnpm's built-in `pnpm pack`, which creates a Node package tarball.
 
-These layers are distinct:
+The create command accepts these optional identity values:
 
-1. **TypeScript and JSON Schema** help authors describe the public shape. The schema closes object fields, bounds values and lists supported unions, but JSON Schema does not establish that a package is installable.
-2. **Source `validate`** checks strict UTF-8/JSON, duplicate keys, manifest semantics, version compatibility, IDs, path references, defaults, PNG assets, file limits and supported source contents.
-3. **Archive `validate`** checks the actual ZIP and requires the exact declared files, safe paths, valid CRC/headers, bounded compression and valid declared PNGs.
-4. **Installation** is still performed by the WebTools Main process. Its file picker, package integrity checks, consent, grants and plugin lifecycle are authoritative.
+```text
+--id <id>
+--name <name>
+--description <text>
+--author <name>
+--min-host-version <version>
+```
 
-Host quotas include a 20 MiB archive, 256 entries, 50 MiB expanded data, a compression ratio limit of 100, a 64 KiB manifest, and a 256 KiB PNG bound with maximum 256×256 dimensions. Runtime contract constants expose the remaining depth, page, block, action, setting and private-storage limits; the SDK validator enforces the same values as the host.
+For example:
 
-## Diagnostics and compatibility
+```powershell
+pnpm exec webtools-plugin create my-weather-plugin --host-version 0.1.0 --id com.example.weather --name "My Weather" --description "A compact weather page" --author "Example Author"
+```
 
-The CLI reports a stable diagnostic code and, when known, a package-relative file. It does not print absolute author paths or credential-like values. A generic plugin icon warning is non-fatal when no icon is declared.
+An omitted ID is derived as `org.example.<directory-slug>`. If the directory name contains no ASCII slug characters, the SDK uses `plugin.<12-character stable SHA-256 suffix>` so different non-Latin names do not collide. The display name is derived from the directory name, and `minHostVersion` defaults to `--host-version`. A supplied minimum Host version cannot be newer than the selected target version. The command writes values as JSON data and never evaluates them as shell or plugin code.
 
-The example and validator target Manifest v1 / API major 1 only. The host checks `minHostVersion` and rejects unsupported API or manifest versions. The Phase 5H compatibility workflow exercised existing generic host-generated v1 fixtures with and without a bounded PNG through both the SDK and Electron's host adapter. Those are fixture checks; they are not claimed to be archived 5C/5D package artifacts.
+## CLI reference
 
-## WebTools example
+The CLI accepts one command and only that command's documented options. `--host-version` is required for every operation other than `--help`.
 
-`examples/plugins/private-notes` is a minimal independent sample. It uses the fixed page and plugin-private storage actions to save and load one note. It contains no custom code, network access, AI action, key or asset. Its README gives the exact CLI flow and the host install steps.
+```text
+webtools-plugin --help
+webtools-plugin create <directory> --host-version <version> [--id <id>] [--name <name>] [--description <text>] [--author <name>] [--min-host-version <version>] [--json]
+webtools-plugin validate <directory|file.wtplugin> --host-version <version> [--json]
+webtools-plugin pack <directory> --out <file.wtplugin> --host-version <version> [--json]
+webtools-plugin inspect <file.wtplugin> --host-version <version> [--json]
+```
 
-The native file picker and native consent dialogs are separate Windows UI steps. The Phase 5H packaged smoke verified the generated package, page, storage actions and Manager lifecycle with an isolated test profile and clearly identified test consent. It did not automate the production file picker or present real Windows consent dialogs.
+`validate` accepts either plugin source or a `.wtplugin` archive. `pack` never overwrites an existing output. `inspect` accepts only a `.wtplugin`, validates its bounded archive bytes in memory, and reports its identity/display metadata, manifest/API versions, minimum Host version, requested capabilities, byte length, SHA-256, and validation result. It does not extract files, install the package, prompt for consent, or execute content.
+
+Exit codes are stable: `0` means the command succeeded; `1` means validation or an operation failed; `2` means command syntax/options are invalid. Append `--json` to get one JSON envelope on stdout. Success has the form `{ "ok": true, "command": "…", "result": { … } }`; failure has `{ "ok": false, "command": "…", "error": { "code": "…", "path": "…", "field": "…", "message": "…", "suggestion": "…" } }`. Unknown `field` values are omitted. Diagnostics use package-relative paths and do not print absolute author paths, source contents, or credential-like values.
+
+Diagnostic codes are `INVALID_INPUT`, `INVALID_MANIFEST`, `INCOMPATIBLE_PLUGIN`, `INVALID_PACKAGE`, `SOURCE_IO`, `SENSITIVE_CONTENT`, `OUTPUT_EXISTS`, `OUTPUT_IO`, `CLI_USAGE`, and the non-fatal `GENERIC_ICON` warning.
+
+## Manifest v1 contract
+
+The SDK package root exports `PluginManifestV1`, fixed unions, validation/packing functions, diagnostics, and constants. The schema is available at `@webtools/plugin-sdk/manifest.schema.json`. The public API and schema help authoring; the Host runs its own validation when installing.
+
+The manifest includes:
+
+- `manifestVersion: 1` and a unique reverse-DNS-style `id`;
+- display `name`, `description`, `author`, and semantic `version`;
+- `api.apiMajor: 1` and `api.minHostVersion`;
+- `type: "declarative-manager"` and an `entry` page reference;
+- declared `requestedCapabilities`, `settings`, `pages`, `actions`, and PNG `assets`.
+
+The current closed block types are:
+
+- `heading` and `paragraph`, each containing plain text;
+- `text-input`, `select`, and `checkbox`, each bound to a declared setting key;
+- `divider`;
+- `button`, bound to a declared action ID.
+
+The closed setting types are bounded `text`, `enum`, `boolean`, and `number` values with the type-specific bounds/defaults in `PluginSettingV1`. The action types are config and plugin-private storage `read`/`write`, HTTPS `external.open`, `clipboard.write`, and host-mediated `sharedAI.complete`. Actions refer only to declared keys/actions and are checked against the requested capability set.
+
+The current capabilities are `manager.page`, `plugin.config.read`, `plugin.config.write`, `plugin.storage.read`, `plugin.storage.write`, `external.open`, `clipboard.write`, and `sharedAI.complete`. Request only what the plugin needs. Host consent and grant decisions remain controlled by WebTools; unknown fields, capabilities, API majors, and manifest versions fail closed. `manager.page` is the only capability in a newly generated basic starter.
+
+Plugin-private storage is namespaced to the plugin and does not expose other plugins' data, WebTools settings, filesystem paths, SecretStore contents, or AI credentials. Shared AI is mediated by the Host review/action flow; the plugin receives neither a credential nor direct provider access. External open and clipboard operations use the existing Host confirmation path. Disabling or uninstalling a plugin is controlled by the host, including its separate decision about retaining plugin-private data.
+
+## Validation and installation authority
+
+Use the workflow commands before sharing a package:
+
+1. **Typecheck** checks the author-authored manifest value against the public TypeScript types. It does not establish that a package can be installed.
+2. **Source validation** checks strict UTF-8/JSON, duplicate keys, manifest semantics, host compatibility, IDs, references, defaults, declared assets, sensitive content, and bounded source files.
+3. **Pack** includes the manifest and only declared, validated files, then creates a deterministic `.wtplugin` without overwriting an existing destination.
+4. **Inspect** validates the resulting archive and returns bounded metadata and a SHA-256; it does not unpack or install it.
+5. **Plugin Center installation** uses the normal WebTools file picker, Host validation, integrity checks, user consent, capability grants, and plugin lifecycle. This is the final authority.
+
+Host/SDK limits include a 20 MiB archive, 256 entries, 50 MiB expanded data, maximum compression ratio 100, a 64 KiB manifest, and a 256 KiB PNG bound with maximum 256×256 dimensions. Additional depth, page, block, action, setting, value, key, and storage quotas are exported in `LIMITS_V1` and enforced by the Host-compatible validator.
+
+## Private Notes example
+
+`examples/plugins/private-notes` remains a separately maintained official example with its own identity and plugin-private storage capabilities. It is not generated from the basic starter and those storage capabilities are not copied into new basic projects. To try it, create a starter project, replace its manifest/typecheck inputs with the files from that example while keeping the generated author `package.json`, then use the same `pnpm run typecheck`, `pnpm run validate`, `pnpm run plugin:pack`, and `pnpm run inspect` flow.
+
+In Plugin Center, install the resulting `.wtplugin` with the normal local-file picker and review the declared capabilities. A local developer package is not a publisher signature, trust decision, or bypass of Host consent. The Native file picker, real consent UI, and uninstall/data-retention interaction require manual Windows acceptance.
+
+## Compatibility and troubleshooting
+
+- Pass the actual target WebTools product version to `--host-version`; the current repo product is `0.1.0`.
+- `INCOMPATIBLE_PLUGIN` means the API major is unsupported or the manifest requires a newer minimum Host version.
+- `INVALID_MANIFEST` means a field is missing, malformed, out of bounds, or unknown. Use `field` in JSON diagnostics when present.
+- `INVALID_PACKAGE` means the archive, entry names, ZIP structure, declared files, compression bounds, or PNG assets failed Host-compatible checks.
+- `SENSITIVE_CONTENT` means credential-like material was found in metadata or declared assets. Remove secrets; never put AI tokens in plugin manifests/assets.
+- `OUTPUT_EXISTS` means the output is preserved. Choose another filename rather than deleting or overwriting it.
+- `CLI_USAGE` means an unsupported/repeated/missing option or invalid create target was supplied. Run `webtools-plugin --help`.
+
+The Phase 6B automated workflow uses the SDK 1.1.0 `.tgz` from a unique OS temporary directory, initializes a distinct external tooling project, creates a basic plugin outside the checkout, performs frozen pnpm installs and the full generated script workflow, and compares SDK public-API results with the Electron Host adapter. This test does not automate the real Plugin Center picker or consent UI; those remain manual acceptance.

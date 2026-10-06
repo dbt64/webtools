@@ -10,17 +10,19 @@ This standalone example uses only the WebTools declarative page and the plugin-p
 
 ## Build and install
 
-From this directory in a third-party plugin project, after installing the locally supplied SDK tarball:
+Start from a newly generated basic project using the local `@webtools/plugin-sdk` **1.1.0** tarball. Replace that project's `manifest.json` and `manifest.typecheck.ts` with the files from this example, while keeping the generated `package.json` scripts and adding the same SDK tarball as a local development dependency. This keeps Private Notes independent from the single basic starter and preserves this example's storage capabilities only in its own manifest.
+
+From the generated project directory:
 
 ```powershell
-pnpm exec tsc --noEmit --strict --skipLibCheck --moduleResolution bundler --module ESNext --target ES2022 manifest.typecheck.ts
-pnpm exec webtools-plugin validate . --host-version 0.1.0
-New-Item -ItemType Directory -Force dist | Out-Null
-pnpm exec webtools-plugin pack . --out dist/private-notes.wtplugin --host-version 0.1.0
-pnpm exec webtools-plugin validate dist/private-notes.wtplugin --host-version 0.1.0
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm run typecheck
+pnpm run validate
+pnpm run plugin:pack
+pnpm run inspect
 ```
 
-Use the target host version for `--host-version`; `0.1.0` is the version used by this example's local tests. These checks are repeated in the repository Phase 5H report.
+Use the target host version in the generated scripts' `--host-version` values; `0.1.0` is the current product version used by the Phase 6B external workflow. `plugin:pack` writes the archive under `dist/` and never overwrites an existing package. The 1.1.0 local tarball is not published to npm.
 
 In WebTools, open **应用 → 插件管理**, choose **从本地文件安装**, select `private-notes.wtplugin`, review the requested `manager.page`, `plugin.storage.read`, and `plugin.storage.write` capabilities, grant only what you want, and enable the plugin. Open **Private Notes**, select **Save note**, enter text in the host-provided prompt, and use **Load saved note** to read it back.
 

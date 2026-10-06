@@ -4,6 +4,8 @@
 
 ## 架构与开发
 
+- [声明式插件开发指南](plugin-development.md)：本地 SDK 1.1.0 tarball、basic starter、CLI、Manifest v1 与 Host install-time authority。
+- [Phase 6B 开发体验实施报告](webtools-phase6b-plugin-developer-experience.md) 与 [Phase 6C 能力 backlog](webtools-phase6c-capability-backlog.md)：自动化外部 author workflow 证据、人工验收状态和能力缺口记录。
 - [项目架构与性能审计](performance-architecture-audit.md)：Electron/Vue 当前职责边界、窗口生命周期和重构前风险评估。
 - [Launcher 开发边界](launcher-development-boundaries.md)：Launcher 的数据、IPC 与职责约束。
 - [Native Launcher 架构审计（Phase 4A）](native-launcher-phase4a-architecture.md)：Native-first 的迁移目标和 parity 审计。
