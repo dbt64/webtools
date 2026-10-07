@@ -21,6 +21,15 @@
         Deactivated="Window_Deactivated"
         Activated="Window_Activated">
     <Window.Resources>
+        <ContextMenu x:Key="FileResultContextMenu" x:Shared="False"
+                     Opened="FileContextMenu_Opened" PreviewKeyDown="FileContextMenu_PreviewKeyDown">
+            <MenuItem Header="打开" Tag="Open" Click="FileContextMenuItem_Click" />
+            <MenuItem Header="在文件夹中显示" Tag="ShowInFolder" Click="FileContextMenuItem_Click" />
+            <Separator />
+            <MenuItem Header="复制文件" Tag="CopyObject" Click="FileContextMenuItem_Click" />
+            <MenuItem Header="复制文件路径" Tag="CopyPath" Click="FileContextMenuItem_Click" />
+            <MenuItem Header="复制上级文件夹路径" Tag="CopyParentPath" Click="FileContextMenuItem_Click" />
+        </ContextMenu>
         <Style x:Key="ResultItemStyle" TargetType="ListBoxItem">
             <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
@@ -353,18 +362,7 @@
                                 </ListBox.ItemsPanel>
                                 <ListBox.ItemContainerStyle>
                                     <Style TargetType="ListBoxItem" BasedOn="{StaticResource ResultItemStyle}">
-                                        <Setter Property="ContextMenu">
-                                            <Setter.Value>
-                                                <ContextMenu Opened="FileContextMenu_Opened" PreviewKeyDown="FileContextMenu_PreviewKeyDown">
-                                                    <MenuItem Header="打开" Tag="Open" Click="FileContextMenuItem_Click" />
-                                                    <MenuItem Header="在文件夹中显示" Tag="ShowInFolder" Click="FileContextMenuItem_Click" />
-                                                    <Separator />
-                                                    <MenuItem Header="复制文件" Tag="CopyObject" Click="FileContextMenuItem_Click" />
-                                                    <MenuItem Header="复制文件路径" Tag="CopyPath" Click="FileContextMenuItem_Click" />
-                                                    <MenuItem Header="复制上级文件夹路径" Tag="CopyParentPath" Click="FileContextMenuItem_Click" />
-                                                </ContextMenu>
-                                            </Setter.Value>
-                                        </Setter>
+                                        <Setter Property="ContextMenu" Value="{StaticResource FileResultContextMenu}" />
                                     </Style>
                                 </ListBox.ItemContainerStyle>
                                 <ListBox.ItemTemplate>
@@ -384,13 +382,32 @@
                                                             <Style TargetType="TextBlock">
                                                                 <Setter Property="Visibility" Value="Collapsed" />
                                                                 <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding Icon}" Value="{x:Null}">
+                                                                    <MultiDataTrigger>
+                                                                        <MultiDataTrigger.Conditions>
+                                                                            <Condition Binding="{Binding Icon}" Value="{x:Null}" />
+                                                                            <Condition Binding="{Binding IconGeometry}" Value="{x:Null}" />
+                                                                        </MultiDataTrigger.Conditions>
                                                                         <Setter Property="Visibility" Value="Visible" />
-                                                                    </DataTrigger>
+                                                                    </MultiDataTrigger>
                                                                 </Style.Triggers>
                                                             </Style>
                                                         </TextBlock.Style>
                                                     </TextBlock>
+                                                    <Path Data="{Binding IconGeometry}" Width="20" Height="20" Stretch="Uniform"
+                                                          Stroke="{DynamicResource AccentBrush}" StrokeThickness="1.8" StrokeLineJoin="Round"
+                                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center">
+                                                        <Path.Style>
+                                                            <Style TargetType="Path">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IconGeometry}" Value="{x:Null}">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Path.Style>
+                                                    </Path>
                                                     <Image Source="{Binding Icon}" Width="24" Height="24" Stretch="Uniform" />
                                                 </Grid>
                                             </Border>
@@ -450,13 +467,32 @@
                                                 <Style TargetType="TextBlock">
                                                     <Setter Property="Visibility" Value="Collapsed" />
                                                     <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding Icon}" Value="{x:Null}">
+                                                        <MultiDataTrigger>
+                                                            <MultiDataTrigger.Conditions>
+                                                                <Condition Binding="{Binding Icon}" Value="{x:Null}" />
+                                                                <Condition Binding="{Binding IconGeometry}" Value="{x:Null}" />
+                                                            </MultiDataTrigger.Conditions>
                                                             <Setter Property="Visibility" Value="Visible" />
-                                                        </DataTrigger>
+                                                        </MultiDataTrigger>
                                                     </Style.Triggers>
                                                 </Style>
                                             </TextBlock.Style>
                                         </TextBlock>
+                                        <Path Data="{Binding IconGeometry}" Width="20" Height="20" Stretch="Uniform"
+                                              Stroke="{DynamicResource AccentBrush}" StrokeThickness="1.8" StrokeLineJoin="Round"
+                                              StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center"
+                                              VerticalAlignment="Center">
+                                            <Path.Style>
+                                                <Style TargetType="Path">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IconGeometry}" Value="{x:Null}">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Path.Style>
+                                        </Path>
                                         <Image Source="{Binding Icon}" Width="24" Height="24" Stretch="Uniform" />
                                     </Grid>
                                 </Border>

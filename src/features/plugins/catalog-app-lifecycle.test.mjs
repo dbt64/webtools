@@ -263,3 +263,48 @@ test('Native declarative shortcut routes by exact composite ref after catalog re
     assert.deepEqual(acknowledged, ['native-plugin-1'])
   } finally { env.app.unmount(); catalog.close() }
 })
+
+test('Native FeatureRef opens only its current validated declarative page and returns a correlated acknowledgement', async () => {
+  let nativeIntent
+  const acknowledgements = []
+  const plugin = { id: 'org.example.native-feature', name: 'Private Notes', version: '1.0.0', hash: 'b'.repeat(64), enabled: true, status: 'active', granted: ['manager.page'], requested: ['manager.page'], installedVersions: ['1.0.0'], source: 'local-unsigned' }
+  const core = { session: 'core', isSession: s => s === 'core', list: async () => [plugin], getPages: async id => ({ pluginId: id, version: '1.0.0', hash: 'b'.repeat(64), entry: { pageId: 'home', label: 'Private Notes' }, pages: [], settings: [], actions: [] }) }
+  const catalog = new PluginCatalog('0.1.0', () => core, { snapshot: () => ({ status: 'ready', enabled: true }), isEnabled: () => true })
+  const opened = []
+  const env = mount({
+    onNativeManagerIntent: handler => { nativeIntent = handler; return () => {} },
+    acknowledgeNativeManagerIntent: (id, outcome) => acknowledgements.push([id, outcome]),
+    pluginCatalog: {
+      list: async () => ({ ok: true, data: await catalog.list(catalog.session) }),
+      open: async ref => { opened.push(ref); return { ok: true, data: await catalog.open(ref, catalog.session) } },
+    },
+  })
+  try {
+    await tick()
+    nativeIntent({ kind: 'open-feature', requestId: 'native-feature-1', ref: { pluginId: plugin.id, featureId: 'legacy-manager-page' } })
+    for (let i = 0; i < 10; i++) await tick()
+    assert.deepEqual(opened, [{ kind: 'declarative', id: plugin.id }], 'renderer uses its safe catalog route and receives no pageId from Native')
+    assert.equal(env.state.activeSection, 'plugin-page')
+    assert.deepEqual(acknowledgements, [['native-feature-1', 'accepted']])
+  } finally { env.app.unmount(); catalog.close() }
+})
+
+test('Native FeatureRef that becomes unavailable before renderer navigation is negatively acknowledged', async () => {
+  let nativeIntent
+  const acknowledgements = []
+  const plugin = { id: 'org.example.revoked-feature', name: 'Revoked', version: '1.0.0', hash: 'c'.repeat(64), enabled: false, status: 'installed-disabled', granted: [], requested: ['manager.page'], installedVersions: ['1.0.0'], source: 'local-unsigned' }
+  const env = mount({
+    onNativeManagerIntent: handler => { nativeIntent = handler; return () => {} },
+    acknowledgeNativeManagerIntent: (id, outcome) => acknowledgements.push([id, outcome]),
+    pluginCatalog: {
+      list: async () => ({ ok: true, data: { ...snapshot(1).data, entries: [...snapshot(1).data.entries, { kind: 'declarative', id: plugin.id, source: 'local-unsigned', package: plugin, icon: { kind: 'fallback' }, entry: { kind: 'declarative-page' }, management: { canToggle: true, canManageGrants: true, canUninstall: true, canReplacePackage: true } }] } }),
+      open: async () => { throw new Error('stale feature must not open') },
+    },
+  })
+  try {
+    await tick()
+    nativeIntent({ kind: 'open-feature', requestId: 'native-feature-stale', ref: { pluginId: plugin.id, featureId: 'legacy-manager-page' } })
+    for (let i = 0; i < 8; i++) await tick()
+    assert.deepEqual(acknowledgements, [['native-feature-stale', 'rejected']])
+  } finally { env.app.unmount() }
+})

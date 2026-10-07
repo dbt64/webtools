@@ -47,6 +47,10 @@ if (args.Contains("--snapshot-timing-only", StringComparer.Ordinal))
     return 0;
 }
 
+if (args.Contains("--manager-only", StringComparer.Ordinal)
+    && Environment.GetEnvironmentVariable("WEBTOOLS_PHASE6D6_MANAGER_FIXTURE") == "1")
+    return await WebTools.NativeHost.Checks.Phase6D6Checks.RunManagerFixtureAsync();
+
 if (args.Length == 2 && args[0] == "--verify-manager-discovery")
 {
     try
@@ -150,6 +154,10 @@ static bool? IsWindowsTerminalInstalled()
 var state = new LauncherInteractionState();
 var checks = new List<(string Name, Action Run)>
 {
+    ("Native Manager pipe authenticates the OS-observed launched Manager peer", WebTools.NativeHost.Checks.Phase6D5Checks.Run),
+    ("Feature invocation protocol is bounded, queued, correlated, and behind peer authentication", WebTools.NativeHost.Checks.Phase6D6Checks.Run),
+    ("Feature Projection v2 cache and SearchCore integration remain fail closed", Phase6D4Checks.Run),
+    ("Launcher startup loads compiled XAML and its file context menu", VerifyLauncherWindowStartup),
     ("isolated Manager launch uses its configured pipe and disposable profile", VerifyIsolatedManagerLaunch),
     ("Phase 4E resource test mode is opt-in and validates isolated driver arguments", VerifyPhase4EResourceDriverOptions),
     ("Phase 4G-2 resource hotkey command accepts only its isolated chord and double modifiers", VerifyPhase4EResourceHotkeyCommand),
@@ -1439,6 +1447,48 @@ static void RunOnSta(Action action)
     if (failure is not null) throw new InvalidOperationException($"STA WPF regression failed: {failure.Message}", failure);
 }
 
+static void VerifyLauncherWindowStartup()
+{
+    RunOnSta(() =>
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"webtools-launcher-startup-check-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var store = new LauncherStateStore(Path.Combine(directory, "launcher-state.json"));
+        var diagnostics = new DiagnosticsService(Stopwatch.GetTimestamp());
+        var pipe = new NativeManagerPipeServer($"WebTools.NativeHost.Manager.StartupCheck.{Guid.NewGuid():N}", store,
+            _ => Task.FromResult(store.Snapshot), _ => Task.FromResult(store.Snapshot),
+            (_, _) => Task.FromResult(store.Snapshot), diagnostics);
+        using var manager = new ManagerController(pipe, new ManagerProcessLauncher(allowDevelopmentLaunch: false), diagnostics,
+            message => throw new InvalidOperationException(message));
+        WebTools.NativeHost.MainWindow? window = null;
+        try
+        {
+            window = new WebTools.NativeHost.MainWindow(diagnostics, store, LauncherStateStore.CreateDefault(),
+                new AppCatalogSnapshotStore(Path.Combine(directory, "catalog.json")), manager, resourceTestMode: true);
+            Assert(window.FindName("FileCategoriesList") is ListBox { Items.Count: 9 }, "The real Launcher must initialize all nine file categories.");
+            Assert(window.FindName("FileResultsList") is ListBox, "The real Launcher must load its file result list.");
+            var list = (ListBox)window.FindName("FileResultsList");
+            var menu = list.ItemContainerStyle.Setters.OfType<Setter>()
+                .Single(setter => setter.Property == FrameworkElement.ContextMenuProperty).Value as ContextMenu
+                ?? throw new InvalidOperationException("File result containers must receive a real context menu from compiled XAML.");
+            Assert(menu.Items.OfType<MenuItem>().Select(item => item.Tag as string)
+                .SequenceEqual(new[] { "Open", "ShowInFolder", "CopyObject", "CopyPath", "CopyParentPath" }),
+                "The loaded menu must retain the five safe file actions.");
+        }
+        catch (Exception error)
+        {
+            throw new InvalidOperationException($"Launcher compiled-XAML startup failed: {error}", error);
+        }
+        finally
+        {
+            window?.DisposeNativeResources();
+            window?.Close();
+            pipe.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            Directory.Delete(directory, recursive: true);
+        }
+    });
+}
+
 static void VerifyHotkeyConflictTransaction()
 {
     RunOnSta(VerifyHotkeyConflictTransactionOnSta);
@@ -2046,7 +2096,8 @@ static async Task VerifyManagerUpdateTimeoutRefusalAsync()
         _ => Task.FromResult(stateStore.Snapshot),
         _ => Task.FromResult(stateStore.Snapshot),
         (_, _) => Task.FromResult(stateStore.Snapshot),
-        diagnostics);
+        diagnostics,
+        peerAuthenticator: WebTools.NativeHost.Checks.Phase6D5Checks.CreateAcceptingPipeAuthenticator(Environment.ProcessId));
     var pipeTask = managerPipe.RunAsync(cancellation.Token);
     var processStart = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec") ?? Path.Combine(Environment.SystemDirectory, "cmd.exe"))
     {
@@ -2065,7 +2116,7 @@ static async Task VerifyManagerUpdateTimeoutRefusalAsync()
     {
         using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Identification);
         await client.ConnectAsync(5_000);
-        using var helloJson = JsonDocument.Parse("{\"processId\":" + fakeManager.Id + "}");
+        using var helloJson = JsonDocument.Parse("{\"processId\":" + Environment.ProcessId + "}");
         await NativePipeFrameCodec.WriteAsync(client, new NativePipeEnvelope(1, Guid.NewGuid().ToString("N"), "hello", helloJson.RootElement.Clone()));
         var helloReply = await NativePipeFrameCodec.ReadAsync(client).WaitAsync(TimeSpan.FromSeconds(5));
         Assert(helloReply is { Type: "ack", Payload.ValueKind: JsonValueKind.Object }, "Fake Manager must complete the Native pipe handshake.");

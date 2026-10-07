@@ -44,6 +44,8 @@ public partial class MainWindow : Window
     private readonly TaskCompletionSource _resourceTestReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private WebsiteSnapshot _snapshot;
     private SearchCore _search = new([], []);
+    private int _searchIndexGeneration;
+    private NativeFeatureProjectionV2? _featureProjection;
     private EverythingClient _everything = new("");
     private ResultActionExecutor _actions;
     private List<ResultRow> _rows = [];
@@ -61,6 +63,7 @@ public partial class MainWindow : Window
     private double _dragStartTop;
     private bool _expanded;
     private bool _pluginsExpanded;
+    private bool _featureProjectionV2Active;
     private IReadOnlyList<LauncherPluginShortcut> _plugins = [];
     private bool _catalogLoading = true;
     private bool _updatingFileCategories;
@@ -72,7 +75,8 @@ public partial class MainWindow : Window
     public event Action<string>? EffectiveThemeChanged;
 
     internal MainWindow(DiagnosticsService diagnostics, LauncherStateStore stateStore, LauncherState initialState,
-        AppCatalogSnapshotStore catalogSnapshotStore, ManagerController managerController, bool resourceTestMode = false)
+        AppCatalogSnapshotStore catalogSnapshotStore, ManagerController managerController, bool resourceTestMode = false,
+        NativeFeatureProjectionV2? initialFeatureProjection = null, bool featureProjectionV2Active = false)
     {
         _diagnostics = diagnostics;
         _stateStore = stateStore;
@@ -80,6 +84,8 @@ public partial class MainWindow : Window
         _catalogSnapshotStore = catalogSnapshotStore;
         _managerController = managerController;
         _resourceTestMode = resourceTestMode;
+        _featureProjection = initialFeatureProjection;
+        _featureProjectionV2Active = featureProjectionV2Active && initialFeatureProjection is not null;
         _selection = new LauncherResultSelectionController(_state);
         _actions = new ResultActionExecutor(_catalog, _everything);
         _icons = new NativeIconCache(64, outcome => _diagnostics.Record("packaged_icon_lookup", outcome));
@@ -90,7 +96,8 @@ public partial class MainWindow : Window
         ApplyTheme(initialState.Theme);
         LoadBrandIcon();
         SystemEvents.UserPreferenceChanged += SystemPreferenceChanged;
-        _search = new SearchCore([], _snapshot.Websites, initialState.AppSearchMemory);
+        _search = new SearchCore([], _snapshot.Websites, initialState.AppSearchMemory,
+            _featureProjection?.Features.Select(SearchEntry.PluginFeature));
     }
 
     public void RegisterHotkey(IntPtr handle, string? shortcutOverride = null) => _hotkey = new GlobalHotkeyService(handle, shortcutOverride ?? _stateStore.Snapshot.QuickSearchShortcut, OnHotkey, _diagnostics);
@@ -114,8 +121,28 @@ public partial class MainWindow : Window
     public void ApplyPluginProjection(LauncherPluginProjection projection)
     {
         _plugins = projection.Plugins;
-        if (_expanded && string.IsNullOrWhiteSpace(QueryBox.Text)) RefreshPluginShortcuts();
+        if (!_featureProjectionV2Active && _expanded && string.IsNullOrWhiteSpace(QueryBox.Text)) RefreshPluginShortcuts();
         UpdateLayoutForResults();
+    }
+
+    public async Task ApplyFeatureProjectionAsync(NativeFeatureProjectionV2 projection)
+    {
+        if (_featureProjectionV2Active
+            && _featureProjection is { } current
+            && current.HostSessionId == projection.HostSessionId
+            && current.Revision == projection.Revision)
+        {
+            if (_expanded && string.IsNullOrWhiteSpace(QueryBox.Text)) RefreshPluginShortcuts();
+            return;
+        }
+
+        _featureProjection = projection;
+        _featureProjectionV2Active = true;
+        await RebuildIndexAsync();
+        var command = SearchCommand.Parse(QueryBox.Text);
+        if (_expanded && command.Raw.Trim().Length == 0) RefreshPluginShortcuts();
+        if (command.Mode == SearchMode.Local) RenderQuery();
+        else UpdateLayoutForResults();
     }
 
     public async Task InitializeSearchAsync()
@@ -267,11 +294,13 @@ public partial class MainWindow : Window
 
     private async Task RebuildIndexAsync()
     {
+        var generation = Interlocked.Increment(ref _searchIndexGeneration);
         var apps = _catalog.Apps.Select(app => app.AsSearchEntry()).ToArray();
         var websites = _snapshot.Websites;
         var memory = _stateStore.Snapshot.AppSearchMemory;
-        var next = await Task.Run(() => new SearchCore(apps, websites, memory));
-        _search = next;
+        var pluginFeatures = _featureProjection?.Features.Select(SearchEntry.PluginFeature).ToArray() ?? [];
+        var next = await Task.Run(() => new SearchCore(apps, websites, memory, pluginFeatures));
+        if (generation == Volatile.Read(ref _searchIndexGeneration)) _search = next;
     }
 
     public void DisposeNativeResources()
@@ -673,6 +702,48 @@ public partial class MainWindow : Window
     private void RefreshPluginShortcuts()
     {
         PluginShortcuts.Children.Clear();
+        if (_featureProjectionV2Active)
+        {
+            var features = _search.GetEmptyQueryPluginFeatures();
+            _pluginsExpanded = false;
+            PluginSectionToggle.IsEnabled = false;
+            PluginSectionToggle.Content = "展开 ↓";
+            PluginScroll.Height = 60;
+            PluginScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Hidden;
+            foreach (var feature in features)
+            {
+                var featureRef = (OpenPluginFeatureAction)feature.Action;
+                var content = new StackPanel { Width = 109, Orientation = Orientation.Horizontal, HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
+                var icon = new Border { Width = 30, Height = 30, CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1) };
+                icon.SetResourceReference(Border.BackgroundProperty, "AccentSoftBrush");
+                icon.SetResourceReference(Border.BorderBrushProperty, "LineBrush");
+                var glyph = new System.Windows.Shapes.Path
+                {
+                    Width = 18,
+                    Height = 18,
+                    Stretch = Stretch.Uniform,
+                    StrokeThickness = 2,
+                    Data = Geometry.Parse(feature.IconToken == "translate"
+                        ? "M5,8 L11,14 M4,14 L10,8 12,5 H2 M2,5 H14 M7,2 H8 M22,22 L17,12 12,22 M14,18 H20"
+                        : "M3,3 H9 C7,0 15,0 13,3 H20 V9 C23,7 23,15 20,13 V20 H13 C15,23 7,23 9,20 H3 V13 C0,15 0,7 3,9 Z"),
+                    HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+                    VerticalAlignment = System.Windows.VerticalAlignment.Center,
+                };
+                glyph.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, "AccentBrush");
+                icon.Child = glyph;
+                content.Children.Add(icon);
+                var label = new TextBlock { Text = feature.Title, FontSize = 11, Width = 70, Margin = new Thickness(9, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+                label.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
+                content.Children.Add(label);
+                var button = new System.Windows.Controls.Button { Width = 127, Height = 54, Margin = new Thickness(0, 0, 6, 6), Content = content, ToolTip = feature.Title, Tag = featureRef.Ref, Style = (Style)FindResource("LauncherShortcutButtonStyle") };
+                System.Windows.Automation.AutomationProperties.SetName(button, feature.Title);
+                button.Click += (_, _) => { HideLauncher("feature-invocation"); _managerController.InvokeFeature(featureRef.Ref); };
+                PluginShortcuts.Children.Add(button);
+            }
+            if (features.Count == 0) PluginShortcuts.Children.Add(new TextBlock { Text = "暂无可显示的插件功能", Foreground = (Brush)FindResource("QuietBrush"), FontSize = 10 });
+            return;
+        }
+
         PluginSectionToggle.IsEnabled = _plugins.Count > 6;
         if (!PluginSectionToggle.IsEnabled) _pluginsExpanded = false;
         PluginSectionToggle.Content = _pluginsExpanded ? "收起 ↑" : "展开 ↓";
@@ -700,7 +771,7 @@ public partial class MainWindow : Window
         if (_plugins.Count == 0) PluginShortcuts.Children.Add(new TextBlock { Text = "启用的插件会显示在这里", Foreground = (Brush)FindResource("QuietBrush"), FontSize = 10 });
     }
     private void PluginSectionToggle_Click(object sender, RoutedEventArgs e)
-    { if (_plugins.Count <= 6) return; _pluginsExpanded = !_pluginsExpanded; RefreshPluginShortcuts(); PluginScroll.ScrollToTop(); UpdateLayoutForResults(); QueryBox.Focus(); }
+    { if (_featureProjectionV2Active || _plugins.Count <= 6) return; _pluginsExpanded = !_pluginsExpanded; RefreshPluginShortcuts(); PluginScroll.ScrollToTop(); UpdateLayoutForResults(); QueryBox.Focus(); }
     private void QueryBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => CompleteShowFocusMeasurement();
 
     private void BrandButton_Click(object sender, RoutedEventArgs e) => _managerController.OpenPage(ManagerPage.Favorites);
@@ -840,6 +911,12 @@ public partial class MainWindow : Window
 
     private void ActivateResult(SearchResult result)
     {
+        if (result.Action is OpenPluginFeatureAction feature)
+        {
+            HideLauncher("feature-invocation");
+            _managerController.InvokeFeature(feature.Ref);
+            return;
+        }
         if (result.Action is SearchFilesAction fileSearch)
         {
             QueryBox.Text = FileSearchProjection.BuildSearchCommand(fileSearch);
@@ -1046,18 +1123,51 @@ public partial class MainWindow : Window
 
     private sealed class ResultRow(SearchResult result) : INotifyPropertyChanged
     {
+        private static readonly Geometry SearchFilesIconGeometry = CreateSearchFilesIconGeometry();
+        private static readonly Geometry FolderIconGeometry = CreateFolderIconGeometry();
         private BitmapSource? _icon;
         public SearchResult Result { get; } = result;
         public string Title => Result.Title;
         public string Subtitle => Result.Subtitle;
+        public Geometry? IconGeometry => Result.Kind switch
+        {
+            ResultKind.SearchFiles => SearchFilesIconGeometry,
+            ResultKind.Folder => FolderIconGeometry,
+            _ => null,
+        };
         public string IconGlyph => Result.Kind switch
         {
             ResultKind.Website => FallbackInitial(Result.Subtitle),
             ResultKind.File => "▤",
-            ResultKind.Folder => "▰",
+            ResultKind.Folder or ResultKind.SearchFiles => string.Empty,
+            ResultKind.PluginFeature => Result.IconToken switch
+            {
+                "translate" => "文",
+                "sparkles" => "✧",
+                "document" => "▤",
+                "globe" => "◎",
+                _ => "⌘",
+            },
             ResultKind.Translation => "文",
             _ => "⌘",
         };
+
+        private static Geometry CreateSearchFilesIconGeometry()
+        {
+            var geometry = new GeometryGroup();
+            geometry.Children.Add(new EllipseGeometry(new System.Windows.Point(10, 10), 6, 6));
+            geometry.Children.Add(new LineGeometry(new System.Windows.Point(14.5, 14.5), new System.Windows.Point(21, 21)));
+            geometry.Freeze();
+            return geometry;
+        }
+
+        private static Geometry CreateFolderIconGeometry()
+        {
+            var geometry = Geometry.Parse("M 3,7 L 9,7 L 11,9 L 21,9 L 21,19 L 3,19 Z");
+            geometry.Freeze();
+            return geometry;
+        }
+
         public string MatchLabel => Result.Match switch
         {
             MatchKind.Pinyin => "拼音",

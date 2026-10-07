@@ -232,6 +232,61 @@ test('declarative pages project safe config values and declaration-bound action 
   assert.equal(JSON.stringify(page).includes(env.root), false)
 })
 
+test('Feature invocation revalidates current v1 page authority and dispatches only the validated route', async t => {
+  const env = await setup(t)
+  const plugin = await enabled(env, manifest({ id: 'org.example.feature-invoke', entry: { pageId: 'home', label: 'Current Home' } }))
+  const ref = { pluginId: plugin.id, featureId: 'legacy-manager-page' }
+  let dispatched
+  const ticket = await env.manager.authorizeAndDispatchFeature(ref, env.session, feature => {
+    dispatched = feature
+    return Promise.resolve()
+  })
+  await ticket.completion
+  assert.equal(dispatched.sourceKind, 'declarative')
+  assert.equal(dispatched.ref.pluginId, plugin.id)
+  assert.equal(dispatched.resolvedEntry.pageId, 'home')
+  assert.equal(dispatched.resolvedEntry.kind, 'declarative-compatibility')
+  await assert.rejects(() => env.manager.authorizeAndDispatchFeature({ ...ref, featureId: 'translate-text' }, env.session, () => Promise.resolve()), error => error.code === 'INVALID_INPUT')
+})
+
+test('stale Feature refs reject after disable, grant revoke, uninstall, or package integrity failure', async t => {
+  for (const mutation of ['disable', 'revoke', 'uninstall', 'integrity']) {
+    const env = await setup(t)
+    const plugin = await enabled(env, manifest({ id: `org.example.stale${mutation}` }))
+    const ref = { pluginId: plugin.id, featureId: 'legacy-manager-page' }
+    if (mutation === 'disable') await env.manager.setEnabled(plugin.id, false, env.session)
+    if (mutation === 'revoke') await env.manager.setGrants(plugin.id, [], env.session)
+    if (mutation === 'uninstall') await env.manager.uninstall(plugin.id, env.session)
+    if (mutation === 'integrity') await writeFile(join(env.root, 'plugins', 'packages', plugin.id, plugin.version, `${plugin.hash}.wtplugin`), 'tampered')
+    let dispatchCount = 0
+    await assert.rejects(() => env.manager.authorizeAndDispatchFeature(ref, env.session, () => { dispatchCount++; return Promise.resolve() }))
+    assert.equal(dispatchCount, 0, `${mutation} must not invoke a stale route`)
+  }
+})
+
+test('a permission change during integrity revalidation blocks dispatch before the serialized boundary releases', async t => {
+  const env = await setup(t)
+  const plugin = await enabled(env, manifest({ id: 'org.example.feature-race' }))
+  const originalRead = env.manager.fs.read.bind(env.manager.fs)
+  let reachedRead
+  let releaseRead
+  const readReached = new Promise(resolve => { reachedRead = resolve })
+  const readGate = new Promise(resolve => { releaseRead = resolve })
+  let pause = true
+  env.manager.fs.read = async (...args) => {
+    if (pause && args[0].startsWith(`packages/${plugin.id}/`)) { pause = false; reachedRead(); await readGate }
+    return originalRead(...args)
+  }
+  let dispatchCount = 0
+  const invocation = env.manager.authorizeAndDispatchFeature({ pluginId: plugin.id, featureId: 'legacy-manager-page' }, env.session, () => { dispatchCount++; return Promise.resolve() })
+  await readReached
+  const revoke = env.manager.setGrants(plugin.id, [], env.session)
+  releaseRead()
+  await assert.rejects(invocation)
+  await revoke
+  assert.equal(dispatchCount, 0)
+})
+
 test('AI review returns the complete exact request and only confirms once through Main', async t => {
   let sent; let provider = { providerName: 'Mock Provider', model: 'mock-model', identity: 'selected-provider-and-model' }
   const env = await setup(t, { ai: { getDefaultProviderInfo: async () => provider, complete: async messages => { sent = messages; return { text: 'reviewed answer', apiKey: 'must-not-leak' } } } })

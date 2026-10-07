@@ -34,7 +34,7 @@ const desktopApi: DesktopApi = {
     ipcRenderer.on(IPC_CHANNELS.nativeManagerIntent, listener)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.nativeManagerIntent, listener)
   },
-  acknowledgeNativeManagerIntent: (requestId) => ipcRenderer.send(IPC_CHANNELS.acknowledgeNativeManagerIntent, requestId),
+  acknowledgeNativeManagerIntent: (requestId, outcome) => ipcRenderer.send(IPC_CHANNELS.acknowledgeNativeManagerIntent, requestId, outcome),
   getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.getVersion) as Promise<string>,
   openWebsite: (id) => ipcRenderer.invoke(IPC_CHANNELS.openWebsite, id) as ReturnType<DesktopApi['openWebsite']>,
   getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getSettings) as ReturnType<DesktopApi['getSettings']>,

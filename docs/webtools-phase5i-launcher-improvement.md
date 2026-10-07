@@ -4,6 +4,8 @@
 **Scope:** Discoverable `file:` search, dedicated Native Launcher file-search presentation and safe file actions, plus broader Windows system-app discovery.
 **Phase boundary:** This is a bounded Phase 5I improvement. Phase 6 was not started.
 
+**Current candidate:** The original `native-production-20261005-204221` installer below is superseded by the startup fix in the final section. Use `native-production-20261005-211823` for the next user retest.
+
 ## Summary
 
 The Native Launcher now offers a `Search Files` contextual action for ordinary nonblank local queries. It retains the raw query and enters the existing `file:` / Everything pipeline without closing the Launcher. In `file:` mode, the result area presents a file-category sidebar and bounded, virtualized file list. File operations use host-owned result tokens and expose only Open, Show in Folder, Copy object, Copy path, and Copy parent path.
@@ -128,3 +130,57 @@ Automated regression, system discovery diagnostics, packaging and isolated insta
 **PHASE 5I LAUNCHER IMPROVEMENT PASS — MANUAL RETEST REQUIRED**
 
 No Phase 6 work, PR, merge, tag or release is included in this report. The checkpoint commit and push status are reported in the task closeout.
+
+## Startup regression repair — 2026-10-05
+
+The user installed the original candidate and reported a startup dialog: `WebTools Native Host could not start. 设置 connectionId 时引发了异常。` This is a confirmed **P1 startup regression** introduced by this improvement pass. The earlier zero-blocker review describes its historical engineering snapshot; it does not override the user's later failure.
+
+### Reproduction and root cause
+
+A new STA regression check constructs the real `MainWindow` with disposable profile paths, without starting Manager, registering production hotkeys or accessing the real profile. Before the repair, the suite produced **67/68 PASS**, with the new startup check failing exactly as reported:
+
+```text
+System.Windows.Markup.XamlParseException: 设置 connectionId 时引发了异常。
+ ---> System.InvalidCastException:
+ Unable to cast object of type 'System.Windows.Controls.ContextMenu'
+ to type 'System.Windows.Controls.TextBlock'.
+ at MainWindow.IComponentConnector.Connect(...)
+ at MainWindow.InitializeComponent()
+```
+
+Event declarations inside the file-result style's inline `ContextMenu` caused the generated BAML connection mapping to address the later `FileEmptyText` TextBlock. Compiling/publishing succeeded, but loading the actual window failed. The previous model-level checks and install-layout smoke did not instantiate the real window and therefore missed this defect.
+
+### Minimal repair and prevention
+
+- `MainWindow.xaml`: moves the same five-action menu into a keyed window resource and lets the style reference it. Event names and file-operation contracts are unchanged.
+- `NativeHost.Checks/Program.cs`: adds the real compiled-XAML startup check, verifies the nine initialized categories and loaded safe context menu, and releases the window's native resources afterward. The failure was observed before changing the product XAML.
+- `scripts/build-native-production.ps1`: runs the NativeHost Checks before publishing/packing, so this startup path is now a mandatory installer-build gate.
+
+After repair, NativeHost Checks pass **68/68**. No dependency, user-data format, search algorithm or Manager lifecycle change was needed.
+
+### New candidate and verification
+
+- Source: `0711fa53047c4ebf10af5ce433141a1cfbfd47f6` plus this startup-repair working tree.
+- Installer: `D:\System default\Desktop\HomePage\release\native-production-20261005-211823\WebTools-Setup-0.1.0.exe`
+- Size: `191,435,320` bytes.
+- SHA-256: `6457191C190CD7E04C81C6AA8A6EA884831D7622AB960E075503CEC45CE9FF54`.
+- NativeHost DLL SHA-256: `C6817A8B93F1313A3A26C42008003A16D2662A82A95FFF2B918363C7D392C96E`.
+- Manager `app.asar` remains `EBC447212CF15077DBC7313A750C90CCE4B309D1D2AAA1B5C6B8AF40DBCCAB56`.
+
+`pnpm run package:win` exited 0 and freshly passed TypeScript checks, Node **313/313**, Electron Main/preload/Renderer build, NativeHost **68/68**, UpdateHelper checks, cover-install ordering, and isolated Chinese/space-path installation/Manager discovery/self-uninstall. Package log: `D:\系统缓存\webtools-phase5i-launcher-startup-fix-package.log`, SHA-256 `AEA1DC2F45584FE4984F6AFF63998AA5B5A9CB35066313E95B6894E2EC6A9CE1`.
+
+The actual self-contained staged NativeHost was also run with its existing opt-in isolated profile/pipe/mutex/hotkey mode. **AUTOMATED PACKAGED STARTUP SMOKE PASS**:
+
+- NativeHost PID `19464`, exact staged executable path and process creation time recorded.
+- Real WPF window loaded and showed with HWND `3082780`; diagnostic snapshot reported the input focused.
+- Ordinary `host` query rendered application, Translation and Search Files rows.
+- `file:startup-smoke` entered Files mode. Everything was deliberately disabled; actual Everything results and file operations were not exercised by this startup smoke.
+- Hide cleared query/results and hid the same HWND.
+- No process under the candidate Manager path was present.
+- Exact isolated control pipe requested normal exit; the Host exited with code 0. PID `19464` was subsequently absent.
+
+Evidence: `D:\系统缓存\webtools-startup-fix-smoke-5LqMbX\startup-smoke-report.json`, SHA-256 `4759FC8E702FA9FE05EDF486AEC4982E129E590882E286088D710650F20E7ABA`. This short startup test used programmatic WPF control and omitted the tray in test mode. It is not a physical hotkey/tray/installer GUI acceptance claim. It did not touch `D:\webtools`, `%APPDATA%\Nook`, real credentials or startup registration.
+
+The startup P1 is repaired and verified; no unresolved P0/P1 from this repair is known. User installation/startup retest and the file/context-menu manual checklist above remain required. No new commit or push was performed by this repair task.
+
+**PHASE 5I LAUNCHER IMPROVEMENT PASS — MANUAL RETEST REQUIRED**

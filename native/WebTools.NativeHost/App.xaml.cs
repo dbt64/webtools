@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Threading;
 using System.Windows;
 using System.Windows.Interop;
@@ -29,6 +30,7 @@ public partial class App : WpfApplication
     private DiagnosticsService? _diagnostics;
     private LauncherStateStore? _stateStore;
     private LauncherPluginProjectionStore? _pluginProjectionStore;
+    private NativeFeatureProjectionStore? _featureProjectionStore;
     private NativeManagerPipeServer? _pipeServer;
     private ManagerController? _managerController;
     private MainWindow? _launcherWindow;
@@ -76,6 +78,9 @@ public partial class App : WpfApplication
             var profilePath = resourceTest?.ProfileRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), profileDirectory);
             _stateStore = new LauncherStateStore(Path.Combine(profilePath, "launcher-state.json"));
             _pluginProjectionStore = new LauncherPluginProjectionStore(profilePath);
+            _featureProjectionStore = new NativeFeatureProjectionStore(profilePath);
+            var cachedFeatureProjection = _featureProjectionStore.Load(out var featureCacheStatus);
+            _diagnostics.Record("launcher_feature_cache", featureCacheStatus);
             _useLoginStartupRegistry = !allowDevelopmentManager && resourceTest is null;
             var state = _stateStore.LoadOrMigrate(Path.Combine(profilePath, "nook-data.json"), out var migrationStatus);
             _diagnostics.Record("launcher_state_loaded", migrationStatus);
@@ -93,11 +98,12 @@ public partial class App : WpfApplication
                 ReplaceWebsitesAsync,
                 RememberApplicationAsync,
                 _diagnostics,
-                ReplacePluginProjectionAsync);
-            _pipeTask = _pipeServer.RunAsync(_hostCancellation.Token);
-
+                ReplacePluginProjectionAsync,
+                ReplaceFeatureProjectionAsync);
             var processLauncher = new ManagerProcessLauncher(allowDevelopmentManager, resourceTest?.ProfileRoot);
+            _pipeServer.ConfigurePeerAuthenticator(processLauncher.PeerIdentityService);
             _managerController = new ManagerController(_pipeServer, processLauncher, _diagnostics, ShowManagerError);
+            _pipeTask = _pipeServer.RunAsync(_hostCancellation.Token);
             if (resourceTest is null)
             {
                 _updatePreparationServer = new UpdatePreparationServer(
@@ -111,14 +117,22 @@ public partial class App : WpfApplication
                     message => _diagnostics.Record("update_pipe", message));
                 _updatePreparationTask = _updatePreparationServer.RunAsync(_hostCancellation.Token);
             }
+            var featureProjectionAtWindowCreation = _featureProjectionStore.Current ?? cachedFeatureProjection;
             _launcherWindow = new MainWindow(
                 _diagnostics,
                 _stateStore,
                 state,
                 new AppCatalogSnapshotStore(resourceTest?.CatalogSnapshotPath ?? AppCatalogSnapshotStore.DefaultPath),
                 _managerController,
-                resourceTest is not null);
+                resourceTest is not null,
+                featureProjectionAtWindowCreation,
+                featureProjectionAtWindowCreation is not null);
             MainWindow = _launcherWindow;
+            var latestFeatureProjection = _featureProjectionStore.Current;
+            if (latestFeatureProjection is not null
+                && (latestFeatureProjection.HostSessionId != featureProjectionAtWindowCreation?.HostSessionId
+                    || latestFeatureProjection.Revision != featureProjectionAtWindowCreation?.Revision))
+                _ = ApplyFeatureProjectionAtStartupAsync(_launcherWindow, latestFeatureProjection);
             _launcherWindow.ApplyPluginProjection(_pluginProjectionStore.Load(out var pluginCacheStatus));
             _diagnostics.Record("launcher_plugin_cache", pluginCacheStatus);
             var handle = new WindowInteropHelper(_launcherWindow).EnsureHandle();
@@ -244,6 +258,26 @@ public partial class App : WpfApplication
         var window = _launcherWindow;
         if (window is not null && !window.Dispatcher.HasShutdownStarted)
             await window.Dispatcher.InvokeAsync(() => window.ApplyPluginProjection(projection));
+    }
+
+    private async Task<NativeFeatureProjectionV2> ReplaceFeatureProjectionAsync(JsonElement payload)
+    {
+        var result = await (_featureProjectionStore ?? throw new InvalidOperationException("Native Feature cache is not ready."))
+            .AcceptAsync(payload).ConfigureAwait(false);
+        var window = _launcherWindow;
+        if (window is not null && !window.Dispatcher.HasShutdownStarted)
+        {
+            var apply = await window.Dispatcher.InvokeAsync(() => window.ApplyFeatureProjectionAsync(result.Projection)).Task.ConfigureAwait(false);
+            await apply.ConfigureAwait(false);
+        }
+        _diagnostics?.Record("launcher_feature_projection_updated", $"count={result.Projection.Features.Count};revision={result.Projection.Revision};changed={result.Changed}");
+        return result.Projection;
+    }
+
+    private async Task ApplyFeatureProjectionAtStartupAsync(MainWindow window, NativeFeatureProjectionV2 projection)
+    {
+        try { await window.ApplyFeatureProjectionAsync(projection); }
+        catch (Exception error) { _diagnostics?.Record("launcher_feature_projection_startup_apply_error", error.GetType().Name); }
     }
 
     private async Task<LauncherState> ReplaceWebsitesAsync(IReadOnlyList<LauncherWebsiteRecord> websites)

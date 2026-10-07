@@ -26,9 +26,10 @@ import { registerTranslationIpcHandlers } from './ipc/translation-handlers'
 import { registerEverythingIpcHandlers } from './ipc/everything-handlers'
 import { isCurrentWindowMainFrame } from './ipc/window-security'
 import { isNativeManagerOnly } from './services/native-manager-mode'
-import { NativeManagerClient, parseNativeLauncherState, type NativeLauncherSettingsUpdate, type NativeLauncherState } from './services/native-manager-client'
+import { NativeManagerClient, nativeManagerReply, parseNativeLauncherState, type NativeLauncherSettingsUpdate, type NativeLauncherState } from './services/native-manager-client'
 import { NativeManagerRequestError, type NativeManagerEnvelope } from './services/native-manager-protocol'
 import { parseNativeManagerCommand } from './services/native-manager-commands'
+import { FeatureInvocationService } from './services/feature-invocation-service'
 import { overlayNativeLauncherSettings, projectWebsitesForNative } from './services/native-launcher-settings'
 import { resolveManagerTestProfile } from './services/manager-test-options'
 import { createElectronPluginHost } from './plugins/electron-plugin-host'
@@ -38,8 +39,11 @@ import { registerBuiltinTranslationHandoffHandlers } from './ipc/builtin-transla
 import { PluginCatalog } from './plugins/plugin-catalog'
 import { FeatureRegistry } from './plugins/feature-registry'
 import { NativePluginProjectionPublisher } from './services/native-plugin-projection-publisher'
+import { NativeFeatureProjectionPublisher } from './services/native-feature-projection-publisher'
 import type { PluginRef } from '../src/shared/plugin-catalog-contracts'
 import type { PluginManager } from './plugins/plugin-manager'
+import type { DeclarativeCompatibilityFeature } from './plugins/feature-contracts'
+import type { FeatureRef } from '../src/shared/feature-contracts'
 
 const isDevelopment = !app.isPackaged
 const nativeManaged = app.isPackaged || isNativeManagerOnly(process.argv, process.env)
@@ -71,7 +75,9 @@ let quitting = false
 let pluginManager: PluginManager | null = null
 let pluginCatalog: PluginCatalog | null = null
 let featureRegistry: FeatureRegistry | null = null
+let featureInvocationService: FeatureInvocationService | null = null
 let nativePluginProjectionPublisher: NativePluginProjectionPublisher | null = null
+let nativeFeatureProjectionPublisher: NativeFeatureProjectionPublisher | null = null
 let disposeCatalogHandlers = () => {}
 let disposePluginHandlers: () => void = () => undefined
 let disposeBuiltinTranslationHandoffHandlers: () => void = () => undefined
@@ -80,9 +86,12 @@ let disposeBuiltinFeatureSubscription: () => void = () => undefined
 
 interface PendingNativeIntent {
   requestId: string
-  intent: { kind: 'open-page'; section: 'favorites' | 'entries' | 'settings' } | { kind: 'open-plugin'; ref: PluginRef }
+  intent: { kind: 'open-page'; section: 'favorites' | 'entries' | 'settings' }
+    | { kind: 'open-plugin'; ref: PluginRef }
+    | { kind: 'open-feature'; ref: FeatureRef }
   resolve: () => void
   reject: (error: Error) => void
+  timer: NodeJS.Timeout
 }
 
 let pendingNativeIntent: PendingNativeIntent | null = null
@@ -109,8 +118,16 @@ async function syncNativePluginProjection(): Promise<void> {
   await nativePluginProjectionPublisher?.trySync(() => console.warn('[native-plugins] Launcher cache synchronization failed; catalog remains available.'))
 }
 
+async function syncNativeFeatureProjection(): Promise<void> {
+  if (!nativeManagerClient?.supportsFeatureProjectionV2) return
+  await nativeFeatureProjectionPublisher?.trySync(() => console.warn('[native-features] Feature Projection v2 synchronization failed; Native keeps its last-known-good cache.'))
+}
+
 async function refreshFeatureRegistry(): Promise<void> {
-  try { await featureRegistry?.refresh() }
+  try {
+    await featureRegistry?.refresh()
+    await syncNativeFeatureProjection()
+  }
   catch (error) { console.warn('[native-features] derived Feature projection refresh failed.', error) }
 }
 
@@ -137,14 +154,33 @@ function waitForNativeIntentAcknowledgement(
   requestId: string,
   intent: PendingNativeIntent['intent'],
 ): Promise<void> {
-  if (pendingNativeIntent) pendingNativeIntent.reject(new NativeManagerRequestError('INTENT_SUPERSEDED', 'A newer Manager request replaced this one.'))
+  cancelPendingNativeIntent('INTENT_SUPERSEDED', 'A newer Manager request replaced this one.')
   return new Promise<void>((resolve, reject) => {
-    pendingNativeIntent = { requestId, intent, resolve, reject }
+    const timer = setTimeout(() => {
+      if (pendingNativeIntent?.requestId === requestId) cancelPendingNativeIntent('INTENT_TIMEOUT', 'Manager did not complete the requested navigation in time.')
+    }, 40_000)
+    timer.unref?.()
+    pendingNativeIntent = { requestId, intent, resolve, reject, timer }
     deliverPendingNativeIntent()
   })
 }
 
-async function handleNativeManagerCommand(message: NativeManagerEnvelope): Promise<void | (() => void)> {
+function cancelPendingNativeIntent(code: string, message: string): void {
+  const pending = pendingNativeIntent
+  if (!pending) return
+  pendingNativeIntent = null
+  clearTimeout(pending.timer)
+  pending.reject(new NativeManagerRequestError(code, message))
+}
+
+async function beginNativeFeaturePageIntent(requestId: string, ref: FeatureRef): Promise<void> {
+  builtinTranslationHandoff?.supersede()
+  const presented = waitForNativeIntentAcknowledgement(requestId, { kind: 'open-feature', ref: { ...ref } })
+  showManager()
+  await presented
+}
+
+async function handleNativeManagerCommand(message: NativeManagerEnvelope): Promise<void | (() => void) | ReturnType<typeof nativeManagerReply>> {
   const command = parseNativeManagerCommand(message)
   if (command.kind === 'shutdown-manager') {
     return () => {
@@ -172,15 +208,17 @@ async function handleNativeManagerCommand(message: NativeManagerEnvelope): Promi
     await waitForNativeIntentAcknowledgement(command.requestId, { kind: 'open-plugin', ref: command.ref })
     return
   }
+  if (command.kind === 'feature-invoke') {
+    const service = featureInvocationService
+    if (!service) return nativeManagerReply({ requestId: command.request.requestId, status: 'failed', reasonCode: 'dispatch-failed' })
+    return nativeManagerReply(await service.invoke(command.request))
+  }
   if (!isValidTranslationText(command.text)) throw new NativeManagerRequestError('INVALID_TRANSLATION_TEXT', '翻译内容为空或超过 20,000 个字符。')
   await beginNativeTranslationHandoff(command.requestId, command.text)
 }
 
 async function beginNativeTranslationHandoff(requestId: string, text: string | null): Promise<void> {
-  if (pendingNativeIntent) {
-    pendingNativeIntent.reject(new NativeManagerRequestError('INTENT_SUPERSEDED', 'A newer Manager request replaced this one.'))
-    pendingNativeIntent = null
-  }
+  cancelPendingNativeIntent('INTENT_SUPERSEDED', 'A newer Manager request replaced this one.')
   const handoff = builtinTranslationHandoff
   if (!handoff) throw new NativeManagerRequestError('MANAGER_NOT_READY', 'Manager translation handoff is unavailable.')
   const presented = handoff.begin({ requestId, text })
@@ -194,12 +232,15 @@ async function beginNativeTranslationHandoff(requestId: string, text: string | n
   }
 }
 
-function acknowledgeNativeManagerIntent(context: { sender: object; senderFrame: object | null }, requestId: unknown): void {
-  if (!isCurrentWindowMainFrame(context, managerWindow) || typeof requestId !== 'string') return
+function acknowledgeNativeManagerIntent(context: { sender: object; senderFrame: object | null }, requestId: unknown, outcome: unknown): void {
+  if (!isCurrentWindowMainFrame(context, managerWindow) || typeof requestId !== 'string'
+    || outcome !== undefined && outcome !== 'accepted' && outcome !== 'rejected') return
   const pending = pendingNativeIntent
   if (!pending || pending.requestId !== requestId) return
   pendingNativeIntent = null
-  pending.resolve()
+  clearTimeout(pending.timer)
+  if (outcome === 'rejected') pending.reject(new NativeManagerRequestError('FEATURE_UNAVAILABLE', 'The requested feature is no longer available.'))
+  else pending.resolve()
 }
 
 function brandResourcePath(fileName: string): string {
@@ -259,10 +300,7 @@ function createWindow(): void {
     pluginCatalog?.close()
     managerWindow = null
     managerRendererReady = false
-    if (pendingNativeIntent) {
-      pendingNativeIntent.reject(new Error('Manager window closed before acknowledging the current request.'))
-      pendingNativeIntent = null
-    }
+    cancelPendingNativeIntent('MANAGER_CLOSED', 'Manager window closed before acknowledging the current request.')
     if (!quitting) {
       quitting = true
       app.quit()
@@ -329,6 +367,8 @@ app.whenReady().then(async () => {
     nativeManagerClient.onCommand(handleNativeManagerCommand)
     nativeManagerClient.onDisconnect((error) => {
       console.error('[native-manager] Native Host disconnected; exiting Manager', error?.message ?? '')
+      featureInvocationService?.clearSession()
+      cancelPendingNativeIntent('MANAGER_DISCONNECTED', 'Native Host disconnected during the Feature request.')
       if (!quitting) app.quit()
     })
     try {
@@ -380,6 +420,20 @@ app.whenReady().then(async () => {
   }
   await refreshFeatureRegistry()
   pluginCatalog = new PluginCatalog(app.getVersion(), () => pluginManager, builtinTranslationLifecycle)
+  featureInvocationService = new FeatureInvocationService({
+    isConnected: () => nativeManagerClient?.isConnected === true,
+    isTranslationEnabled: () => builtinTranslationLifecycle?.isEnabled() ?? false,
+    authorizeDeclarative: (ref, dispatch) => {
+      const manager = pluginManager
+      if (!manager) {
+        const error = new NativeManagerRequestError('FEATURE_UNAVAILABLE', 'The Plugin manager is unavailable.')
+        return Promise.reject(error)
+      }
+      return manager.authorizeAndDispatchFeature(ref, manager.session, dispatch)
+    },
+    openDeclarative: (requestId, feature: DeclarativeCompatibilityFeature) => beginNativeFeaturePageIntent(requestId, feature.ref),
+    openTranslation: requestId => beginNativeTranslationHandoff(requestId, null),
+  })
   if (nativeManaged) {
     nativePluginProjectionPublisher = new NativePluginProjectionPublisher(async () => {
       const catalog = pluginCatalog
@@ -390,6 +444,21 @@ app.whenReady().then(async () => {
       return nativeManagerClient.request('plugins-update', projection)
     })
     await syncNativePluginProjection()
+    if (nativeManagerClient?.supportsFeatureProjectionV2) {
+      nativeFeatureProjectionPublisher = new NativeFeatureProjectionPublisher(
+        async () => {
+          const registry = featureRegistry
+          if (!registry) throw new Error('Feature registry is unavailable.')
+          return registry.snapshot()
+        },
+        async (_projection, serialized) => {
+          const client = nativeManagerClient
+          if (!client?.supportsFeatureProjectionV2) throw new Error('Native Host did not negotiate Feature Projection v2.')
+          return client.request('features-update', JSON.parse(serialized) as unknown)
+        },
+      )
+      await syncNativeFeatureProjection()
+    }
   }
   disposeCatalogHandlers = registerPluginCatalogIpcHandlers(ipcMain, {
     getCatalog: () => pluginCatalog,
@@ -474,5 +543,6 @@ app.on('before-quit', () => {
   disposeCatalogHandlers()
   nativeManagerClient?.close()
   nativePluginProjectionPublisher?.close()
+  nativeFeatureProjectionPublisher?.close()
   nativeManagerClient = null
 })

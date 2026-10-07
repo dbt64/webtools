@@ -24,3 +24,20 @@ test('parses only fixed, typed Manager actions and preserves exact translation t
   assert.throws(() => parseNativeManagerCommand({ protocolVersion: 1, requestId: 'bad', type: 'open-page', payload: { requestId: 'intent-3', section: 'search' } }), /page request/i)
   assert.throws(() => parseNativeManagerCommand({ protocolVersion: 1, requestId: 'bad', type: 'open-page', payload: { section: 'https://example.com' } }), /page request/i)
 })
+
+test('feature-invoke accepts only an exact bounded FeatureRef request from the Launcher', async () => {
+  const invoke = payload => ({ protocolVersion: 1, requestId: 'native-envelope-1', type: 'feature-invoke', payload })
+  const ref = { pluginId: 'org.example.notes', featureId: 'legacy-manager-page' }
+  const requestId = '6528d127-0182-4a60-9e4b-8c89070c50f0'
+  const { parseNativeManagerCommand } = await import('./native-manager-commands.ts')
+  assert.deepEqual(parseNativeManagerCommand(invoke({ requestId, ref, source: 'launcher' })), {
+    kind: 'feature-invoke', request: { requestId, ref, source: 'launcher' },
+  })
+  for (const payload of [
+    { requestId, ref, source: 'launcher', pageId: 'home' },
+    { requestId: 'not-a-uuid', ref, source: 'launcher' },
+    { requestId, ref, source: 'super-panel' },
+    { requestId, ref: { ...ref, path: 'C:\\private' }, source: 'launcher' },
+    { requestId, ref: { pluginId: 'x'.repeat(2048), featureId: 'legacy-manager-page' }, source: 'launcher' },
+  ]) assert.throws(() => parseNativeManagerCommand(invoke(payload)))
+})

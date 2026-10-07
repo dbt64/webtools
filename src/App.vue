@@ -128,13 +128,24 @@ function handleNativeManagerIntent(intent: NativeManagerIntent): void {
     activeSection.value = 'plugins'
     appsExpanded.value = true
     void (async () => {
-      if (!await refreshPlugins() || disposed || currentNativeRequestId.value !== intent.requestId || activeSection.value !== 'plugins') return
-      await openPluginPage(intent.ref)
+      const refreshed = await refreshPlugins()
+      if (disposed || currentNativeRequestId.value !== intent.requestId || activeSection.value !== 'plugins') return
+      const opened = refreshed && await openPluginPage(intent.ref)
       await nextTick()
-      if (!disposed && currentNativeRequestId.value === intent.requestId) {
-        window.desktop.acknowledgeNativeManagerIntent(intent.requestId)
-        currentNativeRequestId.value = null
-      }
+      acknowledgeNativeIntent(intent.requestId, opened)
+    })()
+    return
+  }
+  if (intent.kind === 'open-feature') {
+    activeSection.value = 'plugins'
+    appsExpanded.value = true
+    void (async () => {
+      const refreshed = await refreshPlugins()
+      if (disposed || currentNativeRequestId.value !== intent.requestId || activeSection.value !== 'plugins') return
+      const supported = intent.ref.pluginId !== 'webtools.translation' && intent.ref.featureId === 'legacy-manager-page'
+      const opened = refreshed && supported && await openPluginPage({ kind: 'declarative', id: intent.ref.pluginId })
+      await nextTick()
+      acknowledgeNativeIntent(intent.requestId, opened)
     })()
     return
   }
@@ -142,9 +153,14 @@ function handleNativeManagerIntent(intent: NativeManagerIntent): void {
   activeSection.value = targetSection
   void nextTick().then(() => {
     if (currentNativeRequestId.value !== intent.requestId) return
-    window.desktop.acknowledgeNativeManagerIntent(intent.requestId)
-    currentNativeRequestId.value = null
+    acknowledgeNativeIntent(intent.requestId, true)
   })
+}
+
+function acknowledgeNativeIntent(requestId: string, accepted: boolean): void {
+  if (disposed || currentNativeRequestId.value !== requestId) return
+  window.desktop.acknowledgeNativeManagerIntent(requestId, accepted ? 'accepted' : 'rejected')
+  currentNativeRequestId.value = null
 }
 
 function handleTranslationPrefillApplied(id: string): void {
@@ -296,12 +312,12 @@ async function refreshPlugins(): Promise<boolean> {
   finally { if (!disposed && generation === pluginRefreshGeneration) pluginsLoading.value = false }
 }
 
-async function openPluginPage(ref: PluginRef): Promise<void> {
+async function openPluginPage(ref: PluginRef): Promise<boolean> {
   const generation = ++pluginPageGeneration
   const entry = catalogEntries.value.find(item => catalogKey(item) === catalogKey(ref))
-  if (!entry || !catalogCanOpen(entry)) { returnToPluginCenter(); return }
+  if (!entry || !catalogCanOpen(entry)) { returnToPluginCenter(); return false }
   // Preserve the original Translation mount (input/results/pending request) on repeat navigation.
-  if (ref.kind === 'builtin' && activeSection.value === 'translate') return
+  if (ref.kind === 'builtin' && activeSection.value === 'translate') return true
   activePluginRef.value = { ...ref }
   activePluginPage.value = null
   pluginPageError.value = ''
@@ -311,27 +327,29 @@ async function openPluginPage(ref: PluginRef): Promise<void> {
   const current = () => !disposed && isCurrentCatalogRequest({ section: activeSection.value, ref: activePluginRef.value, generation: pluginPageGeneration }, { section: 'plugin-page', ref, generation })
   try {
     const result = await window.desktop.pluginCatalog.open({ ...ref })
-    if (!current()) return
-    if (!result.ok) { pluginPageError.value = result.error.message; pluginPageLoading.value = false; void refreshPlugins(); return }
+    if (!current()) return false
+    if (!result.ok) { pluginPageError.value = result.error.message; pluginPageLoading.value = false; void refreshPlugins(); return false }
     const latest = catalogEntries.value.find(item => catalogKey(item) === catalogKey(ref))
-    if (!latest || !catalogCanOpen(latest)) { returnToPluginCenter(); void refreshPlugins(); return }
+    if (!latest || !catalogCanOpen(latest)) { returnToPluginCenter(); void refreshPlugins(); return false }
     if (result.data.kind === 'builtin') {
-      if (ref.kind !== 'builtin' || latest.kind !== 'builtin' || result.data.id !== ref.id || result.data.key !== latest.entry.key) { returnToPluginCenter(); return }
+      if (ref.kind !== 'builtin' || latest.kind !== 'builtin' || result.data.id !== ref.id || result.data.key !== latest.entry.key) { returnToPluginCenter(); return false }
       activeSection.value = 'translate'
       pluginPageLoading.value = false
-      return
+      return true
     }
     const page = result.data.page
     if (ref.kind !== 'declarative' || latest.kind !== 'declarative' || page.pluginId !== ref.id || page.version !== latest.package.version || page.hash !== latest.package.hash) {
-      returnToPluginCenter(); void refreshPlugins(); return
+      returnToPluginCenter(); void refreshPlugins(); return false
     }
     activePluginPage.value = page
     pluginPageLoading.value = false
+    return true
   } catch {
-    if (!current()) return
+    if (!current()) return false
     pluginPageError.value = '插件页面暂时无法加载，请重试。'
     pluginPageLoading.value = false
     void refreshPlugins()
+    return false
   }
 }
 

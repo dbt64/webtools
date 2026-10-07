@@ -37,7 +37,7 @@ export interface DesktopApi {
   }
   managerReady(): void
   onNativeManagerIntent(handler: (intent: NativeManagerIntent) => void): () => void
-  acknowledgeNativeManagerIntent(requestId: string): void
+  acknowledgeNativeManagerIntent(requestId: string, outcome?: 'accepted' | 'rejected'): void
   getVersion(): Promise<string>
   openWebsite(id: string): Promise<IpcResult<void>>
   getSettings(): Promise<AppSettings>
@@ -71,6 +71,7 @@ export interface DesktopApi {
 
 export type NativeManagerIntent =
   | { requestId: string; kind: 'open-plugin'; ref: import('./plugin-catalog-contracts.ts').PluginRef }
+  | { requestId: string; kind: 'open-feature'; ref: import('./feature-contracts.ts').FeatureRef }
   | { requestId: string; kind: 'open-page'; section: 'favorites' | 'entries' | 'settings' }
   | { requestId: string; kind: 'translation-handoff' }
 

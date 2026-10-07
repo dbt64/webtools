@@ -8,8 +8,9 @@ import { PluginRegistry, type PluginRecord, type RegistryData, type InstalledVer
 import { PluginStore } from './plugin-store.ts'
 import { validatePackage, type ValidatedPackage } from './package-validator.ts'
 import { DeclarativeRuntime } from './declarative-runtime.ts'
-import { adaptDeclarativeV1Feature } from './declarative-feature-adapter.ts'
+import { adaptDeclarativeV1Feature, DECLARATIVE_V1_FEATURE_ID } from './declarative-feature-adapter.ts'
 import type { DeclarativeFeatureCandidate } from './feature-contracts.ts'
+import { isFeatureRef, type FeatureRef } from '../../src/shared/feature-contracts.ts'
 import { PermissionBroker, providerIdentity, validateActionInput, type PluginConsent, type PluginHostEffects, type PluginProviderInfo } from './permission-broker.ts'
 import { fail, safePluginError } from './errors.ts'
 
@@ -193,6 +194,49 @@ export class PluginManager {
       }
       this.assertSession(session)
       return candidates
+    })
+  }
+  /**
+   * Revalidates a v1 compatibility Feature inside the existing mutation queue, then
+   * synchronously hands the resolved route to Main-owned dispatch before releasing
+   * the queue. The returned completion is deliberately not awaited under the queue.
+   */
+  async authorizeAndDispatchFeature(
+    ref: FeatureRef,
+    session: string,
+    dispatch: (feature: NonNullable<ReturnType<typeof adaptDeclarativeV1Feature>>) => Promise<void>,
+  ): Promise<{ completion: Promise<void> }> {
+    if (!isFeatureRef(ref) || ref.featureId !== DECLARATIVE_V1_FEATURE_ID || typeof dispatch !== 'function') fail('INVALID_INPUT')
+    return this.queue.run(async () => {
+      this.assertSession(session)
+      const plugin = this.find(ref.pluginId)
+      const runtime = this.runtimes.get(plugin.id)
+      if (!runtime || !this.isSession(session) || this.intents.get(plugin.id)?.blocked
+        || !plugin.enabled || plugin.current.hash !== runtime.hash) fail('PLUGIN_DISABLED')
+      this.broker.enforce(runtime.manifest.requestedCapabilities, plugin.granted, 'manager.page', true)
+      if (plugin.status !== 'active') fail('PLUGIN_DISABLED')
+
+      // load() re-reads the current immutable package by its recorded content hash.
+      // Mutations that block immediately are rechecked after this await, before the
+      // synchronous dispatch callback establishes the queue's linearization point.
+      const pkg = await this.load(plugin)
+      this.assertSession(session)
+      const currentPlugin = this.find(ref.pluginId)
+      if (currentPlugin.current.version !== plugin.current.version || currentPlugin.current.hash !== plugin.current.hash
+        || !this.isSession(session) || this.intents.get(currentPlugin.id)?.blocked
+        || !currentPlugin.enabled || this.runtimes.get(currentPlugin.id) !== runtime) fail('PLUGIN_DISABLED')
+      this.broker.enforce(pkg.manifest.requestedCapabilities, currentPlugin.granted, 'manager.page', true)
+      if (currentPlugin.status !== 'active') fail('PLUGIN_DISABLED')
+      const feature = adaptDeclarativeV1Feature(pkg.manifest)
+      if (!feature || feature.ref.pluginId !== ref.pluginId || feature.ref.featureId !== ref.featureId
+        || feature.sourceKind !== 'declarative' || feature.resolvedEntry.kind !== 'declarative-compatibility') fail('ACTION_NOT_DECLARED')
+      if (!pkg.manifest.pages.some(page => page.id === feature.resolvedEntry.pageId)) fail('ACTION_NOT_DECLARED')
+      if (!this.isSession(session) || this.intents.get(currentPlugin.id)?.blocked
+        || !currentPlugin.enabled || currentPlugin.status !== 'active'
+        || this.runtimes.get(currentPlugin.id) !== runtime) fail('PLUGIN_DISABLED')
+
+      const completion = dispatch(structuredClone(feature))
+      return { completion: Promise.resolve(completion) }
     })
   }
   private async summary(id: string): Promise<PluginSummary> { return (await this.list()).find(p => p.id === id)! }

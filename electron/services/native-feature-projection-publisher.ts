@@ -24,7 +24,10 @@ export class NativeFeatureProjectionPublisher {
       const projection = parseFeatureProjectionV2(await this.project())
       if (!projection) throw new Error('Invalid Feature Projection v2 snapshot.')
       if (this.closed) return
-      await this.enqueue(projection, JSON.stringify(projection))
+      const acknowledgement = await this.enqueue(projection, JSON.stringify(projection))
+      if (!isMatchingAcknowledgement(acknowledgement, projection)) {
+        throw new Error('Native Host acknowledged a different Feature Projection v2 session or revision.')
+      }
     })
     this.tail = next.catch(() => {}) // An explicit later sync can recover after an unavailable queue/transport.
     return next
@@ -36,4 +39,14 @@ export class NativeFeatureProjectionPublisher {
     try { await this.sync(); return true }
     catch { reportFailure(); return false }
   }
+}
+
+function isMatchingAcknowledgement(value: unknown, projection: FeatureProjectionV2): boolean {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && 'hostSessionId' in value
+    && value.hostSessionId === projection.hostSessionId
+    && 'revision' in value
+    && value.revision === projection.revision
 }

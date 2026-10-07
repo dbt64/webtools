@@ -66,19 +66,34 @@ interface PendingRequest {
   timer: NodeJS.Timeout
 }
 
+export interface NativeManagerCommandReply {
+  readonly kind: 'native-manager-reply'
+  readonly result: unknown
+  readonly afterAcknowledgement?: () => void
+}
+
+export function nativeManagerReply(result: unknown, afterAcknowledgement?: () => void): NativeManagerCommandReply {
+  return { kind: 'native-manager-reply', result, ...(afterAcknowledgement ? { afterAcknowledgement } : {}) }
+}
+
+type NativeManagerCommandHandler = (message: NativeManagerEnvelope) => void | (() => void) | NativeManagerCommandReply | Promise<void | (() => void) | NativeManagerCommandReply>
+
 export class NativeManagerClient {
+  private static readonly featureProjectionV2Capability = 'feature-projection-v2'
   private socket: Socket | null = null
   private readonly decoder = new ProtocolFrameDecoder()
   private readonly pending = new Map<string, PendingRequest>()
-  private readonly commandHandlers = new Set<(message: NativeManagerEnvelope) => void | (() => void) | Promise<void | (() => void)>>()
+  private readonly commandHandlers = new Set<NativeManagerCommandHandler>()
   private readonly disconnectHandlers = new Set<(error?: Error) => void>()
   private connected = false
+  private featureProjectionV2Supported = false
   private closed = false
   private readonly pipeName: string
 
   constructor(pipeName: string) { this.pipeName = pipeName }
 
   get isConnected(): boolean { return this.connected && !this.closed }
+  get supportsFeatureProjectionV2(): boolean { return this.isConnected && this.featureProjectionV2Supported }
 
   async connect(timeoutMs = 30_000): Promise<unknown> {
     if (this.connected) throw new Error('Native Manager pipe is already connected.')
@@ -94,7 +109,14 @@ export class NativeManagerClient {
       socket.on('data', (chunk) => this.handleData(chunk))
       socket.on('error', (error) => this.handleDisconnect(error))
       socket.on('close', () => this.handleDisconnect())
-      const hello = await this.request<{ state?: unknown }>('hello', { processId: process.pid, managerVersion: process.env.npm_package_version ?? 'unknown' }, timeoutMs)
+      const hello = await this.request<{ state?: unknown; supportedFeatures?: unknown }>('hello', {
+        processId: process.pid,
+        managerVersion: process.env.npm_package_version ?? 'unknown',
+        capabilities: [NativeManagerClient.featureProjectionV2Capability],
+      }, timeoutMs)
+      this.featureProjectionV2Supported = Array.isArray(hello?.supportedFeatures)
+        && hello.supportedFeatures.length === 1
+        && hello.supportedFeatures[0] === NativeManagerClient.featureProjectionV2Capability
       this.connected = true
       return hello?.state
     } catch (error) {
@@ -133,7 +155,7 @@ export class NativeManagerClient {
     })
   }
 
-  onCommand(handler: (message: NativeManagerEnvelope) => void | (() => void) | Promise<void | (() => void)>): () => void {
+  onCommand(handler: NativeManagerCommandHandler): () => void {
     this.commandHandlers.add(handler)
     return () => this.commandHandlers.delete(handler)
   }
@@ -189,11 +211,19 @@ export class NativeManagerClient {
   private async handleCommand(message: NativeManagerEnvelope): Promise<void> {
     try {
       const afterAcknowledgement: (() => void)[] = []
+      let result: unknown
+      let hasResult = false
       for (const handler of this.commandHandlers) {
         const callback = await handler(message)
-        if (callback) afterAcknowledgement.push(callback)
+        if (typeof callback === 'function') afterAcknowledgement.push(callback)
+        else if (isNativeManagerCommandReply(callback)) {
+          if (hasResult) throw new NativeManagerRequestError('DUPLICATE_COMMAND_RESULT', 'Manager produced multiple command responses.')
+          result = callback.result
+          hasResult = true
+          if (callback.afterAcknowledgement) afterAcknowledgement.push(callback.afterAcknowledgement)
+        }
       }
-      await this.writeAcknowledgement(message, true, undefined)
+      await this.writeAcknowledgement(message, true, result)
       for (const callback of afterAcknowledgement) callback()
     } catch (error) {
       const requestError = error instanceof NativeManagerRequestError ? error : new NativeManagerRequestError('MANAGER_COMMAND_FAILED', asError(error).message)
@@ -240,6 +270,11 @@ export class NativeManagerClient {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isNativeManagerCommandReply(value: unknown): value is NativeManagerCommandReply {
+  return isRecord(value) && value.kind === 'native-manager-reply' && Object.hasOwn(value, 'result')
+    && (value.afterAcknowledgement === undefined || typeof value.afterAcknowledgement === 'function')
 }
 
 function asError(error: unknown): Error { return error instanceof Error ? error : new Error(String(error)) }

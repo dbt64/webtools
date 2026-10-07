@@ -1,12 +1,14 @@
 import { NativeManagerRequestError, type NativeManagerEnvelope } from './native-manager-protocol.ts'
 import { isLauncherPluginRef } from '../../src/shared/launcher-plugin-contracts.ts'
 import type { PluginRef } from '../../src/shared/plugin-catalog-contracts.ts'
+import { FEATURE_INVOCATION_MAX_BYTES, parseFeatureInvocationRequest, type FeatureInvocationRequest } from '../../src/shared/feature-invocation-contracts.ts'
 
 export type NativeManagerCommand =
   | { kind: 'open-page'; requestId: string; section: 'favorites' | 'entries' | 'settings' | 'translate' }
   | { kind: 'translation-prefill'; requestId: string; text: string }
   | { kind: 'shutdown-manager' }
   | { kind: 'open-plugin'; requestId: string; ref: PluginRef }
+  | { kind: 'feature-invoke'; request: FeatureInvocationRequest }
 
 export function parseNativeManagerCommand(message: NativeManagerEnvelope): NativeManagerCommand {
   const payload = isRecord(message.payload) ? message.payload : null
@@ -15,6 +17,12 @@ export function parseNativeManagerCommand(message: NativeManagerEnvelope): Nativ
     if (Object.keys(payload).length !== 2 || typeof payload.requestId !== 'string' || !payload.requestId || payload.requestId.length > 128 || !isLauncherPluginRef(payload.ref))
       throw new NativeManagerRequestError('INVALID_NATIVE_COMMAND', 'Native Host sent an invalid plugin reference.')
     return { kind: 'open-plugin', requestId: message.requestId, ref: payload.ref }
+  }
+  if (message.type === 'feature-invoke') {
+    const request = parseFeatureInvocationRequest(payload)
+    if (!request || Buffer.byteLength(JSON.stringify(payload), 'utf8') > FEATURE_INVOCATION_MAX_BYTES)
+      throw new NativeManagerRequestError('INVALID_FEATURE_INVOCATION', 'Native Host sent an invalid Feature invocation.')
+    return { kind: 'feature-invoke', request }
   }
   if (message.type === 'open-page') {
     if (typeof payload.requestId !== 'string' || payload.requestId.length === 0 || payload.requestId.length > 128

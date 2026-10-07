@@ -28,6 +28,7 @@ test('Feature projection publisher serializes complete snapshots and reads curre
   const publisher = new NativeFeatureProjectionPublisher(async () => structuredClone(current), async (projection, serialized) => {
     sent.push({ projection, serialized })
     if (sent.length === 1) await new Promise(resolve => { release = resolve })
+    return { hostSessionId: projection.hostSessionId, revision: projection.revision }
   })
   const first = publisher.sync()
   await new Promise(resolve => setImmediate(resolve))
@@ -46,9 +47,10 @@ test('Feature projection publisher validates before enqueue, recovers after fail
   let failures = 0
   let accepted = 0
   let current = snapshot(1)
-  const publisher = new NativeFeatureProjectionPublisher(async () => structuredClone(current), async () => {
+  const publisher = new NativeFeatureProjectionPublisher(async () => structuredClone(current), async projection => {
     if (failures > 0) { failures -= 1; throw new Error('queue unavailable') }
     accepted += 1
+    return { hostSessionId: projection.hostSessionId, revision: projection.revision }
   })
   failures = 1
   await assert.rejects(publisher.sync(), /queue unavailable/)
@@ -59,7 +61,10 @@ test('Feature projection publisher validates before enqueue, recovers after fail
   assert.equal(accepted, 1)
   current = snapshot(3)
   let release
-  const late = new NativeFeatureProjectionPublisher(() => new Promise(resolve => { release = resolve }), async () => { accepted += 1 })
+  const late = new NativeFeatureProjectionPublisher(() => new Promise(resolve => { release = resolve }), async projection => {
+    accepted += 1
+    return { hostSessionId: projection.hostSessionId, revision: projection.revision }
+  })
   const pending = late.sync()
   await new Promise(resolve => setImmediate(resolve))
   late.close()
@@ -71,11 +76,22 @@ test('Feature projection publisher validates before enqueue, recovers after fail
 test('derived projection queue failures can be reported without changing Main authority results', async () => {
   let available = false
   let reports = 0
-  const publisher = new NativeFeatureProjectionPublisher(async () => snapshot(1), async () => {
+  const publisher = new NativeFeatureProjectionPublisher(async () => snapshot(1), async projection => {
     if (!available) throw new Error('not negotiated')
+    return { hostSessionId: projection.hostSessionId, revision: projection.revision }
   })
   assert.equal(await publisher.trySync(() => { reports += 1 }), false)
   available = true
+  assert.equal(await publisher.trySync(() => { reports += 1 }), true)
+  assert.equal(reports, 1)
+})
+
+test('Feature projection publisher rejects acknowledgements for a different session or revision', async () => {
+  let ack = { hostSessionId: snapshot(1).hostSessionId, revision: 0 }
+  let reports = 0
+  const publisher = new NativeFeatureProjectionPublisher(() => snapshot(1), async () => ack)
+  assert.equal(await publisher.trySync(() => { reports += 1 }), false)
+  ack = { hostSessionId: snapshot(1).hostSessionId, revision: 1 }
   assert.equal(await publisher.trySync(() => { reports += 1 }), true)
   assert.equal(reports, 1)
 })
