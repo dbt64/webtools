@@ -1,0 +1,385 @@
+{
+  "schemaVersion": 1,
+  "phase": "6E-4A.1",
+  "capturedAtUtc": "2026-10-08T03:11:08.356Z",
+  "artifact": {
+    "electron": "44.4.5",
+    "chromium": "152.0.7977.130",
+    "node": "24.21.0",
+    "platform": "win32",
+    "osBuild": "10.0.26100",
+    "architecture": "x64",
+    "mode": "packaged-win-unpacked"
+  },
+  "testIds": {
+    "cacheStorage": {
+      "expected": "usable supported-key cache entry is explicitly read, cleared, isolated, and causes no network request",
+      "actual": {
+        "writableAndReadable": true,
+        "cleared": true,
+        "runtimeBIsolated": true,
+        "processRestartIsolated": true,
+        "networkRequests": 0
+      },
+      "status": "PASS"
+    },
+    "serviceWorker": {
+      "expected": "scheme Host privileges omit allowServiceWorkers; packaged registration attempts are rejected with TypeError and no Session worker becomes active",
+      "actual": {
+        "apiType": "object",
+        "allowServiceWorkers": false,
+        "attempts": [
+          {
+            "name": "package-local-default",
+            "outcome": "rejected",
+            "errorName": "TypeError"
+          },
+          {
+            "name": "package-local-explicit-scope",
+            "outcome": "rejected",
+            "errorName": "TypeError"
+          }
+        ],
+        "getRegistrationsError": "InvalidStateError",
+        "registrationEvents": 0,
+        "runningWorkers": 0,
+        "runtimeAndRestartAttemptsUnresolved": true
+      },
+      "status": "PASS"
+    },
+    "navigation": {
+      "expected": "forbidden scheme/host attempts do not commit or produce file/JS effects; active route remains usable",
+      "actual": {
+        "schemeMatrix": {
+          "file": {
+            "attempted": true,
+            "methods": [
+              "location.href",
+              "location.assign",
+              "location.replace",
+              "anchor.click",
+              "window.open",
+              "iframe.src"
+            ],
+            "commitCount": 0,
+            "targetCommitStatusCodes": [],
+            "hostDeniedCount": 0,
+            "requestPolicyReachedCount": 0,
+            "securityViolationCount": 0,
+            "consoleSecurityDenialCount": 6,
+            "fileSentinelAccessCount": 0,
+            "javascriptSideEffectCount": 0,
+            "failureEvents": 0
+          },
+          "javascript": {
+            "attempted": true,
+            "methods": [
+              "location.href",
+              "location.assign",
+              "location.replace",
+              "anchor.click",
+              "window.open",
+              "iframe.src"
+            ],
+            "commitCount": 0,
+            "targetCommitStatusCodes": [],
+            "hostDeniedCount": 0,
+            "requestPolicyReachedCount": 0,
+            "securityViolationCount": 6,
+            "consoleSecurityDenialCount": 6,
+            "fileSentinelAccessCount": 0,
+            "javascriptSideEffectCount": 0,
+            "failureEvents": 0
+          },
+          "http": {
+            "attempted": true,
+            "methods": [
+              "location.href",
+              "location.assign",
+              "location.replace",
+              "anchor.click",
+              "window.open",
+              "iframe.src"
+            ],
+            "commitCount": 0,
+            "targetCommitStatusCodes": [],
+            "hostDeniedCount": 4,
+            "requestPolicyReachedCount": 0,
+            "securityViolationCount": 1,
+            "consoleSecurityDenialCount": 1,
+            "fileSentinelAccessCount": 0,
+            "javascriptSideEffectCount": 0,
+            "failureEvents": 1
+          },
+          "https": {
+            "attempted": true,
+            "methods": [
+              "location.href",
+              "location.assign",
+              "location.replace",
+              "anchor.click",
+              "window.open",
+              "iframe.src"
+            ],
+            "commitCount": 0,
+            "targetCommitStatusCodes": [],
+            "hostDeniedCount": 4,
+            "requestPolicyReachedCount": 0,
+            "securityViolationCount": 1,
+            "consoleSecurityDenialCount": 1,
+            "fileSentinelAccessCount": 0,
+            "javascriptSideEffectCount": 0,
+            "failureEvents": 1
+          },
+          "data": {
+            "attempted": true,
+            "methods": [
+              "location.href",
+              "location.assign",
+              "location.replace",
+              "anchor.click",
+              "window.open",
+              "iframe.src"
+            ],
+            "commitCount": 0,
+            "targetCommitStatusCodes": [],
+            "hostDeniedCount": 0,
+            "requestPolicyReachedCount": 0,
+            "securityViolationCount": 1,
+            "consoleSecurityDenialCount": 5,
+            "fileSentinelAccessCount": 0,
+            "javascriptSideEffectCount": 0,
+            "failureEvents": 1
+          },
+          "blob": {
+            "attempted": true,
+            "methods": [
+              "location.href",
+              "location.assign",
+              "location.replace",
+              "anchor.click",
+              "window.open",
+              "iframe.src"
+            ],
+            "commitCount": 0,
+            "targetCommitStatusCodes": [],
+            "hostDeniedCount": 4,
+            "requestPolicyReachedCount": 0,
+            "securityViolationCount": 1,
+            "consoleSecurityDenialCount": 1,
+            "fileSentinelAccessCount": 0,
+            "javascriptSideEffectCount": 0,
+            "failureEvents": 1
+          },
+          "old-runtime": {
+            "attempted": true,
+            "methods": [
+              "location.href",
+              "location.assign",
+              "location.replace",
+              "anchor.click",
+              "window.open",
+              "iframe.src"
+            ],
+            "commitCount": 0,
+            "targetCommitStatusCodes": [],
+            "hostDeniedCount": 4,
+            "requestPolicyReachedCount": 0,
+            "securityViolationCount": 1,
+            "consoleSecurityDenialCount": 1,
+            "fileSentinelAccessCount": 0,
+            "javascriptSideEffectCount": 0,
+            "failureEvents": 1
+          },
+          "current-valid": {
+            "attempted": true,
+            "methods": [
+              "location.href",
+              "location.assign",
+              "location.replace",
+              "anchor.click",
+              "window.open",
+              "iframe.src"
+            ],
+            "commitCount": 4,
+            "targetCommitStatusCodes": [
+              200,
+              200,
+              200,
+              200
+            ],
+            "hostDeniedCount": 0,
+            "requestPolicyReachedCount": 0,
+            "securityViolationCount": 1,
+            "consoleSecurityDenialCount": 5,
+            "fileSentinelAccessCount": 0,
+            "javascriptSideEffectCount": 0,
+            "failureEvents": 1
+          },
+          "current-invalid": {
+            "attempted": true,
+            "methods": [
+              "location.href",
+              "location.assign",
+              "location.replace",
+              "anchor.click",
+              "window.open",
+              "iframe.src"
+            ],
+            "commitCount": 4,
+            "targetCommitStatusCodes": [
+              404,
+              404,
+              404,
+              404
+            ],
+            "hostDeniedCount": 0,
+            "requestPolicyReachedCount": 0,
+            "securityViolationCount": 1,
+            "consoleSecurityDenialCount": 1,
+            "fileSentinelAccessCount": 0,
+            "javascriptSideEffectCount": 0,
+            "failureEvents": 1
+          }
+        },
+        "file": {
+          "attempted": true,
+          "methods": [
+            "location.href",
+            "location.assign",
+            "location.replace",
+            "anchor.click",
+            "window.open",
+            "iframe.src"
+          ],
+          "committed": false,
+          "sentinelAccessible": false,
+          "hostBoundaryEvents": 0,
+          "browserSecurityEvents": 6
+        },
+        "javascript": {
+          "attempted": true,
+          "methods": [
+            "location.href",
+            "location.assign",
+            "location.replace",
+            "anchor.click",
+            "window.open",
+            "iframe.src"
+          ],
+          "committed": false,
+          "sideEffect": false,
+          "hostBoundaryEvents": 0,
+          "browserSecurityEvents": 12
+        },
+        "dangerousSchemesNoCommitOrEffects": true,
+        "currentRuntimeRouteAccepted": true,
+        "invalidRuntimeRouteReturnsOnly404": true,
+        "eventSequence": "attempt → will-frame/will-navigate Host deny when emitted, otherwise Chromium/CSP rejection → no forbidden commit/effect; current valid custom route commits; unknown current-origin route commits only an inert 404",
+        "hostPolicy": "only exact active webtools-plugin origin is accepted; all other schemes/hosts are denied by the probe WebContents navigation handler when Electron emits the event"
+      },
+      "status": "PASS"
+    },
+    "loadFailure": {
+      "expected": "invalid package route emits did-fail-load, faults and tears down within a bound, then fresh runtime loads",
+      "actual": {
+        "eventSequence": [
+          "did-fail-load",
+          "runtime-faulted",
+          "generation-revoked",
+          "view-removed",
+          "webContents-destroyed",
+          "fresh-runtime-ready"
+        ],
+        "didFailLoadObserved": true,
+        "runtimeState": "FAULTED",
+        "viewRemoved": true,
+        "webContentsDestroyed": true,
+        "remainingViews": 0,
+        "remainingWebContents": 0,
+        "generationRevoked": true,
+        "freshRuntimeReady": true,
+        "durationMs": 27,
+        "boundMs": 5000
+      },
+      "status": "PASS"
+    },
+    "rendererCrash": {
+      "expected": "renderer-gone revokes and destroys runtime; fresh runtime loads",
+      "actual": {
+        "eventSequence": [
+          "render-process-gone",
+          "generation-revoked",
+          "view-removed",
+          "webContents-destroyed",
+          "fresh-runtime-ready"
+        ],
+        "renderProcessGoneObserved": true,
+        "viewRemoved": true,
+        "webContentsDestroyed": true,
+        "remainingViews": 0,
+        "remainingWebContents": 0,
+        "generationRevoked": true,
+        "freshRuntimeReady": true,
+        "teardownMs": 2051
+      },
+      "status": "PASS"
+    },
+    "rendererUnresponsive": {
+      "expected": "2-second frozen close grace then scoped force teardown completes within bound",
+      "actual": {
+        "eventSequence": [
+          "renderer-busy-loop",
+          "2s-close-grace",
+          "generation-revoked",
+          "forcefullyCrashRenderer",
+          "render-process-gone",
+          "webContents-destroyed"
+        ],
+        "busyLoopScheduled": true,
+        "eventObserved": false,
+        "alternativeBoundedHangProof": true,
+        "graceBudgetMs": 2000,
+        "destroyed": true,
+        "remainingViews": 0,
+        "remainingWebContents": 0,
+        "teardownMs": 2074
+      },
+      "status": "PASS"
+    },
+    "staleCallback": {
+      "expected": "revoked generation callback cannot mutate new runtime state",
+      "actual": {
+        "eventSequence": [
+          "generation-A-started",
+          "generation-A-revoked",
+          "generation-B-created",
+          "A-late-callback-attempted",
+          "A-late-callback-rejected"
+        ],
+        "generationA": 60,
+        "generationB": 61,
+        "attempted": true,
+        "accepted": false,
+        "runtimeBUnchanged": true,
+        "storageUnchanged": true,
+        "hostStateUnchanged": true
+      },
+      "status": "PASS"
+    },
+    "failurePathCleanup": {
+      "expected": "no view/webcontents remains and packaged exact-path process count is zero after exit",
+      "actual": {
+        "remainingViews": 0,
+        "remainingWebContents": 0,
+        "mainProcessIdentityMatched": true,
+        "exactPackagedExecutableProcessesAfterExit": 0,
+        "pass": true
+      },
+      "status": "PASS"
+    }
+  },
+  "contractChanges": "NONE",
+  "productionChanges": "NONE",
+  "finalStatus": "PASS"
+}
