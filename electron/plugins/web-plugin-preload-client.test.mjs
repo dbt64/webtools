@@ -47,3 +47,41 @@ test('runtime close resolves pending transport outcomes and removes its IPC list
   assert.equal(closeCount, 1)
   h.facade.dispose()
 })
+
+test('preload local thirty-second expiry cancels once, ignores late response and keeps later calls usable', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = harness()
+  h.deliver('{"type":"ready","protocolMajor":1,"accepted":true}')
+  const call = h.facade.submit('bridge.ping', null)
+  let settled = false
+  call.response.then(() => { settled = true })
+  t.mock.timers.tick(29999); await Promise.resolve(); assert.equal(settled, false)
+  t.mock.timers.tick(1)
+  assert.deepEqual(await call.response, { ok: false, error: { code: 'TIMEOUT', retryable: false } })
+  call.cancel()
+  h.deliver('{"type":"response","protocolMajor":1,"requestId":"1","ok":true,"result":null}')
+  assert.equal(h.sent.filter(raw => JSON.parse(raw).type === 'cancel').length, 1)
+  const next = h.facade.submit('bridge.ping', null)
+  h.deliver('{"type":"response","protocolMajor":1,"requestId":"2","ok":true,"result":null}')
+  assert.deepEqual(await next.response, { ok: true, result: null })
+  h.facade.dispose()
+})
+
+test('preload dispose clears timers/correlation/subscriptions and stale delivery cannot reopen it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = harness(); let closes = 0
+  const unsubscribe = h.facade.onClose(() => closes++)
+  unsubscribe()
+  h.facade.onClose(() => { closes++ })
+  h.deliver('{"type":"ready","protocolMajor":1,"accepted":true}')
+  const call = h.facade.submit('bridge.ping', null)
+  h.facade.dispose(); h.facade.dispose()
+  assert.equal(closes, 1); assert.equal(h.disposed(), true)
+  assert.equal((await call.response).error.code, 'RUNTIME_CLOSED')
+  const sent = h.sent.length
+  t.mock.timers.tick(60000)
+  h.deliver('{"type":"ready","protocolMajor":1,"accepted":true}')
+  h.deliver('{"type":"response","protocolMajor":1,"requestId":"1","ok":true,"result":null}')
+  assert.equal((await h.facade.submit('bridge.ping', null).response).error.code, 'RUNTIME_CLOSED')
+  assert.equal(h.sent.length, sent)
+})

@@ -31,8 +31,9 @@ function harness(preloadHello = true, autoFinish = true) {
   class Contents extends EventEmitter {
     destroyed = false
     mainFrame = { url: '', detached: false }
+    sent = []
     getURL() { return this.mainFrame.url }
-    send() {}
+    send(route, raw) { this.sent.push({ route, message: JSON.parse(raw) }) }
     isDestroyed() { return this.destroyed }
     setWebRTCIPHandlingPolicy() {}
     setWindowOpenHandler() {}
@@ -143,4 +144,73 @@ test('failed Session cleanup prevents the in-progress Feature switch from creati
     assert.equal(views.length, 1, 'a failed security cleanup must not admit another view')
     await assert.rejects(runtime.open(snapshot, 'hello'), /unavailable/)
   } finally { await runtime.close() }
+})
+
+const ping = id => `{"type":"request","protocolMajor":1,"requestId":"${id}","method":"bridge.ping","payload":null}`
+const flush = () => new Promise(resolve => setImmediate(resolve))
+
+test('actual runtime authentication drops a foreign sender without consuming tokens or canceling the current call', async () => {
+  const snapshot = await validateWebPackageForRuntime(webPackage(webManifest()), '0.1.0')
+  const h = harness(); await h.runtime.open(snapshot, 'hello')
+  const contents = h.views[0].webContents
+  const current = { sender: contents, senderFrame: contents.mainFrame }
+  const foreign = { sender: { mainFrame: contents.mainFrame }, senderFrame: contents.mainFrame }
+  try {
+    h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, current, ping('1'))
+    h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, foreign, '{"type":"cancel","protocolMajor":1,"requestId":"1"}')
+    for (let i = 1; i <= 21; i++) h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, foreign, ping(String(i)))
+    await flush()
+    assert.equal(h.runtime.status.state, 'READY')
+    assert.equal(contents.sent.at(-1).message.ok, true)
+    assert.equal(contents.sent.filter(x => x.message.type === 'response').length, 1)
+    for (let i = 2; i <= 20; i++) {
+      h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, current, ping(String(i))); await flush()
+      assert.equal(contents.sent.at(-1).message.ok, true)
+    }
+    h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, current, ping('21'))
+    assert.equal(contents.sent.at(-1).message.error.code, 'LIMIT_EXCEEDED')
+  } finally { await h.runtime.close() }
+})
+
+test('current Plugin subframe violation revokes before Session cleanup can finish', async () => {
+  const snapshot = await validateWebPackageForRuntime(webPackage(webManifest()), '0.1.0')
+  const h = harness(); await h.runtime.open(snapshot, 'hello')
+  const contents = h.views[0].webContents
+  const cleanup = deferred()
+  h.currentSession.clearStorageData = () => cleanup.promise
+  const oldListener = h.ipcMain.listeners(PLUGIN_BRIDGE_CLIENT_ROUTE)[0]
+  try {
+    h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, { sender: contents, senderFrame: { ...contents.mainFrame } }, ping('1'))
+    assert.equal(h.runtime.status.state, 'ABSENT')
+    assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 0)
+    oldListener({ sender: contents, senderFrame: contents.mainFrame }, ping('2'))
+    assert.equal(contents.sent.filter(x => x.message.type === 'response').length, 0)
+    assert.equal(contents.sent.at(-1).message.type, 'runtime-closed')
+  } finally { cleanup.resolve(); await h.runtime.close() }
+})
+
+test('normal close removes old authority before await and replacement cannot inherit an old listener', async () => {
+  const snapshot = await validateWebPackageForRuntime(webPackage(webManifest()), '0.1.0')
+  const h = harness(); await h.runtime.open(snapshot, 'hello')
+  const contents = h.views[0].webContents
+  const oldGeneration = h.runtime.status.generation
+  const oldListener = h.ipcMain.listeners(PLUGIN_BRIDGE_CLIENT_ROUTE)[0]
+  const cleanup = deferred()
+  h.currentSession.clearStorageData = () => cleanup.promise
+  const closing = h.runtime.close()
+  assert.equal(h.runtime.status.state, 'ABSENT')
+  assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 0)
+  const replacement = h.runtime.open(snapshot, 'hello')
+  try {
+    await flush(); assert.equal(h.views.length, 1)
+    cleanup.resolve(); await closing; await replacement
+    assert.ok(h.runtime.status.generation > oldGeneration)
+    const next = h.views[1].webContents
+    h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, { sender: next, senderFrame: next.mainFrame }, ping('1'))
+    oldListener({ sender: contents, senderFrame: contents.mainFrame }, '{"type":"cancel","protocolMajor":1,"requestId":"1"}')
+    await flush()
+    assert.equal(next.sent.at(-1).message.ok, true)
+    assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 1)
+  } finally { cleanup.resolve(); await replacement.catch(() => {}); await h.runtime.close() }
+  assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 0)
 })

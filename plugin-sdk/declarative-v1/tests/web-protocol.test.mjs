@@ -39,3 +39,23 @@ test('raw UTF-8 gate rejects large bodies before parsing and bounds scalar/depth
   for (let n = 0; n < 17; n++) payload = [payload]
   assert.throws(() => protocol.encodeMessage({ type: 'request', protocolMajor: 1, requestId: '1', method: 'bridge.ping', payload }, 'client'))
 })
+
+test('request and response exact UTF-8 envelope bounds pass while +1 is rejected before JSON.parse', () => {
+  const parse = JSON.parse
+  let parses = 0
+  for (const [prefix, suffix, direction] of [
+    ['{"type":"request","protocolMajor":1,"requestId":"1","method":"bridge.ping","payload":"', '"}', 'client'],
+    ['{"type":"response","protocolMajor":1,"requestId":"1","ok":true,"result":"', '"}', 'host'],
+  ]) {
+    const raw = prefix + 'x'.repeat(532480 - prefix.length - suffix.length) + suffix
+    assert.equal(protocol.measureUtf8(raw), 532480)
+    assert.equal(protocol.encodeMessage(protocol.parseMessage(raw, direction), direction), raw)
+    const tooLarge = prefix + 'x'.repeat(532481 - prefix.length - suffix.length) + suffix
+    try {
+      JSON.parse = (...args) => { parses++; return parse(...args) }
+      assert.throws(() => protocol.decodeRaw(tooLarge), error => error.code === 'LIMIT_EXCEEDED')
+      assert.equal(parses, 0)
+    } finally { JSON.parse = parse }
+  }
+  assert.equal(protocol.parseMessage('{"type":"cancel","protocolMajor":1,"requestId":"9007199254740991"}', 'client').requestId, '9007199254740991')
+})
