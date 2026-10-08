@@ -25,3 +25,19 @@ The generated project uses pnpm `9.15.9`. Use the actual target Host version for
 Third-party packages support only the fixed declarative page blocks and capabilities. They cannot provide executable JavaScript, Vue/HTML, Node/Electron access, arbitrary filesystem access, SecretStore access, or arbitrary IPC.
 
 See the complete author setup, CLI reference, manifest contract, troubleshooting, and manual install steps in [the plugin development guide](../../../docs/plugin-development.md).
+
+## Browser connection entry
+
+`@webtools/plugin-sdk/web` is a browser-only entry for the isolated Web Plugin runtime. Its current public API provides readiness and runtime-close notification:
+
+```js
+import { connectWebTools } from '@webtools/plugin-sdk/web'
+
+const webtools = connectWebTools()
+await webtools.ready
+const unsubscribe = webtools.onClose(() => {
+  // Stop plugin-local work when the runtime closes.
+})
+```
+
+The callback subscription can be removed with `unsubscribe()`. Connection readiness rejects outside a compatible WebTools runtime. This entry does not provide Host capabilities or a generic request API. Normal Manifest v2 installation remains unavailable; the current Web runtime is exercised through Host-validated isolated acceptance fixtures. The existing package root and CLI continue to provide Node-based authoring tools.

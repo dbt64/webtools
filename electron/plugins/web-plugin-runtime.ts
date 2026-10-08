@@ -1,4 +1,7 @@
-import { WebContentsView, session, type BrowserWindow, type Rectangle, type Session } from 'electron'
+import { WebContentsView, ipcMain, session, type BrowserWindow, type Rectangle, type Session } from 'electron'
+import { join } from 'node:path'
+import { WebPluginBridge } from './web-plugin-bridge.ts'
+import { PLUGIN_BRIDGE_CLIENT_ROUTE, PLUGIN_BRIDGE_HOST_ROUTE } from './web-plugin-bridge-routes.ts'
 import { buildRuntimeCsp, buildRuntimeResourceUrl, createRuntimeOrigin, parseRuntimePackageUrl, selectValidatedWebFeature } from './web-runtime-policy.ts'
 import type { ValidatedWebPackageSnapshot } from './validated-web-package-snapshot.ts'
 import { isValidatedWebPackageSnapshot } from './package-validator.ts'
@@ -21,6 +24,11 @@ interface RuntimeInstance {
   rejectLoad?: (error: Error) => void
   timeout?: NodeJS.Timeout
   closePromise?: Promise<void>
+  entryUrl: string
+  documentLoaded: boolean
+  initialNavigationStarted: boolean
+  bridge?: WebPluginBridge
+  removeBridgeListener?: () => void
 }
 
 export class WebPluginRuntime {
@@ -90,6 +98,7 @@ export class WebPluginRuntime {
     this.assertCurrentRequest(requestGeneration)
     const view = new WebContentsView({ webPreferences: {
       session: currentSession,
+      preload: join(__dirname, '../preload/web-plugin.js'),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -101,8 +110,18 @@ export class WebPluginRuntime {
     const runtime: RuntimeInstance = {
       snapshot, featureId, feature: selection.feature, host: identity.host,
       generation: ++this.generation, view, state: 'CREATING', removeView: false,
+      entryUrl: buildRuntimeResourceUrl(identity.host, selection.entryPath), documentLoaded: false, initialNavigationStarted: false,
     }
     this.active = runtime
+    runtime.bridge = new WebPluginBridge({
+      authenticate: event => this.authenticateBridge(runtime, event),
+      send: raw => view.webContents.send(PLUGIN_BRIDGE_HOST_ROUTE, raw),
+      onReady: () => { runtime.state = 'READY'; this.publish(runtime) },
+      onFatal: () => { void this.closeRuntime(runtime) },
+    })
+    const receive = (event: Electron.IpcMainEvent, raw: unknown) => runtime.bridge?.receive(event, raw)
+    ipcMain.on(PLUGIN_BRIDGE_CLIENT_ROUTE, receive)
+    runtime.removeBridgeListener = () => { ipcMain.removeListener(PLUGIN_BRIDGE_CLIENT_ROUTE, receive) }
     this.publish(runtime)
     window.contentView.addChildView(view)
     runtime.removeView = true
@@ -113,10 +132,9 @@ export class WebPluginRuntime {
     runtime.state = 'LOADING'
     this.publish(runtime)
     try {
-      await this.load(runtime, buildRuntimeResourceUrl(runtime.host, selection.entryPath))
-      if (this.active !== runtime || runtime.generation !== this.generation || runtime.state !== 'LOADING') throw new Error('Stale Web Plugin runtime load')
-      runtime.state = 'READY'
-      this.publish(runtime)
+      await this.load(runtime, runtime.entryUrl)
+      await runtime.bridge.ready
+      if (this.active !== runtime || runtime.generation !== this.generation || (runtime.state as WebRuntimeState) !== 'READY') throw new Error('Stale Web Plugin runtime load')
       return this.status
     } catch (error) {
       if ((runtime.state as WebRuntimeState) !== 'CLOSING' && (runtime.state as WebRuntimeState) !== 'CLOSED') {
@@ -236,6 +254,16 @@ export class WebPluginRuntime {
       callback(false)
     })
     contents.on('will-attach-webview', event => event.preventDefault())
+    contents.on('did-start-navigation', details => {
+      if (!details.isMainFrame || details.isSameDocument) return
+      if (runtime.initialNavigationStarted || runtime.documentLoaded || details.url !== runtime.entryUrl) {
+        void this.closeRuntime(runtime)
+      } else runtime.initialNavigationStarted = true
+    })
+    contents.on('unresponsive', () => { void this.closeRuntime(runtime) })
+    contents.on('destroyed', () => {
+      if (runtime.state !== 'CLOSING' && runtime.state !== 'CLOSED') void this.closeRuntime(runtime)
+    })
     contents.on('render-process-gone', () => {
       if (this.active !== runtime || runtime.state === 'CLOSING' || runtime.state === 'CLOSED') return
       runtime.state = 'FAULTED'
@@ -253,7 +281,12 @@ export class WebPluginRuntime {
         contents.removeListener('did-fail-load', failed)
         contents.removeListener('render-process-gone', crashed)
       }
-      const finish = () => { cleanup(); resolve() }
+      const finish = () => {
+        cleanup()
+        runtime.documentLoaded = true
+        runtime.bridge?.documentLoaded()
+        resolve()
+      }
       const failed = (_event: Electron.Event, code: number, description: string, _url: string, isMainFrame: boolean) => {
         if (!isMainFrame || code === -3) return
         cleanup(); reject(new Error(`Web Plugin document failed to load (${code}): ${description}`))
@@ -274,6 +307,20 @@ export class WebPluginRuntime {
     if (requestGeneration !== this.requestGeneration) throw new Error('Stale Web Plugin runtime request')
   }
 
+  private authenticateBridge(runtime: RuntimeInstance, value: unknown): 'current' | 'invalid' | 'unrelated' {
+    const event = value as Electron.IpcMainEvent
+    const contents = runtime.view.webContents
+    if (event.sender !== contents) return 'unrelated'
+    if (this.active !== runtime || runtime.generation !== this.generation
+      || !['LOADING', 'READY'].includes(runtime.state) || contents.isDestroyed()
+      || !event.senderFrame || event.senderFrame !== contents.mainFrame || event.senderFrame.detached
+      || event.senderFrame.url.split(/[?#]/, 1)[0] !== runtime.entryUrl
+      || contents.getURL().split(/[?#]/, 1)[0] !== runtime.entryUrl
+      || !isValidatedWebPackageSnapshot(runtime.snapshot)
+      || runtime.feature.id !== runtime.featureId || !runtime.snapshot.manifest.features.includes(runtime.feature)) return 'invalid'
+    return 'current'
+  }
+
   private closeRuntime(runtime: RuntimeInstance): Promise<void> {
     if (runtime.closePromise) return runtime.closePromise
     runtime.closePromise = this.performCloseRuntime(runtime)
@@ -285,9 +332,13 @@ export class WebPluginRuntime {
     if (runtime.state === 'CLOSED') return
     runtime.state = 'CLOSING'
     if (this.active === runtime) this.active = null // Revoke generation and protocol access before touching WebContents.
+    const bridgeClosed = runtime.bridge?.revoke()
+    runtime.removeBridgeListener?.()
+    runtime.removeBridgeListener = undefined
     runtime.rejectLoad?.(new Error('Web Plugin runtime closed'))
     clearTimeout(runtime.timeout)
     this.publish(runtime)
+    await bridgeClosed // At most the frozen two-second cooperative grace; authority is already gone.
     const window = this.getWindow()
     try {
       if (runtime.removeView && window && !window.isDestroyed() && window.contentView.children.includes(runtime.view)) window.contentView.removeChildView(runtime.view)

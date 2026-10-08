@@ -4,6 +4,9 @@ import { EventEmitter } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import { stripTypeScriptTypes } from 'node:module'
 import { runInNewContext } from 'node:vm'
+import { join } from 'node:path'
+import { WebPluginBridge } from './web-plugin-bridge.ts'
+import { PLUGIN_BRIDGE_CLIENT_ROUTE, PLUGIN_BRIDGE_HOST_ROUTE } from './web-plugin-bridge-routes.ts'
 import { webManifest, webPackage } from './fixtures.mjs'
 import { isValidatedWebPackageSnapshot, validateWebPackageForRuntime } from './package-validator.ts'
 import { buildRuntimeCsp, buildRuntimeResourceUrl, createRuntimeOrigin, parseRuntimePackageUrl, selectValidatedWebFeature } from './web-runtime-policy.ts'
@@ -17,7 +20,8 @@ function deferred() {
   return { promise, resolve }
 }
 
-function harness() {
+function harness(preloadHello = true, autoFinish = true) {
+  const ipcMain = new EventEmitter()
   const views = []
   const currentSession = Object.assign(new EventEmitter(), {
     setPermissionRequestHandler() {}, setPermissionCheckHandler() {},
@@ -26,10 +30,20 @@ function harness() {
   })
   class Contents extends EventEmitter {
     destroyed = false
+    mainFrame = { url: '', detached: false }
+    getURL() { return this.mainFrame.url }
+    send() {}
     isDestroyed() { return this.destroyed }
     setWebRTCIPHandlingPolicy() {}
     setWindowOpenHandler() {}
-    async loadURL() { queueMicrotask(() => this.emit('did-finish-load')) }
+    async loadURL(url) {
+      this.mainFrame.url = url
+      this.emit('did-start-navigation', { url, isMainFrame: true, isSameDocument: false })
+      queueMicrotask(() => {
+        if (preloadHello) ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, { sender: this, senderFrame: this.mainFrame }, '{"type":"hello","protocolMajor":1}')
+        if (autoFinish) this.emit('did-finish-load')
+      })
+    }
     close() { this.destroyed = true; this.emit('destroyed') }
   }
   class View {
@@ -44,11 +58,55 @@ function harness() {
   }
   const Runtime = runInNewContext(`${source}\nWebPluginRuntime`, {
     WebContentsView: View, session: { fromPartition: () => currentSession },
+    ipcMain, WebPluginBridge, PLUGIN_BRIDGE_CLIENT_ROUTE, PLUGIN_BRIDGE_HOST_ROUTE, join, __dirname: '.',
     buildRuntimeCsp, buildRuntimeResourceUrl, createRuntimeOrigin, parseRuntimePackageUrl, selectValidatedWebFeature,
     isValidatedWebPackageSnapshot, setTimeout, clearTimeout, process: { argv: [], env: {} }, Headers, Response,
   })
-  return { runtime: new Runtime(() => window), currentSession, views }
+  return { runtime: new Runtime(() => window), currentSession, views, ipcMain }
 }
+
+test('loaded document alone stays LOADING until the dedicated preload handshake arrives', async () => {
+  const snapshot = await validateWebPackageForRuntime(webPackage(webManifest()), '0.1.0')
+  const h = harness(false)
+  const opening = h.runtime.open(snapshot, 'hello')
+  await new Promise(resolve => setImmediate(resolve))
+  try {
+    assert.equal(h.runtime.status.state, 'LOADING')
+    const contents = h.views[0].webContents
+    h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, { sender: contents, senderFrame: contents.mainFrame }, '{"type":"hello","protocolMajor":1}')
+    assert.equal((await opening).state, 'READY')
+  } finally { await h.runtime.close(); await opening.catch(() => {}) }
+})
+
+test('cross-document reload revokes the generation and removes its private IPC listener', async () => {
+  const snapshot = await validateWebPackageForRuntime(webPackage(webManifest()), '0.1.0')
+  const h = harness()
+  await h.runtime.open(snapshot, 'hello')
+  h.views[0].webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(h.views[0].webContents.destroyed, true)
+  assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 0)
+  await h.runtime.open(snapshot, 'hello')
+  assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 1)
+  await h.runtime.close()
+})
+
+test('reload between preload hello and document finish revokes the old handshake', async () => {
+  const snapshot = await validateWebPackageForRuntime(webPackage(webManifest()), '0.1.0')
+  const h = harness(false, false)
+  const opening = h.runtime.open(snapshot, 'hello')
+  opening.catch(() => {})
+  await new Promise(resolve => setImmediate(resolve))
+  const contents = h.views[0].webContents
+  h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, { sender: contents, senderFrame: contents.mainFrame }, '{"type":"hello","protocolMajor":1}')
+  contents.emit('did-start-navigation', { url: contents.mainFrame.url, isMainFrame: true, isSameDocument: false })
+  contents.emit('did-finish-load')
+  try {
+    await assert.rejects(opening, /closed/)
+    assert.equal(contents.destroyed, true)
+    assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 0)
+  } finally { await h.runtime.close() }
+})
 
 test('crash teardown completes before a replacement runtime can reuse its Session', async () => {
   const snapshot = await validateWebPackageForRuntime(webPackage(webManifest()), '0.1.0')

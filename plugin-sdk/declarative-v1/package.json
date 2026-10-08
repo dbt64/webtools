@@ -10,9 +10,10 @@
   "types": "types.d.ts",
   "exports": {
     ".": { "types": "./types.d.ts", "import": "./index.mjs" },
+    "./web": { "types": "./web/index.d.ts", "import": "./web/index.mjs" },
     "./manifest.schema.json": "./manifest.schema.json",
     "./package.json": "./package.json"
   },
-  "files": ["bin", "src", "runtime", "types.d.ts", "manifest.schema.json", "index.mjs", "README.md"],
+  "files": ["bin", "src", "runtime", "web", "types.d.ts", "manifest.schema.json", "index.mjs", "README.md"],
   "dependencies": { "yauzl": "3.4.0" }
 }

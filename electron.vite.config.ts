@@ -9,7 +9,7 @@ export default defineConfig({
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
-    build: { rollupOptions: { input: { index: resolve(__dirname, 'electron/preload.ts') } } },
+    build: { rollupOptions: { input: { index: resolve(__dirname, 'electron/preload.ts'), 'web-plugin': resolve(__dirname, 'electron/web-plugin-preload.ts') } } },
   },
   renderer: {
     root: resolve(__dirname),
