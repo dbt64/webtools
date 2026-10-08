@@ -44,15 +44,33 @@ function mount(desktop, renderHandoffViews = false) {
     })
     return null
   } : () => null
+  let webRuntimeStateListener
   globalThis.window = { setTimeout, clearTimeout, desktop: {
     onNativeManagerIntent: () => () => {}, managerReady() {},
+    webRuntime: { onState: listener => { webRuntimeStateListener = listener; return () => { webRuntimeStateListener = undefined } } },
     builtinTranslationHandoff: { get: async () => ({ ok: true, data: { status: 'none', uiGeneration: 0 } }), resolve: async () => ({ ok: true, data: { status: 'none', uiGeneration: 0 } }) },
     ...desktop,
   } }
   const app = renderer.createApp(App); app.provide(Symbol.for('v-scx'), { modules: new Set() })
   const vm = app.mount({})
-  return { app, state: vm.$.setupState, instance: vm.$ }
+  return { app, state: vm.$.setupState, instance: vm.$, publishWebRuntimeState: status => webRuntimeStateListener?.(status) }
 }
+
+test('late CLOSED state from a replaced Web Runtime generation cannot restore the prior Manager route', async () => {
+  const env = mount({})
+  try {
+    await tick()
+    env.publishWebRuntimeState({ state: 'CREATING', featureId: 'first', generation: 1 })
+    env.publishWebRuntimeState({ state: 'LOADING', featureId: 'first', generation: 1 })
+    env.publishWebRuntimeState({ state: 'CLOSING', featureId: 'first', generation: 1 })
+    env.publishWebRuntimeState({ state: 'CLOSED', featureId: 'first', generation: 1 })
+    env.publishWebRuntimeState({ state: 'CREATING', featureId: 'second', generation: 3 })
+    env.publishWebRuntimeState({ state: 'LOADING', featureId: 'second', generation: 3 })
+    env.publishWebRuntimeState({ state: 'READY', featureId: 'second', generation: 3 })
+    env.publishWebRuntimeState({ state: 'CLOSED', featureId: 'first', generation: 1 })
+    assert.equal(env.state.activeSection, 'web-runtime')
+  } finally { env.app.unmount() }
+})
 test('reopening active Translation does not leave its section or invoke another page load', async () => {
   let opens = 0; let cancellations = 0; let finishTranslation
   const env = mount({

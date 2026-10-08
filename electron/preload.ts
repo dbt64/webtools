@@ -64,6 +64,19 @@ const desktopApi: DesktopApi = {
   openEverythingResult: (id) => ipcRenderer.invoke(IPC_CHANNELS.openEverythingResult, id) as ReturnType<DesktopApi['openEverythingResult']>,
   detectEverything: () => ipcRenderer.invoke(IPC_CHANNELS.detectEverything) as ReturnType<DesktopApi['detectEverything']>,
   chooseEverythingPath: () => ipcRenderer.invoke(IPC_CHANNELS.chooseEverythingPath) as ReturnType<DesktopApi['chooseEverythingPath']>,
+  webRuntime: {
+    setBounds: (bounds) => ipcRenderer.send(IPC_CHANNELS.webRuntimeSetBounds, bounds),
+    close: (generation) => ipcRenderer.send(IPC_CHANNELS.webRuntimeClose, generation),
+    onState: handler => {
+      const listener = (_event: Electron.IpcRendererEvent, value: unknown): void => {
+        if (!value || typeof value !== 'object' || !('state' in value) || typeof value.state !== 'string'
+          || !('generation' in value) || typeof value.generation !== 'number') return
+        handler(value as Parameters<typeof handler>[0])
+      }
+      ipcRenderer.on(IPC_CHANNELS.webRuntimeState, listener)
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.webRuntimeState, listener)
+    },
+  },
 }
 
 contextBridge.exposeInMainWorld('desktop', desktopApi)

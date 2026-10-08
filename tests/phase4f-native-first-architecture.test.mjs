@@ -62,7 +62,7 @@ test('Native first-start migration from legacy Electron data remains implemented
 
 test('packaged Electron connects to Native before creating its sole Manager window', async () => {
   const main = await read('electron/main.ts')
-  assert.match(main, /const nativeManaged = app\.isPackaged \|\| isNativeManagerOnly/)
+  assert.match(main, /const nativeManaged = !webRuntimeAcceptance && \(app\.isPackaged \|\| isNativeManagerOnly/)
   const startup = main.slice(main.indexOf('app.whenReady().then'))
   assert.ok(startup.indexOf('await nativeManagerClient.connect()') < startup.indexOf('createWindow()'))
   assert.match(main, /builtinTranslationHandoff\?\.rendererReady\(\)/)

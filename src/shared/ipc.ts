@@ -67,6 +67,11 @@ export interface DesktopApi {
   openEverythingResult(id: string): Promise<IpcResult<void>>
   detectEverything(): Promise<{ executablePath?: string; running: boolean; version?: string }>
   chooseEverythingPath(): Promise<string | null>
+  webRuntime: {
+    setBounds(bounds: { x: number; y: number; width: number; height: number }): void
+    close(generation: number): void
+    onState(handler: (state: { state: string; featureId?: string; generation: number }) => void): () => void
+  }
 }
 
 export type NativeManagerIntent =
@@ -124,4 +129,7 @@ export const IPC_CHANNELS = {
   openEverythingResult: 'everything:open',
   detectEverything: 'everything:detect',
   chooseEverythingPath: 'everything:choose-path',
+  webRuntimeSetBounds: 'web-runtime:set-bounds',
+  webRuntimeClose: 'web-runtime:close',
+  webRuntimeState: 'web-runtime:state',
 } as const

@@ -175,7 +175,7 @@ function validateMagic(path, data, manifest, iconPaths) {
   if (item.mediaType === 'font/woff2' && (data.length < 4 || data.toString('ascii', 0, 4) !== 'wOF2')) reject('UNSUPPORTED_FILE_TYPE')
 }
 
-async function validateArchive(bytes, manifest, iconPaths) {
+async function validateArchive(bytes, manifest, iconPaths, collectResources = false) {
   const zip = await openZip(bytes, true)
   try {
     if (zip.comment || !Number.isSafeInteger(zip.entryCount) || zip.entryCount > LIMITS_V2.entries) reject(zip.entryCount > LIMITS_V2.entries ? 'PACKAGE_LIMIT_EXCEEDED' : 'UNSAFE_ARCHIVE')
@@ -184,6 +184,7 @@ async function validateArchive(bytes, manifest, iconPaths) {
     const seenFolded = new Set()
     let count = 0
     let expanded = 0
+    const resources = []
     for await (const entry of zip.eachEntry()) {
       count++
       const name = checkEntryMetadata(entry, checkEntryName(entry))
@@ -198,12 +199,18 @@ async function validateArchive(bytes, manifest, iconPaths) {
       expanded += content.length
       if (expanded > LIMITS_V2.expanded) reject('PACKAGE_LIMIT_EXCEEDED')
       validateMagic(name, content, manifest, iconPaths)
+      if (collectResources && name !== MANIFEST_NAME) {
+        const item = [...manifest.webBundle.files, ...manifest.assets].find(value => value.path === name)
+        if (!item) reject('INVENTORY_MISMATCH')
+        resources.push({ canonicalPath: name, mimeType: item.mediaType, size: content.length, bytes: content })
+      }
     }
     if (count !== zip.entryCount || seenNames.size !== declared.size || [...declared].some(name => !seenNames.has(name))) reject('INVENTORY_MISMATCH')
     for (const path of seenNames) {
       const parts = path.split('/')
       for (let index = 1; index < parts.length; index++) if (seenNames.has(parts.slice(0, index).join('/'))) reject('INVALID_PATH')
     }
+    return collectResources ? { expandedSize: expanded, resources } : undefined
   } catch (error) {
     if (error instanceof ManifestV2ValidationError) throw error
     reject('UNSAFE_ARCHIVE')
@@ -216,17 +223,29 @@ export async function readManifestVersion(source) {
   return (await readManifest(source, false)).version
 }
 
-export async function validatePackageV2(source, hostVersion, reservedFeatureIdentities = ['webtools.translation\0translate-text']) {
+async function validatePackageV2Core(source, hostVersion, reservedFeatureIdentities, collectResources) {
   const parsedArchive = await readManifest(source, true)
   if (parsedArchive.version !== 2) reject('UNSUPPORTED_MANIFEST_VERSION')
   const normalized = parseManifestV2(parsedArchive.bytes, hostVersion, reservedFeatureIdentities)
   const iconPaths = new Set(normalized.manifest.features.filter(feature => feature.icon?.kind === 'asset').map(feature => feature.icon.path))
-  await validateArchive(parsedArchive.archive, normalized.manifest, iconPaths)
-  return Object.freeze({
+  const archiveResult = await validateArchive(parsedArchive.archive, normalized.manifest, iconPaths, collectResources)
+  const result = {
     manifest: normalized.manifest,
     hash: createHash('sha256').update(parsedArchive.archive).digest('hex'),
     size: parsedArchive.archive.byteLength,
     runtimeSupport: 'not-implemented',
     networkRuntimeSupport: normalized.networkRuntimeSupport,
-  })
+  }
+  return collectResources
+    ? Object.freeze({ ...result, expandedSize: archiveResult.expandedSize, resources: Object.freeze(archiveResult.resources.map(resource => Object.freeze(resource))) })
+    : Object.freeze(result)
+}
+
+export async function validatePackageV2(source, hostVersion, reservedFeatureIdentities = ['webtools.translation\0translate-text']) {
+  return validatePackageV2Core(source, hostVersion, reservedFeatureIdentities, false)
+}
+
+/** Host-internal result. Not re-exported from the public SDK package entry. */
+export async function validatePackageV2ForRuntime(source, hostVersion, reservedFeatureIdentities = ['webtools.translation\0translate-text']) {
+  return validatePackageV2Core(source, hostVersion, reservedFeatureIdentities, true)
 }

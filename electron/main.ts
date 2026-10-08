@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, type WebContents } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, protocol, type WebContents } from 'electron'
 import { basename, dirname, join } from 'node:path'
+import { readFile, unlink } from 'node:fs/promises'
 import { IPC_CHANNELS } from '../src/shared/ipc'
 import { DataStore } from './services/data-store'
 import { SecretStore } from './services/secret-store'
@@ -44,14 +45,31 @@ import type { PluginRef } from '../src/shared/plugin-catalog-contracts'
 import type { PluginManager } from './plugins/plugin-manager'
 import type { DeclarativeCompatibilityFeature } from './plugins/feature-contracts'
 import type { FeatureRef } from '../src/shared/feature-contracts'
+import { WebPluginRuntime } from './plugins/web-plugin-runtime.ts'
+import { validateWebPackageForRuntime } from './plugins/package-validator.ts'
+import { resolveWebRuntimeAcceptanceOptions } from './services/web-runtime-acceptance-options.ts'
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'webtools-plugin',
+  privileges: { standard: true, secure: true, supportFetchAPI: true },
+}])
 
 const isDevelopment = !app.isPackaged
-const nativeManaged = app.isPackaged || isNativeManagerOnly(process.argv, process.env)
+const webRuntimeAcceptance = process.argv.includes('--phase6e4b-web-runtime-acceptance') && process.env.WEBTOOLS_WEB_RUNTIME_ACCEPTANCE === '1'
+if (webRuntimeAcceptance) {
+  const debugPort = Number(process.env.WEBTOOLS_WEB_RUNTIME_TEST_DEBUG_PORT)
+  if (Number.isInteger(debugPort) && debugPort >= 1024 && debugPort <= 65535) app.commandLine.appendSwitch('remote-debugging-port', String(debugPort))
+}
+const nativeManaged = !webRuntimeAcceptance && (app.isPackaged || isNativeManagerOnly(process.argv, process.env))
 const nativePipeName = process.env.WEBTOOLS_NATIVE_PIPE ?? 'WebTools.NativeHost.Manager.v1'
 const managerDirectory = dirname(process.execPath)
 const managerTestInstallRoot = app.isPackaged
   ? basename(managerDirectory).toLowerCase() === 'manager' ? dirname(managerDirectory) : managerDirectory
   : undefined
+const webRuntimeAcceptanceOptions = resolveWebRuntimeAcceptanceOptions(process.argv, process.env, {
+  userProfilePath: join(app.getPath('appData'), 'Nook'),
+  installRoot: managerTestInstallRoot,
+})
 if (isDevelopment) app.setName('webtools-desktop-dev')
 
 // Keep the established profile path: the Native Host migration and Manager share it.
@@ -59,7 +77,7 @@ const appDataPath = app.getPath('appData')
 app.setPath('userData', resolveManagerTestProfile(process.argv, process.env, {
   userProfilePath: join(appDataPath, 'Nook'),
   installRoot: managerTestInstallRoot,
-}) ?? join(appDataPath, isDevelopment ? 'WebTools-Dev' : 'Nook'))
+}) ?? webRuntimeAcceptanceOptions?.profilePath ?? join(appDataPath, isDevelopment ? 'WebTools-Dev' : 'Nook'))
 
 let dataStore: DataStore
 let secretStore: SecretStore
@@ -78,6 +96,10 @@ let featureRegistry: FeatureRegistry | null = null
 let featureInvocationService: FeatureInvocationService | null = null
 let nativePluginProjectionPublisher: NativePluginProjectionPublisher | null = null
 let nativeFeatureProjectionPublisher: NativeFeatureProjectionPublisher | null = null
+let webPluginRuntime: WebPluginRuntime | null = null
+let managerCloseStarted = false
+let runtimeQuitPrepared = false
+let webRuntimeAcceptanceStarted = false
 let disposeCatalogHandlers = () => {}
 let disposePluginHandlers: () => void = () => undefined
 let disposeBuiltinTranslationHandoffHandlers: () => void = () => undefined
@@ -257,6 +279,7 @@ function createWindow(): void {
   }
 
   managerRendererReady = false
+  managerCloseStarted = false
   const window = new BrowserWindow({
     width: 1040,
     height: 720,
@@ -281,6 +304,7 @@ function createWindow(): void {
   window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (!isMainFrame || isInPlace) return
     managerRendererReady = false
+    void webPluginRuntime?.close()
     builtinTranslationHandoff?.rendererStarting()
     builtinTranslationLifecycle?.invalidateSession()
     cancelActiveAIRequests()
@@ -309,7 +333,12 @@ function createWindow(): void {
   window.on('close', (event) => {
     if (quitting) return
     event.preventDefault()
-    window.destroy()
+    if (managerCloseStarted) return
+    managerCloseStarted = true
+    void (async () => {
+      await webPluginRuntime?.close()
+      if (!window.isDestroyed()) window.destroy()
+    })()
   })
 
   window.once('ready-to-show', () => window.show())
@@ -333,11 +362,92 @@ function markManagerRendererReady(sender: WebContents): void {
   const window = managerWindow
   if (!window || window.isDestroyed() || window.webContents.isDestroyed() || sender !== window.webContents) return
   managerRendererReady = true
+  if (webRuntimeAcceptance && !webRuntimeAcceptanceStarted) {
+    webRuntimeAcceptanceStarted = true
+    void startWebRuntimeAcceptanceFixture()
+  }
   builtinTranslationHandoff?.rendererReady()
   if (!nativeManaged || !nativeManagerClient?.isConnected) { deliverPendingNativeIntent(); return }
   void nativeManagerClient.request('manager-renderer-ready', {}).then(() => deliverPendingNativeIntent()).catch((error) => {
     console.error('[native-manager] renderer-ready acknowledgement failed', error)
     app.quit()
+  })
+}
+
+async function startWebRuntimeAcceptanceFixture(): Promise<void> {
+  const options = webRuntimeAcceptanceOptions
+  const runtime = webPluginRuntime
+  if (!options || !runtime) return
+  try {
+    const bytes = await readFile(options.packagePath)
+    const snapshot = await validateWebPackageForRuntime(bytes, app.getVersion())
+    const expectedFeature = snapshot.manifest.features.find(feature => feature.id === 'offline-demo')
+    const expectedSwitchFeature = snapshot.manifest.features.find(feature => feature.id === 'offline-demo-wasm')
+    const delayedFeature = snapshot.manifest.features.find(feature => feature.id === 'offline-demo-delayed')
+    if (snapshot.manifest.id !== 'org.webtools.phase6e4b.runtime-test' || snapshot.manifest.version !== '1.0.0'
+      || !expectedFeature || !expectedSwitchFeature || !delayedFeature || snapshot.manifest.network.mode !== 'none') {
+      throw new Error('The supplied package is not the fixed offline Web Runtime acceptance fixture.')
+    }
+    if (process.env.WEBTOOLS_WEB_RUNTIME_TEST_MUTATE_ARCHIVE === '1') {
+      await unlink(options.packagePath)
+      bytes.fill(0)
+      console.log('[web-runtime-acceptance] validated snapshot survived source archive deletion and buffer mutation')
+    }
+    const scenario = process.env.WEBTOOLS_WEB_RUNTIME_TEST_SCENARIO
+    if (scenario === 'renderer-crash') {
+      const unsubscribe = runtime.subscribe(status => {
+        if (status.state !== 'FAULTED') return
+        unsubscribe()
+        // The acceptance driver explicitly reinvokes; production never restarts plugin code automatically.
+        void runtime.open(snapshot, expectedFeature.id).then(recovered => {
+          if (recovered.state === 'READY' && recovered.generation > status.generation) {
+            console.log('[web-runtime-acceptance] crash-reopen=PASS')
+          }
+        }).catch(error => console.error('[web-runtime-acceptance] crash-reopen=failed', error.message))
+      })
+    }
+    if (scenario === 'switch-while-loading') {
+      const firstOpen = runtime.open(snapshot, delayedFeature.id)
+      await waitForWebRuntimeAcceptanceState(runtime, 'LOADING')
+      const replacementOpen = runtime.open(snapshot, expectedSwitchFeature.id)
+      const [firstResult, replacementResult] = await Promise.allSettled([firstOpen, replacementOpen])
+      if (firstResult.status !== 'rejected' || replacementResult.status !== 'fulfilled'
+        || replacementResult.value.state !== 'READY' || replacementResult.value.featureId !== expectedSwitchFeature.id) {
+        throw new Error('Loading Feature replacement did not revoke the old generation and reach the replacement Feature.')
+      }
+      console.log(`[web-runtime-acceptance] loading-switch=PASS oldLoadRejected=true activeFeature=${expectedSwitchFeature.id}`)
+      return
+    }
+
+    const initialFeature = scenario === 'close-while-loading' ? delayedFeature : expectedFeature
+    console.log(`[web-runtime-acceptance] opening initial offline Feature scenario=${scenario ?? 'standard'}`)
+    const initialStatus = await runtime.open(snapshot, initialFeature.id)
+    if (process.env.WEBTOOLS_WEB_RUNTIME_TEST_SWITCH === '1') {
+      console.log('[web-runtime-acceptance] initial Feature ready; opening switch Feature')
+      const switchedStatus = await runtime.open(snapshot, expectedSwitchFeature.id)
+      if (switchedStatus.state !== 'READY' || switchedStatus.featureId !== expectedSwitchFeature.id
+        || switchedStatus.generation === initialStatus.generation) {
+        throw new Error('Controlled Feature switch did not replace the active runtime generation.')
+      }
+      console.log(`[web-runtime-acceptance] switched Feature ready generation=${initialStatus.generation}->${switchedStatus.generation}`)
+    }
+  } catch (error) {
+    console.error('[web-runtime-acceptance] controlled fixture could not be opened:', error instanceof Error ? error.message : 'unknown error')
+  }
+}
+
+function waitForWebRuntimeAcceptanceState(runtime: WebPluginRuntime, state: 'LOADING', timeoutMs = 10_000): Promise<void> {
+  if (runtime.status.state === state) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    let unsubscribe: () => void = () => undefined
+    const timer = setTimeout(() => { unsubscribe(); reject(new Error(`Timed out waiting for Web Runtime ${state} state.`)) }, timeoutMs)
+    timer.unref?.()
+    unsubscribe = runtime.subscribe(status => {
+      if (status.state !== state) return
+      clearTimeout(timer)
+      unsubscribe()
+      resolve()
+    })
   })
 }
 
@@ -380,6 +490,29 @@ app.whenReady().then(async () => {
       return
     }
   }
+
+  webPluginRuntime = new WebPluginRuntime(() => managerWindow)
+  webPluginRuntime.subscribe(status => {
+    if (webRuntimeAcceptance) console.log(`[web-runtime-acceptance] state=${status.state} generation=${status.generation} feature=${status.featureId ?? ''}`)
+    const window = managerWindow
+    if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
+      window.webContents.send(IPC_CHANNELS.webRuntimeState, status)
+    }
+  })
+  ipcMain.on(IPC_CHANNELS.webRuntimeSetBounds, (event, value: unknown) => {
+    if (!isCurrentWindowMainFrame(event, managerWindow) || !value || typeof value !== 'object') return
+    const bounds = value as Record<string, unknown>
+    if (![bounds.x, bounds.y, bounds.width, bounds.height].every(item => typeof item === 'number' && Number.isFinite(item))) return
+    const rect = { x: bounds.x as number, y: bounds.y as number, width: bounds.width as number, height: bounds.height as number }
+    if (rect.x < 0 || rect.y < 0 || rect.x > 4000 || rect.y > 4000 || rect.width < 1 || rect.height < 1 || rect.width > 8000 || rect.height > 8000) return
+    webPluginRuntime?.setBounds(rect)
+  })
+  ipcMain.on(IPC_CHANNELS.webRuntimeClose, (event, generation: unknown) => {
+    if (!isCurrentWindowMainFrame(event, managerWindow)) return
+    if (typeof generation !== 'number' || !Number.isSafeInteger(generation)
+      || webPluginRuntime?.status.generation !== generation) return
+    void webPluginRuntime?.close()
+  })
 
   const aiCredentials = new AIProviderCredentialStore(secretStore)
   const sharedAIService = new SharedAIService({
@@ -528,7 +661,13 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => app.quit())
 
-app.on('before-quit', () => {
+app.on('before-quit', event => {
+  if (webPluginRuntime && !runtimeQuitPrepared) {
+    event.preventDefault()
+    runtimeQuitPrepared = true
+    void webPluginRuntime.close().finally(() => app.quit())
+    return
+  }
   quitting = true
   cancelActiveAIRequests()
   disposeFeatureManagerSubscription()
@@ -544,5 +683,6 @@ app.on('before-quit', () => {
   nativeManagerClient?.close()
   nativePluginProjectionPublisher?.close()
   nativeFeatureProjectionPublisher?.close()
+  webPluginRuntime = null
   nativeManagerClient = null
 })

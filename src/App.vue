@@ -8,6 +8,7 @@ import logoLight from '@/assets/brand/logo-light.svg'
 import FavoritesView from './features/favorites/FavoritesView.vue'
 import BuiltinTranslationGate from './features/plugins/BuiltinTranslationGate.vue'
 import { builtinPluginPage } from './features/plugins/builtin-plugin-pages.ts'
+import WebRuntimeView from './features/plugins/WebRuntimeView.vue'
 import type { TranslationPrefillRequest } from './shared/domain'
 import type { NativeManagerIntent } from './shared/ipc'
 import type { BuiltinTranslationHandoffProjection, TranslationHandoffDisposition } from './shared/builtin-translation-contracts.ts'
@@ -17,7 +18,7 @@ import { catalogCanOpen, catalogKey, catalogNavigationItems, catalogPresentation
 
 const TranslateView = builtinPluginPage('translation')
 
-type Section = 'favorites' | 'translate' | 'translation-gate' | 'settings' | 'plugins' | 'plugin-page'
+type Section = 'favorites' | 'translate' | 'translation-gate' | 'settings' | 'plugins' | 'plugin-page' | 'web-runtime'
 
 function createSettingsLoadState(message: string, role: 'status' | 'alert') {
   return defineComponent({
@@ -55,6 +56,7 @@ const PluginManagerView = defineAsyncComponent({ loader: () => import('./feature
 const DeclarativePluginView = defineAsyncComponent({ loader: () => import('./features/plugins/DeclarativePluginView.vue'), loadingComponent: DeclarativeLoading, delay: 0 })
 
 const activeSection = ref<Section>('favorites')
+const webRuntimeGeneration = ref(0)
 const appsExpanded = ref(false)
 const catalogEntries = ref<CatalogEntryDTO[]>([])
 const pluginsLoading = ref(false)
@@ -75,6 +77,9 @@ const translationHandoff = ref<BuiltinTranslationHandoffProjection>({ status: 'n
 const handoffBusy = ref(false)
 const handoffError = ref('')
 let removeNativeManagerIntentListener: (() => void) | undefined
+let removeWebRuntimeListener: (() => void) | undefined
+let sectionBeforeWebRuntime: Section = 'plugins'
+let latestWebRuntimeGeneration = -1
 const currentNativeRequestId = ref<string | null>(null)
 const latestTranslationHandoffRequestId = ref<string | null>(null)
 let handoffRefreshGeneration = 0
@@ -95,6 +100,17 @@ const sectionLabel = computed(() => activeSection.value === 'translate'
 
 onMounted(() => {
   removeNativeManagerIntentListener = window.desktop.onNativeManagerIntent((intent) => handleNativeManagerIntent(intent))
+  removeWebRuntimeListener = window.desktop.webRuntime.onState(status => {
+    if (status.generation < latestWebRuntimeGeneration) return
+    latestWebRuntimeGeneration = status.generation
+    webRuntimeGeneration.value = status.generation
+    if (status.state === 'CREATING' || status.state === 'LOADING' || status.state === 'READY') {
+      if (activeSection.value !== 'web-runtime') sectionBeforeWebRuntime = activeSection.value
+      activeSection.value = 'web-runtime'
+    } else if ((status.state === 'CLOSED' || status.state === 'ABSENT') && activeSection.value === 'web-runtime') {
+      activeSection.value = sectionBeforeWebRuntime
+    }
+  })
   window.desktop.managerReady()
   void refreshPlugins()
 })
@@ -104,6 +120,7 @@ onBeforeUnmount(() => {
   pluginRefreshGeneration += 1
   pluginPageGeneration += 1
   removeNativeManagerIntentListener?.()
+  removeWebRuntimeListener?.()
 })
 
 function handleNativeManagerIntent(intent: NativeManagerIntent): void {
@@ -392,7 +409,7 @@ function returnToPluginCenter(): void {
           <span>{{ item.label }}</span>
         </button>
       </nav>
-      <button class="nav-item nav-apps-trigger" :class="{ 'is-active': activeSection === 'translate' || activeSection === 'translation-gate' || activeSection === 'plugins' || activeSection === 'plugin-page' }" :aria-expanded="appsExpanded" aria-controls="apps-submenu" @click="appsExpanded = !appsExpanded">
+      <button class="nav-item nav-apps-trigger" :class="{ 'is-active': activeSection === 'translate' || activeSection === 'translation-gate' || activeSection === 'plugins' || activeSection === 'plugin-page' || activeSection === 'web-runtime' }" :aria-expanded="appsExpanded" aria-controls="apps-submenu" @click="appsExpanded = !appsExpanded">
         <LayoutGrid :size="17" :stroke-width="1.8" />
         <span>插件</span>
         <ChevronDown :size="14" class="nav-apps-chevron" :class="{ 'is-expanded': appsExpanded }" />
@@ -452,6 +469,7 @@ function returnToPluginCenter(): void {
         <button v-if="handoffError" class="secondary-button" :disabled="handoffBusy" @click="resumeTranslationHandoff">重试</button>
       </section>
 
+      <WebRuntimeView v-if="activeSection === 'web-runtime'" :generation="webRuntimeGeneration" />
       <FavoritesView v-if="activeSection === 'favorites'" />
       <SettingsView v-else-if="activeSection === 'settings'" />
       <TranslateView v-else-if="activeSection === 'translate'" :prefill="translationPrefill" @settings="activeSection = 'settings'" @prefill-applied="handleTranslationPrefillApplied" @page-ready="handleTranslationPageReady" />
