@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, type WebContents } from 'electron'
 import { basename, dirname, join } from 'node:path'
+import { watch } from 'node:fs'
 import { readFile, unlink } from 'node:fs/promises'
 import { IPC_CHANNELS } from '../src/shared/ipc'
 import { DataStore } from './services/data-store'
@@ -420,9 +421,19 @@ async function startWebRuntimeAcceptanceFixture(): Promise<void> {
     }
 
     const initialFeature = scenario === 'close-while-loading' ? delayedFeature : expectedFeature
+    const switchRequest = process.env.WEBTOOLS_WEB_RUNTIME_TEST_SWITCH_SIGNAL === '1'
+      ? waitForWebRuntimeAcceptanceSwitchRequest(options.profilePath)
+      : undefined
     console.log(`[web-runtime-acceptance] opening initial offline Feature scenario=${scenario ?? 'standard'}`)
     const initialStatus = await runtime.open(snapshot, initialFeature.id)
     if (process.env.WEBTOOLS_WEB_RUNTIME_TEST_SWITCH === '1') {
+      if (switchRequest) {
+        console.log('[web-runtime-acceptance] initial Feature ready; waiting for switch request')
+        if (!await switchRequest) {
+          console.log('[web-runtime-acceptance] switch request ended before replacement')
+          return
+        }
+      }
       console.log('[web-runtime-acceptance] initial Feature ready; opening switch Feature')
       const switchedStatus = await runtime.open(snapshot, expectedSwitchFeature.id)
       if (switchedStatus.state !== 'READY' || switchedStatus.featureId !== expectedSwitchFeature.id
@@ -434,6 +445,34 @@ async function startWebRuntimeAcceptanceFixture(): Promise<void> {
   } catch (error) {
     console.error('[web-runtime-acceptance] controlled fixture could not be opened:', error instanceof Error ? error.message : 'unknown error')
   }
+}
+
+function waitForWebRuntimeAcceptanceSwitchRequest(profilePath: string, timeoutMs = 40_000): Promise<boolean> {
+  return new Promise(resolve => {
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
+    let watcher: ReturnType<typeof watch> | undefined
+    const finish = (requested: boolean) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      watcher?.close()
+      app.off('before-quit', onQuit)
+      resolve(requested)
+    }
+    const onQuit = () => finish(false)
+    try {
+      watcher = watch(profilePath, (_eventType, filename) => {
+        if (filename?.toString() === 'phase6e5e-switch-requested') finish(true)
+      })
+      watcher.on('error', () => finish(false))
+    } catch {
+      finish(false)
+      return
+    }
+    app.once('before-quit', onQuit)
+    timer = setTimeout(() => finish(false), timeoutMs)
+  })
 }
 
 function waitForWebRuntimeAcceptanceState(runtime: WebPluginRuntime, state: 'LOADING', timeoutMs = 10_000): Promise<void> {
@@ -449,6 +488,29 @@ function waitForWebRuntimeAcceptanceState(runtime: WebPluginRuntime, state: 'LOA
       resolve()
     })
   })
+}
+
+function createHeldWebRuntimeAcceptancePing(): ((signal: AbortSignal) => null | Promise<null>) | undefined {
+  if (!webRuntimeAcceptance || process.env.WEBTOOLS_WEB_RUNTIME_TEST_HOLD_PING !== '1') return undefined
+  let pingCount = 0
+  return signal => {
+    pingCount++
+    if (pingCount !== 3) return null
+    console.log('[web-runtime-acceptance] held-ping=started')
+    return new Promise(resolve => {
+      let settled = false
+      const onAbort = () => {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', onAbort)
+        console.log('[web-runtime-acceptance] held-ping=abort-observed')
+        setImmediate(() => console.log('[web-runtime-acceptance] held-ping=terminal-sent'))
+        resolve(null)
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      if (signal.aborted) onAbort()
+    })
+  }
 }
 
 const hasSingleInstanceLock = nativeManaged || app.requestSingleInstanceLock()
@@ -491,7 +553,8 @@ app.whenReady().then(async () => {
     }
   }
 
-  webPluginRuntime = new WebPluginRuntime(() => managerWindow)
+  const heldAcceptancePing = createHeldWebRuntimeAcceptancePing()
+  webPluginRuntime = new WebPluginRuntime(() => managerWindow, heldAcceptancePing ? { holdPingUntilAbort: heldAcceptancePing } : {})
   webPluginRuntime.subscribe(status => {
     if (webRuntimeAcceptance) console.log(`[web-runtime-acceptance] state=${status.state} generation=${status.generation} feature=${status.featureId ?? ''}`)
     const window = managerWindow

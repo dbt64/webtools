@@ -20,7 +20,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-function harness(preloadHello = true, autoFinish = true) {
+function harness(preloadHello = true, autoFinish = true, runtimeOptions = undefined) {
   const ipcMain = new EventEmitter()
   const views = []
   const currentSession = Object.assign(new EventEmitter(), {
@@ -63,7 +63,7 @@ function harness(preloadHello = true, autoFinish = true) {
     buildRuntimeCsp, buildRuntimeResourceUrl, createRuntimeOrigin, parseRuntimePackageUrl, selectValidatedWebFeature,
     isValidatedWebPackageSnapshot, setTimeout, clearTimeout, process: { argv: [], env: {} }, Headers, Response,
   })
-  return { runtime: new Runtime(() => window), currentSession, views, ipcMain }
+  return { runtime: new Runtime(() => window, runtimeOptions), currentSession, views, ipcMain }
 }
 
 test('loaded document alone stays LOADING until the dedicated preload handshake arrives', async () => {
@@ -213,4 +213,45 @@ test('normal close removes old authority before await and replacement cannot inh
     assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 1)
   } finally { cleanup.resolve(); await replacement.catch(() => {}); await h.runtime.close() }
   assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 0)
+})
+
+test('a held acceptance ping is canceled by the current Bridge exactly once and later pings still work', async () => {
+  const snapshot = await validateWebPackageForRuntime(webPackage(webManifest()), '0.1.0')
+  const started = deferred()
+  const aborted = deferred()
+  let dispatchCount = 0
+  const dispatchPing = signal => {
+    dispatchCount++
+    if (dispatchCount > 1) return null
+    started.resolve()
+    return new Promise(resolve => {
+      const onAbort = () => {
+        signal.removeEventListener('abort', onAbort)
+        aborted.resolve()
+        resolve(null)
+      }
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+  const h = harness(true, true, { holdPingUntilAbort: dispatchPing })
+  await h.runtime.open(snapshot, 'hello')
+  const contents = h.views[0].webContents
+  try {
+    h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, { sender: contents, senderFrame: contents.mainFrame }, ping('1'))
+    await flush()
+    assert.equal(dispatchCount, 1, 'the Host must start the accepted ping before cancellation')
+    await started.promise
+    assert.equal(contents.sent.filter(item => item.message.type === 'response' && item.message.requestId === '1').length, 0)
+    h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, { sender: contents, senderFrame: contents.mainFrame }, '{"type":"cancel","protocolMajor":1,"requestId":"1"}')
+    await aborted.promise
+    await flush()
+    const terminal = contents.sent.filter(item => item.message.type === 'response' && item.message.requestId === '1')
+    assert.equal(terminal.length, 1)
+    assert.deepEqual(terminal[0].message, { type: 'response', protocolMajor: 1, requestId: '1', ok: false, error: { code: 'CANCELLED', retryable: false } })
+    assert.equal(h.runtime.status.state, 'READY')
+    h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, { sender: contents, senderFrame: contents.mainFrame }, ping('2'))
+    await flush()
+    assert.deepEqual(contents.sent.at(-1).message, { type: 'response', protocolMajor: 1, requestId: '2', ok: true, result: null })
+  } finally { await h.runtime.close() }
 })

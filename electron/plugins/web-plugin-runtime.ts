@@ -31,8 +31,13 @@ interface RuntimeInstance {
   removeBridgeListener?: () => void
 }
 
+interface WebRuntimeAcceptanceTestOptions {
+  readonly holdPingUntilAbort?: (signal: AbortSignal) => null | Promise<null>
+}
+
 export class WebPluginRuntime {
   private readonly getWindow: () => BrowserWindow | null
+  private readonly acceptanceTestOptions: WebRuntimeAcceptanceTestOptions
   private active: RuntimeInstance | null = null
   private runtimeSession: Session | null = null
   private pendingTeardown: Promise<void> = Promise.resolve()
@@ -42,7 +47,10 @@ export class WebPluginRuntime {
   private operationQueue: Promise<void> = Promise.resolve()
   private readonly listeners = new Set<(status: WebRuntimeStatus) => void>()
 
-  constructor(getWindow: () => BrowserWindow | null) { this.getWindow = getWindow }
+  constructor(getWindow: () => BrowserWindow | null, acceptanceTestOptions: WebRuntimeAcceptanceTestOptions = {}) {
+    this.getWindow = getWindow
+    this.acceptanceTestOptions = acceptanceTestOptions
+  }
 
   subscribe(listener: (status: WebRuntimeStatus) => void): () => void {
     this.listeners.add(listener)
@@ -118,10 +126,15 @@ export class WebPluginRuntime {
       send: raw => view.webContents.send(PLUGIN_BRIDGE_HOST_ROUTE, raw),
       onReady: () => { runtime.state = 'READY'; this.publish(runtime) },
       onFatal: () => { void this.closeRuntime(runtime) },
+      dispatchPing: this.acceptanceTestOptions.holdPingUntilAbort,
     })
     const receive = (event: Electron.IpcMainEvent, raw: unknown) => runtime.bridge?.receive(event, raw)
     ipcMain.on(PLUGIN_BRIDGE_CLIENT_ROUTE, receive)
-    runtime.removeBridgeListener = () => { ipcMain.removeListener(PLUGIN_BRIDGE_CLIENT_ROUTE, receive) }
+    if (isAcceptanceRuntime()) console.log(`[web-runtime-acceptance] bridge-listeners=${ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE)} action=attach generation=${runtime.generation}`)
+    runtime.removeBridgeListener = () => {
+      ipcMain.removeListener(PLUGIN_BRIDGE_CLIENT_ROUTE, receive)
+      if (isAcceptanceRuntime()) console.log(`[web-runtime-acceptance] bridge-listeners=${ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE)} action=detach generation=${runtime.generation}`)
+    }
     this.publish(runtime)
     window.contentView.addChildView(view)
     runtime.removeView = true
