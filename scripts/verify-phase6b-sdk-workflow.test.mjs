@@ -30,7 +30,8 @@ test('workflow layout is unique OS-temp-only and keeps every artifact outside th
     if (typeof candidate === 'string' && path.isAbsolute(candidate)) {
       const relative = path.relative(root, candidate)
       assert.equal(relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative), false, candidate)
-      assert.equal(path.relative(repo, candidate).startsWith('..'), true, candidate)
+      const relativeFromRepo = path.relative(repo, candidate)
+      assert.equal(relativeFromRepo.startsWith('..') || path.isAbsolute(relativeFromRepo), true, candidate)
     }
   }
   assert.match(layout.root, /webtools-phase6b-sdk-workflow-/)
