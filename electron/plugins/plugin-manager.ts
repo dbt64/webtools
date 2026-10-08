@@ -6,7 +6,7 @@ import { LIMITS, boundedString, compareVersions, opaqueKey, record, validPluginI
 import { ManagedFs, SerialQueue } from './managed-fs.ts'
 import { PluginRegistry, type PluginRecord, type RegistryData, type InstalledVersion } from './plugin-registry.ts'
 import { PluginStore } from './plugin-store.ts'
-import { validatePackage, type ValidatedPackage } from './package-validator.ts'
+import { validateIncomingPackage, validatePackage, type ValidatedPackage } from './package-validator.ts'
 import { DeclarativeRuntime } from './declarative-runtime.ts'
 import { adaptDeclarativeV1Feature, DECLARATIVE_V1_FEATURE_ID } from './declarative-feature-adapter.ts'
 import type { DeclarativeFeatureCandidate } from './feature-contracts.ts'
@@ -244,7 +244,12 @@ export class PluginManager {
   async install(bytes: Uint8Array, session: string): Promise<PluginInstallResult> {
     return this.queue.run(async () => {
       this.assertSession(session)
-      const pkg = await validatePackage(bytes, this.deps.hostVersion, this.deps.pngDecoder); this.assertSession(session)
+      const incoming = await validateIncomingPackage(bytes, this.deps.hostVersion, this.deps.pngDecoder); this.assertSession(session)
+      // The v1 registry/store and declarative adapter are frozen. A v2 archive is
+      // fully Host-validated above, but remains non-installable until the later
+      // v2 registry/lifecycle integration; importantly, no state is mutated here.
+      if (incoming.kind === 'v2') fail('INCOMPATIBLE_PLUGIN')
+      const pkg = incoming.package
       const m = pkg.manifest; const old = this.data.plugins.find(p => p.id === m.id); this.invalidateAIReview(m.id)
       if (old?.current.version === m.version && old.current.hash === pkg.hash) { await this.load(old); return { outcome: 'already-installed', plugin: await this.summary(m.id) } }
       const conflict = old?.versions.some(v => v.version === m.version && v.hash !== pkg.hash)

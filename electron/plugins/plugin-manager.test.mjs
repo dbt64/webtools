@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PluginManager } from './plugin-manager.ts'
-import { manifest, packageBytes } from './fixtures.mjs'
+import { manifest, packageBytes, webManifest, webPackage } from './fixtures.mjs'
 async function setup(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'webtools-plugin-manager-')); t.after(() => rm(root, { recursive: true, force: true }))
   const effects = []; const prompts = []
@@ -50,6 +50,37 @@ test('rejected adversarial packages leave installed registry, grants, and privat
   assert.deepEqual(await readdir(join(env.root, 'plugins', 'data')), dataFilesBefore)
   assert.deepEqual(await readdir(join(env.root, 'plugins', 'staging')), [])
   await assert.rejects(() => readFile(join(env.root, 'plugins', 'data', 'org.example.attack.json')), { code: 'ENOENT' })
+})
+test('Manifest v2 validation and unsupported install leave a current v1 installation fully unchanged', async t => {
+  const env = await setup(t)
+  const current = await enabled(env, allManifest({ id: 'org.example.preserved-v2' }))
+  await env.manager.invoke(request(current, 'write', { value: { sentinel: 'preserve' } }), env.session)
+
+  const registryPath = join(env.root, 'plugins', 'registry.json')
+  const dataPath = join(env.root, 'plugins', 'data', `${current.id}.json`)
+  const packageDirectory = join(env.root, 'plugins', 'packages', current.id, current.version)
+  const registryBefore = await readFile(registryPath)
+  const dataBefore = await readFile(dataPath)
+  const packagesBefore = await readdir(packageDirectory)
+  const rowsBefore = await env.manager.list()
+  const promptCount = env.prompts.length
+
+  const invalidUpdate = webPackage(webManifest({
+    id: current.id,
+    webBundle: { files: [] },
+  }))
+  await assert.rejects(() => env.manager.install(invalidUpdate, env.session), error => error.code === 'INVALID_FIELD')
+
+  const validButNotInstallableYet = webPackage(webManifest({ id: current.id, version: '2.0.0' }))
+  await assert.rejects(() => env.manager.install(validButNotInstallableYet, env.session), error => error.code === 'INCOMPATIBLE_PLUGIN')
+
+  assert.deepEqual(await env.manager.list(), rowsBefore)
+  assert.deepEqual(await readFile(registryPath), registryBefore)
+  assert.deepEqual(await readFile(dataPath), dataBefore)
+  assert.deepEqual(await readdir(packageDirectory), packagesBefore)
+  assert.deepEqual(await readdir(join(env.root, 'plugins', 'staging')), [])
+  assert.equal(env.prompts.length, promptCount, 'validation/rejection occurs before install consent')
+  assert.deepEqual((await env.manager.invoke(request(current, 'read'), env.session)).value, { sentinel: 'preserve' })
 })
 test('conflicting hash and downgrade require separate consent; upgrade retains rollback and data', async t => {
   const env = await setup(t); let p = await enabled(env)

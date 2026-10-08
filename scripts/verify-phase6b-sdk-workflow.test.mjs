@@ -57,7 +57,7 @@ test('workflow child environment removes Node module injection variables without
 })
 
 test('external dependency inspection rejects checkout, workspace and absolute source links', () => {
-  assert.equal(assertExternalDependencyGraph('{"name":"author","dependencies":{"@webtools/plugin-sdk":"file:../../artifacts/webtools-plugin-sdk-1.1.0.tgz"}}', 'lockfileVersion: 9.0\nresolution: file:../../artifacts/webtools-plugin-sdk-1.1.0.tgz', repo), true)
+  assert.equal(assertExternalDependencyGraph('{"name":"author","dependencies":{"@webtools/plugin-sdk":"file:../../artifacts/webtools-plugin-sdk-1.2.0.tgz"}}', 'lockfileVersion: 9.0\nresolution: file:../../artifacts/webtools-plugin-sdk-1.2.0.tgz', repo), true)
   for (const text of [
     JSON.stringify({ path: path.join(repo, 'plugin-sdk', 'declarative-v1') }),
     'specifier: workspace:*',
@@ -70,13 +70,13 @@ test('planned subprocesses are restricted to pinned pnpm or Node inside the isol
   const root = await tempRoot(t)
   const layout = createWorkflowLayout(root, repo)
   const pnpmPath = path.join(path.dirname(process.execPath), 'node_modules', 'pnpm', 'pnpm.exe')
-  const plan = buildWorkflowCommandPlan(layout, { pnpmPath, nodePath: process.execPath, sdkVersion: '1.1.0' })
+  const plan = buildWorkflowCommandPlan(layout, { pnpmPath, nodePath: process.execPath, sdkVersion: '1.2.0' })
   assert.ok(plan.length > 0)
   assert.ok(plan.some(command => command.executable === pnpmPath && command.args[0] === 'pack'))
   assert.ok(plan.every(command => [pnpmPath, process.execPath].includes(command.executable)))
   assert.ok(plan.every(command => command.cwd === layout.sdk || command.cwd === layout.tooling || command.cwd === layout.author))
   assert.ok(plan.every(command => !/reg(?:\.exe)?|taskkill|process\.kill|powershell|cmd\.exe|D:\\webtools|AppData\\Roaming\\Nook/i.test(`${command.executable} ${command.args.join(' ')} ${command.cwd}`)))
   assert.equal(PINNED_PNPM, '9.15.9')
-  assert.throws(() => buildWorkflowCommandPlan(layout, { pnpmPath: 'powershell.exe', nodePath: process.execPath, sdkVersion: '1.1.0' }), /pnpm|executable/i)
-  assert.throws(() => buildWorkflowCommandPlan({ ...layout, repo: root }, { pnpmPath, nodePath: process.execPath, sdkVersion: '1.1.0' }), /layout|temporary|isolated/i)
+  assert.throws(() => buildWorkflowCommandPlan(layout, { pnpmPath: 'powershell.exe', nodePath: process.execPath, sdkVersion: '1.2.0' }), /pnpm|executable/i)
+  assert.throws(() => buildWorkflowCommandPlan({ ...layout, repo: root }, { pnpmPath, nodePath: process.execPath, sdkVersion: '1.2.0' }), /layout|temporary|isolated/i)
 })

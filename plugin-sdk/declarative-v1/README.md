@@ -1,6 +1,6 @@
-# WebTools Declarative Plugin SDK 1.1.0
+# WebTools Declarative Plugin SDK 1.2.0
 
-This standalone local authoring SDK targets WebTools Manifest v1 / Plugin API major 1. It provides the public TypeScript contract and JSON Schema, canonical source/archive validation, deterministic `.wtplugin` packing, safe metadata inspection, and the `webtools-plugin` CLI. The SDK is distributed as a local `.tgz`; it is not published to npm or a plugin marketplace.
+This standalone local authoring SDK authors Manifest v1 / Plugin API major 1 and provides bounded, non-authoritative Manifest v2 archive preflight. It provides the public TypeScript contract and v1 JSON Schema, canonical v1 source/archive validation, deterministic v1 `.wtplugin` packing, safe metadata inspection, and the `webtools-plugin` CLI. Manifest v2 preflight does not install, grant, or execute a package; Electron Main remains the install-time authority. The SDK is distributed as a local `.tgz`; it is not published to npm or a plugin marketplace.
 
 From the tooling project that has the tarball installed:
 
@@ -12,7 +12,7 @@ pnpm exec webtools-plugin create basic-plugin --host-version 0.1.0
 Then, from `basic-plugin/`, install the same local SDK tarball and use the generated scripts:
 
 ```powershell
-pnpm add --save-dev --ignore-scripts file:..\..\artifacts\webtools-plugin-sdk-1.1.0.tgz
+pnpm add --save-dev --ignore-scripts file:..\..\artifacts\webtools-plugin-sdk-1.2.0.tgz
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm run typecheck
 pnpm run validate

@@ -10,15 +10,19 @@ import {
   BLOCK_TYPES_V1,
   CAPABILITIES_V1,
   LIMITS_V1,
+  LIMITS_V2,
   MANIFEST_VERSION_V1,
+  MANIFEST_VERSION_V2,
+  ManifestV2ValidationError,
   PluginValidationError,
   packPluginV1,
   validatePluginArchiveV1,
+  validatePluginArchiveV2,
   validatePluginSourceV1,
 } from '@webtools/plugin-sdk'
-import { manifest, packageBytes } from '../../../electron/plugins/fixtures.mjs'
+import { manifest, packageBytes, webManifest, webPackage } from '../../../electron/plugins/fixtures.mjs'
 
-test('package root preserves the v1 author contract and exposes only metadata authoring operations', async t => {
+test('package root preserves v1 authoring and exposes bounded v2 archive preflight', async t => {
   assert.equal(MANIFEST_VERSION_V1, 1)
   assert.equal(API_MAJOR_V1, 1)
   assert.ok(CAPABILITIES_V1.includes('manager.page'))
@@ -29,6 +33,10 @@ test('package root preserves the v1 author contract and exposes only metadata au
   assert.equal(typeof validatePluginArchiveV1, 'function')
   assert.equal(typeof packPluginV1, 'function')
   assert.equal(typeof PluginValidationError, 'function')
+  assert.equal(MANIFEST_VERSION_V2, 2)
+  assert.equal(LIMITS_V2.archive, LIMITS_V1.archive)
+  assert.equal(typeof ManifestV2ValidationError, 'function')
+  assert.equal(typeof validatePluginArchiveV2, 'function')
 
   const root = await mkdtemp(path.join(tmpdir(), 'webtools-sdk-public-api-'))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -62,6 +70,26 @@ test('package root preserves the v1 author contract and exposes only metadata au
   assert.equal('bytes' in checkedArchive, false)
   assert.equal('assets' in checkedArchive, false)
   await assert.rejects(() => packPluginV1(source, path.join(output, 'plugin.wtplugin'), '0.1.0'), error => error.code === 'OUTPUT_EXISTS')
+})
+
+test('public SDK Manifest v2 archive preflight is bounded, immutable, and non-authoritative', async () => {
+  const bytes = webPackage(webManifest())
+  const result = await validatePluginArchiveV2(bytes, '0.1.0')
+  assert.equal(result.valid, true)
+  assert.equal(result.manifest.manifestVersion, 2)
+  assert.equal(result.sha256, createHash('sha256').update(bytes).digest('hex'))
+  assert.equal(result.size, bytes.length)
+  assert.equal(result.runtimeSupport, 'not-implemented')
+  assert.equal(result.networkRuntimeSupport, 'not-requested')
+  assert.equal('bytes' in result, false)
+  assert.equal('assets' in result, false)
+
+  await assert.rejects(() => validatePluginArchiveV2(webPackage(webManifest({ unknown: true })), '0.1.0'), error => {
+    assert.ok(error instanceof ManifestV2ValidationError)
+    assert.equal(error.code, 'UNKNOWN_FIELD')
+    assert.equal(error.message, 'Manifest v2 validation failed (UNKNOWN_FIELD).')
+    return true
+  })
 })
 
 test('public source validation rejects secret-like metadata and reports a known invalid field', async t => {

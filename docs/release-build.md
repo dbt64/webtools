@@ -14,10 +14,10 @@ The first Phase 6A audit found version drift: Manager/package was `0.1.0`; Nativ
 |---|---|---|
 | WebTools Product Version | `0.1.0`, root `package.json` | Version of the installed product and Manager/NativeHost/UpdateHelper/installer. |
 | Plugin API major | `1`, published SDK constants, host runtime and registry checks | Compatibility boundary for host capabilities. It changes only for a breaking plugin API contract. |
-| Plugin Manifest version | `1`, SDK/runtime/schema/types | Declarative manifest schema revision. It changes only when manifest compatibility requires it. |
-| Plugin SDK version | `1.1.0`, `plugin-sdk/declarative-v1/package.json` | Authoring/validator SDK package SemVer, independently released from WebTools and distributed locally as a `.tgz`; not published to npm. |
+| Plugin Manifest version | `1` in release build identity for current declarative install; `2` for inert Web package validation | Package schema revision selected per archive. The current persisted registry/runtime remains Manifest v1 only; v2 validation does not enable installation or execution. |
+| Plugin SDK version | `1.2.0`, `plugin-sdk/declarative-v1/package.json` | Authoring/validator SDK package SemVer, independently released from WebTools and distributed locally as a `.tgz`; not published to npm. |
 
-Product releases do not implicitly change Plugin API or Manifest versions. The current host and SDK accept API major 1 and manifest version 1; unsupported future majors/manifest versions continue to be rejected (fail closed). `minHostVersion` is compared with the installed product version. A future API expansion must explicitly state backward compatibility and supported versions.
+Product releases do not implicitly change Plugin API or Manifest versions. The current host structurally validates Manifest v1 and v2 packages; the standalone SDK continues v1 authoring/packing and adds non-authoritative v2 archive preflight. The current install registry remains v1-only and rejects v2 before any state mutation. Unsupported API majors/manifest versions continue to be rejected (fail closed). `minHostVersion` is compared with the installed product version. A future API expansion must explicitly state backward compatibility and supported versions.
 
 There is no dedicated About/diagnostics version panel in the current UI. Phase 6A does not add a settings page solely to display build identity; the release artifact's `metadata/build-info.json` is the read-only source for build support details.
 

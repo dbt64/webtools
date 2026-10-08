@@ -14,6 +14,11 @@ const MESSAGES: Record<string, string> = {
   INVALID_HANDOFF: '翻译交接请求无效。', STALE_HANDOFF: '翻译交接已更新，请重新打开。',
   HANDOFF_EXPIRED: '翻译交接超时，请重新发起。', HANDOFF_RECOVERY_REQUIRED: '请先在插件管理中恢复内置翻译状态。',
   MANAGER_CLOSED: 'Manager 已关闭。', INTENT_SUPERSEDED: '新的 Manager 请求已替代当前请求。',
+  UNSUPPORTED_MANIFEST_VERSION: '不支持此插件清单版本。', UNKNOWN_FIELD: '插件清单包含不支持的字段。', INVALID_FIELD: '插件清单字段无效。',
+  INVALID_PLUGIN_ID: '插件标识无效。', RESERVED_IDENTITY: '插件标识与 WebTools 保留项冲突。', DUPLICATE_FEATURE: '插件包含重复的功能标识。',
+  INVALID_CAPABILITY: '插件请求了无效或不匹配的能力。', INVALID_NETWORK_DECLARATION: '插件网络声明无效或当前不可用。', INVALID_PATH: '插件包路径无效。',
+  INVENTORY_MISMATCH: '插件包内容与清单不一致。', UNSUPPORTED_FILE_TYPE: '插件包包含不支持的文件类型。', PACKAGE_LIMIT_EXCEEDED: '插件包超出安全限制。',
+  UNSAFE_ARCHIVE: '插件压缩包结构不安全或已损坏。', INCOMPATIBLE_HOST: '插件与当前宿主版本不兼容。',
 }
 export class PluginError extends Error {
   readonly code: string

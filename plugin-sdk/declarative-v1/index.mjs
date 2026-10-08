@@ -4,10 +4,14 @@ import { failValidation } from './runtime/manifest-v1.mjs'
 import { readPluginSource } from './src/source.mjs'
 import { packPlugin } from './src/pack.mjs'
 import { rejectCredentialLike } from './src/sensitive-content.mjs'
+import { LIMITS_V2, MANIFEST_VERSION_V2, ManifestV2ValidationError } from './runtime/manifest-v2.mjs'
+import { validatePackageV2 } from './runtime/package-v2.mjs'
 
 export { PluginValidationError } from './runtime/manifest-v1.mjs'
+export { ManifestV2ValidationError }
 
 export const MANIFEST_VERSION_V1 = 1
+export { LIMITS_V2, MANIFEST_VERSION_V2 }
 export const API_MAJOR_V1 = 1
 export const CAPABILITIES_V1 = Object.freeze([
   'manager.page', 'plugin.config.read', 'plugin.config.write', 'plugin.storage.read',
@@ -69,6 +73,22 @@ export async function validatePluginArchiveV1(bytes, hostVersion) {
     manifest: result.manifest,
     size: result.bytes.byteLength,
     sha256: result.hash,
+  }
+}
+
+/** Advisory, non-executing Manifest v2 archive preflight. Main remains final authority. */
+export async function validatePluginArchiveV2(bytes, hostVersion) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength <= 0 || bytes.byteLength > LIMITS_V2.archive || typeof hostVersion !== 'string' || !hostVersion) {
+    throw new ManifestV2ValidationError('PACKAGE_LIMIT_EXCEEDED')
+  }
+  const result = await validatePackageV2(bytes, hostVersion)
+  return {
+    valid: true,
+    manifest: result.manifest,
+    size: result.size,
+    sha256: result.hash,
+    runtimeSupport: result.runtimeSupport,
+    networkRuntimeSupport: result.networkRuntimeSupport,
   }
 }
 

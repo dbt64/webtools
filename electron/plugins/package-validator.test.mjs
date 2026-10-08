@@ -1,13 +1,25 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { validatePackage } from './package-validator.ts'
+import * as packageValidatorApi from './package-validator.ts'
 import { LIMITS } from './manifest.ts'
-import { manifest, zip, png, packageBytes, zip64 } from './fixtures.mjs'
+import { manifest, zip, png, packageBytes, zip64, webManifest, webPackage } from './fixtures.mjs'
 const validate = bytes => validatePackage(bytes, '0.1.0')
 test('validates minimal archive and declared bounded PNG and directory entries', async () => {
   const value = manifest({ entry: { pageId: 'home', label: 'Demo', icon: 'assets/icon.png' }, assets: [{ path: 'assets/icon.png', type: 'image/png' }] })
   const result = await validate(packageBytes(value, [{ name: 'assets/', attrs: 0x41ed0010 }, { name: 'assets/icon.png', data: png(), deflate: true }]))
   assert.match(result.hash, /^[a-f0-9]{64}$/); assert.equal(result.assets.get('assets/icon.png').length, png().length)
+})
+test('Main validates a minimal Manifest v2 package as an immutable inert descriptor', async () => {
+  assert.equal(typeof packageValidatorApi.validatePackageV2, 'function')
+  const result = await packageValidatorApi.validatePackageV2(webPackage(), '0.1.0')
+  assert.equal(result.manifest.manifestVersion, 2)
+  assert.equal(result.manifest.id, 'org.example.web-demo')
+  assert.equal(result.runtimeSupport, 'not-implemented')
+  assert.equal(result.networkRuntimeSupport, 'not-requested')
+  assert.equal(Object.isFrozen(result.manifest), true)
+  assert.equal(Object.isFrozen(result.manifest.features), true)
+  assert.equal(result.bytes, undefined)
 })
 test('rejects missing/duplicate/case-colliding manifests and undeclared content', async () => {
   for (const bytes of [zip([]), zip([{ name: 'other.json', data: '{}' }]), packageBytes(manifest(), [{ name: 'manifest.json', data: '{}' }]), packageBytes(manifest(), [{ name: 'MANIFEST.json', data: '{}' }]), packageBytes(manifest(), [{ name: 'run.js', data: 'alert(1)' }])]) await assert.rejects(() => validate(bytes))

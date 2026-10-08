@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { validatePackage as validateHostPackage } from '../electron/plugins/package-validator.ts'
 
 export const PINNED_PNPM = '9.15.9'
-const SDK_VERSION = '1.1.0'
+const SDK_VERSION = '1.2.0'
 const HOST_VERSION_FALLBACK = '0.1.0'
 const TEMP_PREFIX = 'webtools-phase6b-sdk-workflow-'
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -203,7 +203,7 @@ export async function runWorkflow() {
     }
 
     const tarballs = (await readdir(layout.artifacts)).filter(name => name === `webtools-plugin-sdk-${SDK_VERSION}.tgz`)
-    if (tarballs.length !== 1) throw new Error('Expected exactly one SDK 1.1.0 tarball in the isolated artifacts directory.')
+    if (tarballs.length !== 1) throw new Error('Expected exactly one SDK 1.2.0 tarball in the isolated artifacts directory.')
     const tarballPath = path.join(layout.artifacts, tarballs[0])
     const tarballBytes = await readFile(tarballPath)
     if (!tarballBytes.length) throw new Error('The SDK tarball is empty.')
@@ -214,7 +214,7 @@ export async function runWorkflow() {
     const installedPackage = JSON.parse(await readFile(installedPackagePath, 'utf8'))
     const realSdkEntry = await realpath(sdkEntry)
     if (installedPackage.name !== '@webtools/plugin-sdk' || installedPackage.version !== SDK_VERSION || isWithin(repo, realSdkEntry)) {
-      throw new Error('The author project did not resolve the standalone SDK 1.1.0 package from its external tarball install.')
+      throw new Error('The author project did not resolve the standalone SDK 1.2.0 package from its external tarball install.')
     }
     const externalSdk = await import(pathToFileURL(sdkEntry).href)
     const sdkChecked = await externalSdk.validatePluginArchiveV1(generatedArchive, hostVersion)

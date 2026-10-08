@@ -1,15 +1,17 @@
 # WebTools Declarative Plugin Development
 
-This guide describes the supported local author workflow for WebTools declarative plugins. It targets **Manifest v1 / Plugin API major 1** and the standalone **`@webtools/plugin-sdk` 1.1.0** package. The SDK is distributed as a local `.tgz`; it is not published to npm or a plugin marketplace.
+This guide describes the supported local author workflow for WebTools declarative plugins. It targets **Manifest v1 / Plugin API major 1** and the standalone **`@webtools/plugin-sdk` 1.2.0** package. The SDK is distributed as a local `.tgz`; it is not published to npm or a plugin marketplace.
 
 Third-party plugins describe fixed pages, settings, and a closed set of host actions. They do not provide executable plugin code. WebTools' normal Plugin Center install-time validation, consent, grants, and lifecycle remain authoritative even after SDK validation succeeds.
+
+SDK 1.2.0 also exposes a bounded Manifest v2 archive preflight for future Web Plugin packages. It only validates inert archive bytes and returns metadata; it does not author or pack Manifest v2 packages, enable installation, grant capabilities, or execute JavaScript/WASM. Electron Main remains the final validation authority.
 
 ## Requirements
 
 - A supported WebTools host. The commands below use product version `0.1.0`; pass the version you actually target.
 - Node.js `>=20.19`.
 - pnpm `9.15.9`.
-- The locally supplied `webtools-plugin-sdk-1.1.0.tgz` file from the matching WebTools developer build.
+- The locally supplied `webtools-plugin-sdk-1.2.0.tgz` file from the matching WebTools developer build.
 
 The local tarball contains the author CLI and public types. Its `yauzl@3.4.0` dependency and the generated starter's TypeScript compiler are resolved by pnpm during installation. TypeScript is author tooling only; it is not part of the WebTools runtime. Do not obtain the SDK with `pnpm add @webtools/plugin-sdk` from a public registry.
 
@@ -20,7 +22,7 @@ Keep the SDK tarball in a local `artifacts` directory. Create a separate tooling
 ```text
 plugin-workspace/
   artifacts/
-    webtools-plugin-sdk-1.1.0.tgz
+    webtools-plugin-sdk-1.2.0.tgz
   tooling/
 ```
 
@@ -34,7 +36,7 @@ In `tooling/package.json`, add the local SDK and pnpm pin:
   "type": "module",
   "packageManager": "pnpm@9.15.9",
   "devDependencies": {
-    "@webtools/plugin-sdk": "file:../artifacts/webtools-plugin-sdk-1.1.0.tgz"
+    "@webtools/plugin-sdk": "file:../artifacts/webtools-plugin-sdk-1.2.0.tgz"
   }
 }
 ```
@@ -54,7 +56,7 @@ The tooling project's `basic-plugin/` folder is also a separate pnpm project. Ad
 
 ```powershell
 Set-Location .\basic-plugin
-pnpm add --save-dev --ignore-scripts file:..\..\artifacts\webtools-plugin-sdk-1.1.0.tgz
+pnpm add --save-dev --ignore-scripts file:..\..\artifacts\webtools-plugin-sdk-1.2.0.tgz
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm run typecheck
 pnpm run validate
@@ -153,4 +155,4 @@ In Plugin Center, install the resulting `.wtplugin` with the normal local-file p
 - `OUTPUT_EXISTS` means the output is preserved. Choose another filename rather than deleting or overwriting it.
 - `CLI_USAGE` means an unsupported/repeated/missing option or invalid create target was supplied. Run `webtools-plugin --help`.
 
-The Phase 6B automated workflow uses the SDK 1.1.0 `.tgz` from a unique OS temporary directory, initializes a distinct external tooling project, creates a basic plugin outside the checkout, performs frozen pnpm installs and the full generated script workflow, and compares SDK public-API results with the Electron Host adapter. This test does not automate the real Plugin Center picker or consent UI; those remain manual acceptance.
+The original Phase 6B acceptance record used SDK 1.1.0. The current rerunnable workflow uses the SDK version declared by this checkout, creates its tooling and author projects in a unique OS temporary directory, performs frozen pnpm installs and the generated v1 workflow, and compares SDK public-API results with the Electron Host adapter. Separate tests compare the SDK's v2 archive preflight with the Electron Main validator. Neither workflow automates the real Plugin Center picker or consent UI.

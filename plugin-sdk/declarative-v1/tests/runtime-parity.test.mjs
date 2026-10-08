@@ -2,10 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseManifestV1, PluginValidationError } from '../runtime/manifest-v1.mjs'
 import { validatePackageV1 } from '../runtime/package-v1.mjs'
-import { validatePluginArchiveV1 } from '../index.mjs'
+import { validatePluginArchiveV1, validatePluginArchiveV2 } from '../index.mjs'
 import { parseManifest } from '../../../electron/plugins/manifest.ts'
-import { validatePackage } from '../../../electron/plugins/package-validator.ts'
-import { manifest, packageBytes, png, zip } from '../../../electron/plugins/fixtures.mjs'
+import { validatePackage, validatePackageV2 } from '../../../electron/plugins/package-validator.ts'
+import { manifest, packageBytes, png, webManifest, webPackage, zip } from '../../../electron/plugins/fixtures.mjs'
 
 test('canonical SDK and Electron adapters accept the same v1 manifest', () => {
   const bytes = Buffer.from(JSON.stringify(manifest()))
@@ -59,6 +59,42 @@ test('public SDK archive API and Host adapter agree on representative hostile ar
     try { await validatePackage(bytes, '0.1.0') } catch (error) { hostError = error }
     assert.ok(sdkError, 'SDK should reject hostile archive')
     assert.ok(hostError, 'Host should reject hostile archive')
+    assert.equal(sdkError.code, hostError.code)
+  }
+})
+
+test('public SDK Manifest v2 preflight and Electron Main agree on inert package descriptors and diagnostics', async () => {
+  const valid = webPackage(webManifest({
+    requestedCapabilities: ['network.domains'],
+    network: { mode: 'domains', domains: [{ host: 'status.example.com', protocol: 'https' }] },
+  }))
+  const [sdk, host] = await Promise.all([
+    validatePluginArchiveV2(valid, '0.1.0'),
+    validatePackageV2(valid, '0.1.0'),
+  ])
+  assert.equal(sdk.valid, true)
+  assert.equal(sdk.manifest.id, host.manifest.id)
+  assert.equal(sdk.manifest.version, host.manifest.version)
+  assert.equal(sdk.sha256, host.hash)
+  assert.equal(sdk.size, host.size)
+  assert.equal(sdk.networkRuntimeSupport, 'unavailable')
+  assert.equal(sdk.runtimeSupport, 'not-implemented')
+  assert.equal('bytes' in sdk, false)
+  assert.equal('assets' in sdk, false)
+
+  const hostile = [
+    webPackage(webManifest({ unknown: true })),
+    webPackage(webManifest({ id: 'webtools.translation' })),
+    webPackage(webManifest({ network: { mode: 'domains', domains: [{ host: '127.0.0.1', protocol: 'https' }] } })),
+    zip([{ name: 'manifest.json', data: JSON.stringify(webManifest()) }, { name: 'web/extra.html', data: '<html/>' }]),
+  ]
+  for (const bytes of hostile) {
+    let sdkError
+    let hostError
+    try { await validatePluginArchiveV2(bytes, '0.1.0') } catch (error) { sdkError = error }
+    try { await validatePackageV2(bytes, '0.1.0') } catch (error) { hostError = error }
+    assert.ok(sdkError, 'SDK preflight should reject the package')
+    assert.ok(hostError, 'Host install-time authority should reject the package')
     assert.equal(sdkError.code, hostError.code)
   }
 })
