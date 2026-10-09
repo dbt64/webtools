@@ -913,8 +913,11 @@ public partial class MainWindow : Window
     {
         if (result.Action is OpenPluginFeatureAction feature)
         {
+            var acceptsLauncherText = _featureProjection?.Features.Any(row => row.Ref == feature.Ref
+                && row.AcceptedContexts.Any(context => context.Type == "text" && context.Sources.Contains("launcher-input"))) == true;
+            var launcherText = acceptsLauncherText ? QueryBox.Text : null;
             HideLauncher("feature-invocation");
-            _managerController.InvokeFeature(feature.Ref);
+            _managerController.InvokeFeature(feature.Ref, launcherText);
             return;
         }
         if (result.Action is SearchFilesAction fileSearch)

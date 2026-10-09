@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { Check, CircleAlert, CircleCheck, ExternalLink, Languages, PackagePlus, Puzzle, RefreshCw, ShieldCheck, Trash2, ToggleLeft, ToggleRight } from '@lucide/vue'
-import type { PluginCapability, PluginSummary } from '../../shared/plugin-contracts.ts'
+import type { InstalledPluginCapability as PluginCapability, PluginSummary } from '../../shared/plugin-contracts.ts'
 import type { BuiltinEntryDTO, CatalogEntryDTO, PluginRef } from '../../shared/plugin-catalog-contracts.ts'
 import { catalogKey, catalogRef, catalogPresentation } from './catalog-view-model.ts'
 import { pluginGrantPayload, pluginInstallFeedback, pluginPermissionRows, pluginStatusView } from './plugin-view-model.ts'
@@ -11,7 +11,7 @@ const emit = defineEmits<{ changed: []; retry: []; openPlugin: [ref: PluginRef] 
 
 const selectedRef = ref<PluginRef | null>(null)
 const selected = computed(() => props.entries.find(entry => selectedRef.value && catalogKey(entry) === catalogKey(selectedRef.value)) ?? props.entries[0] ?? null)
-const selectedPackage = computed(() => selected.value?.kind === 'declarative' ? selected.value.package : null)
+const selectedPackage = computed(() => selected.value && selected.value.kind !== 'builtin' ? selected.value.package : null)
 const selectedBuiltin = computed(() => selected.value?.kind === 'builtin' ? selected.value : null)
 const grantedDraft = ref<PluginCapability[]>([])
 const busy = ref<string | null>(null)
@@ -20,7 +20,7 @@ const permissionRows = computed(() => selectedPackage.value ? pluginPermissionRo
 
 watch(selected, plugin => {
   selectedRef.value = plugin ? catalogRef(plugin) : null
-  grantedDraft.value = plugin?.kind === 'declarative' ? plugin.package.granted.slice() : []
+  grantedDraft.value = plugin && plugin.kind !== 'builtin' ? plugin.package.granted.filter(cap => cap !== 'network.domains') : []
 }, { immediate: true })
 
 function errorText(error: { code: string; message: string }): string {
@@ -63,9 +63,9 @@ async function install(): Promise<void> {
 
 async function toggle(plugin: PluginSummary): Promise<void> {
   await perform(`toggle:${plugin.id}`, async () => {
-    const result = await window.desktop.pluginCatalog.setEnabled({ kind: 'declarative', id: plugin.id }, !plugin.enabled)
+    const result = await window.desktop.pluginCatalog.setEnabled({ kind: plugin.manifestVersion === 2 ? 'web' : 'declarative', id: plugin.id }, !plugin.enabled)
     if (!result.ok) { feedback.value = { kind: 'error', text: errorText(result.error) }; return }
-    if (result.data.kind !== 'declarative') { feedback.value = { kind: 'error', text: '插件状态响应无效，请重新加载。' }; return }
+    if (result.data.kind === 'builtin') { feedback.value = { kind: 'error', text: '插件状态响应无效，请重新加载。' }; return }
     feedback.value = result.data.package.enabled
       ? { kind: 'status', text: '插件已启用。' }
       : { kind: 'status', text: plugin.enabled ? '插件已停用；设置和私有数据已保留。' : '权限确认已取消，插件仍保持停用。' }
@@ -93,6 +93,7 @@ async function recoverBuiltin(): Promise<void> {
 }
 
 function toggleDraft(capability: PluginCapability, checked: boolean): void {
+  if (capability === 'network.domains') return
   const current = new Set(grantedDraft.value)
   if (checked) current.add(capability); else current.delete(capability)
   grantedDraft.value = [...current]
@@ -123,7 +124,7 @@ async function uninstall(): Promise<void> {
 
 function select(plugin: CatalogEntryDTO): void {
   selectedRef.value = catalogRef(plugin)
-  grantedDraft.value = plugin.kind === 'declarative' ? plugin.package.granted.slice() : []
+  grantedDraft.value = plugin.kind !== 'builtin' ? plugin.package.granted.filter(cap => cap !== 'network.domains') : []
   feedback.value = null
 }
 </script>
@@ -185,8 +186,8 @@ function select(plugin: CatalogEntryDTO): void {
           <div class="plugin-section-heading"><div><h3 id="plugin-permission-title">请求的能力</h3><p>新授予的能力需由 WebTools 宿主再次确认；未选中的能力会立即撤销。</p></div></div>
           <fieldset class="plugin-permission-list" :disabled="Boolean(busy)"><legend class="visually-hidden">管理 {{ selectedPackage.name }} 的权限</legend>
             <label v-for="permission in permissionRows" :key="permission.id" class="plugin-permission-row">
-              <input type="checkbox" :checked="grantedDraft.includes(permission.id)" @change="toggleDraft(permission.id, ($event.target as HTMLInputElement).checked)" />
-              <span>{{ permission.label }}</span><small>{{ permission.granted ? '已授予' : '尚未授予' }}</small>
+              <input type="checkbox" :disabled="!permission.grantable" :checked="permission.grantable && grantedDraft.includes(permission.id)" @change="toggleDraft(permission.id, ($event.target as HTMLInputElement).checked)" />
+              <span>{{ permission.label }}</span><small>{{ !permission.grantable ? '当前不可授予' : permission.granted ? '已授予' : '尚未授予' }}</small>
             </label>
             <p v-if="permissionRows.length === 0" class="plugin-no-permissions">此插件未申请额外能力。</p>
           </fieldset>
@@ -197,6 +198,9 @@ function select(plugin: CatalogEntryDTO): void {
           <button v-if="selectedPackage.enabled" class="secondary-button" :disabled="Boolean(busy)" @click="toggle(selectedPackage)"><ToggleLeft :size="15" />{{ busy === `toggle:${selectedPackage.id}` ? '正在停用…' : '停用插件' }}</button>
           <button v-else class="primary-button" :disabled="Boolean(busy) || selectedPackage.status === 'invalid' || selectedPackage.status === 'incompatible'" @click="toggle(selectedPackage)"><ToggleRight :size="15" />{{ busy === `toggle:${selectedPackage.id}` ? '正在启用…' : '启用插件' }}</button>
           <button v-if="selectedPackage.enabled && selectedPackage.granted.includes('manager.page') && selectedPackage.status === 'active'" class="secondary-button" :disabled="Boolean(busy)" @click="emit('openPlugin', { kind: 'declarative', id: selectedPackage.id })"><ExternalLink :size="14" />打开插件页面</button>
+          <template v-if="selectedPackage.manifestVersion === 2">
+            <button v-for="feature in selectedPackage.webFeatures" :key="feature.id" class="secondary-button" :disabled="Boolean(busy) || !feature.available" @click="emit('openPlugin', { kind: 'web', id: selectedPackage.id, featureId: feature.id })"><ExternalLink :size="14" />{{ feature.title }}</button>
+          </template>
           <button class="secondary-button" :disabled="Boolean(busy)" @click="install"><RefreshCw :size="14" />导入替换或新版本</button>
           <button class="danger-button" :disabled="Boolean(busy)" @click="uninstall"><Trash2 :size="14" />卸载…</button>
         </div>

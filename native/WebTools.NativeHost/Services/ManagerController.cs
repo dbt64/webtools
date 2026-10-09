@@ -60,14 +60,14 @@ public sealed class ManagerController : IDisposable
         QueueIntent(new PluginIntent(Guid.NewGuid().ToString("N"), reference));
     }
 
-    public void InvokeFeature(NativeFeatureRef reference)
+    public void InvokeFeature(NativeFeatureRef reference, string? launcherText = null)
     {
         if (reference is null || !reference.IsValid)
         {
             _showError("功能入口无效，请刷新启动器后重试。");
             return;
         }
-        var request = NativeFeatureInvocationProtocol.CreateRequest(reference);
+        var request = NativeFeatureInvocationProtocol.CreateRequest(reference, launcherText);
         if (!NativeFeatureInvocationProtocol.IsValidRequest(request))
         {
             _showError("功能请求无效，请刷新启动器后重试。");
@@ -356,7 +356,7 @@ public sealed class ManagerController : IDisposable
                 else
                 {
                     var nextFeature = _featureInvocations.Peek();
-                    intent = nextFeature is null ? null : new FeatureInvocationIntent(nextFeature.RequestId, nextFeature.Ref);
+                    intent = nextFeature is null ? null : new FeatureInvocationIntent(nextFeature.RequestId, nextFeature.Ref, nextFeature.Context);
                 }
             }
             if (intent is null) return;
@@ -368,7 +368,7 @@ public sealed class ManagerController : IDisposable
                     OpenPageIntent page => _pipeServer.SendRequestAsync("open-page", new { requestId = page.RequestId, section = PageName(page.Page) }, TimeSpan.FromSeconds(45)),
                     TranslationIntent translation => _pipeServer.SendRequestAsync("translation-prefill", new { requestId = translation.RequestId, text = translation.Text }, TimeSpan.FromSeconds(45)),
                     PluginIntent plugin => _pipeServer.SendRequestAsync("open-plugin", new { requestId = plugin.RequestId, @ref = plugin.Ref }, TimeSpan.FromSeconds(45)),
-                    FeatureInvocationIntent feature => _pipeServer.SendRequestAsync("feature-invoke", new NativeFeatureInvocationRequest(feature.RequestId, feature.Ref, "launcher"), TimeSpan.FromSeconds(45)),
+                    FeatureInvocationIntent feature => _pipeServer.SendRequestAsync("feature-invoke", new NativeFeatureInvocationRequest(feature.RequestId, feature.Ref, "launcher", feature.Context), TimeSpan.FromSeconds(45)),
                     _ => throw new InvalidOperationException("Unsupported Manager intent."),
                 }).ConfigureAwait(false);
                 if (intent is FeatureInvocationIntent featureIntent)
@@ -553,5 +553,5 @@ public sealed class ManagerController : IDisposable
     private sealed record OpenPageIntent(string Id, ManagerPage Page) : PendingManagerIntent(Id) { public override string Kind => $"page:{Page}"; }
     private sealed record TranslationIntent(string Id, string Text) : PendingManagerIntent(Id) { public override string Kind => "translation-prefill"; }
     private sealed record PluginIntent(string Id, LauncherPluginRef Ref) : PendingManagerIntent(Id) { public override string Kind => "open-plugin"; }
-    private sealed record FeatureInvocationIntent(string Id, NativeFeatureRef Ref) : PendingManagerIntent(Id) { public override string Kind => "feature-invoke"; }
+    private sealed record FeatureInvocationIntent(string Id, NativeFeatureRef Ref, NativeLauncherTextContext? Context = null) : PendingManagerIntent(Id) { public override string Kind => "feature-invoke"; }
 }

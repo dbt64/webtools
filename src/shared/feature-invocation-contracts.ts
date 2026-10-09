@@ -1,6 +1,6 @@
 import { isFeatureRef, type FeatureRef } from './feature-contracts.ts'
 
-export const FEATURE_INVOCATION_MAX_BYTES = 1024
+export const FEATURE_INVOCATION_MAX_BYTES = 16 * 1024
 export const FEATURE_INVOCATION_RESULT_MAX_BYTES = 256
 
 export type FeatureInvocationReasonCode =
@@ -22,6 +22,7 @@ export interface FeatureInvocationRequest {
   readonly requestId: string
   readonly ref: FeatureRef
   readonly source: 'launcher'
+  readonly context?: { readonly type: 'text'; readonly source: 'launcher-input'; readonly text: string; readonly capturedAtUnixMs: number }
 }
 
 export type FeatureInvocationResult =
@@ -60,10 +61,14 @@ function withinJsonByteLimit(value: unknown, limit: number): boolean {
 export function isFeatureInvocationRequestId(value: unknown): value is string {
   return typeof value === 'string' && requestIdPattern.test(value)
 }
+function wellFormedText(text: string): boolean {
+  for (const character of text) { const scalar = character.codePointAt(0)!; if (scalar >= 0xd800 && scalar <= 0xdfff) return false }
+  return true
+}
 
-/** Closed, bounded request contract. Native supplies only FeatureRef and a fixed source. */
+/** Closed, bounded Native request; optional text is captured for this exact Feature click. */
 export function parseFeatureInvocationRequest(value: unknown): FeatureInvocationRequest | null {
-  if (!hasExactOwnFields(value, ['requestId', 'ref', 'source'])
+  if ((!hasExactOwnFields(value, ['requestId', 'ref', 'source']) && !hasExactOwnFields(value, ['requestId', 'ref', 'source', 'context']))
     || !isFeatureInvocationRequestId(value.requestId)
     || !isFeatureRef(value.ref)
     || value.source !== 'launcher') return null
@@ -72,7 +77,15 @@ export function parseFeatureInvocationRequest(value: unknown): FeatureInvocation
     ref: { pluginId: value.ref.pluginId, featureId: value.ref.featureId },
     source: 'launcher',
   }
-  return withinJsonByteLimit(request, FEATURE_INVOCATION_MAX_BYTES) ? request : null
+  if (Object.hasOwn(value, 'context')) {
+    const context = value.context
+    if (!hasExactOwnFields(context, ['type', 'source', 'text', 'capturedAtUnixMs']) || context.type !== 'text' || context.source !== 'launcher-input'
+      || typeof context.text !== 'string' || context.text.length > 300 || !wellFormedText(context.text)
+      || !Number.isSafeInteger(context.capturedAtUnixMs) || (context.capturedAtUnixMs as number) < 0) return null
+    return withinJsonByteLimit({ ...request, context }, FEATURE_INVOCATION_MAX_BYTES)
+      ? { ...request, context: { type: 'text', source: 'launcher-input', text: context.text, capturedAtUnixMs: context.capturedAtUnixMs as number } } : null
+  }
+  return withinJsonByteLimit(request, 1024) ? request : null
 }
 
 /** Closed response parser so Native can reject malformed or mismatched acknowledgements. */

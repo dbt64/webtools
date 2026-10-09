@@ -14,6 +14,27 @@ function harness(dispatchPing, options = {}) {
 }
 const request = id => `{"type":"request","protocolMajor":1,"requestId":"${id}","method":"bridge.ping","payload":null}`
 const flush = () => new Promise(resolve => setImmediate(resolve))
+test('Bridge admits only closed capability methods and returns sanitized typed results without identity fields', async () => {
+  let calls = 0
+  const h = harness(undefined, { dispatchCapability: async (request, signal) => {
+    assert.equal(request.method, 'ai.complete'); assert.equal(signal.aborted, false); calls++; return { text: 'safe' }
+  } })
+  await h.handshake()
+  h.receive(request('1').replace('bridge.ping', 'ai.complete').replace('"payload":null', '"payload":{"prompt":"hello"}'))
+  await flush(); assert.deepEqual(h.sent.at(-1).result, { text: 'safe' }); assert.equal(calls, 1)
+  h.receive(request('2').replace('bridge.ping', 'ai.complete').replace('"payload":null', '"payload":{"pluginId":"forged","prompt":"hello"}'))
+  await flush(); assert.equal(h.sent.at(-1).error.code, 'INVALID_REQUEST'); assert.equal(calls, 1)
+  await h.bridge.revoke()
+})
+test('capability failures stay bounded; AI uses its 60-second deadline while ordinary calls keep 30 seconds', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] }); let now = 0; let signal
+  const h = harness(undefined, { now: () => now, dispatchCapability: (_request, s) => { signal = s; return new Promise(() => {}) } })
+  await h.handshake()
+  h.receive(request('1').replace('bridge.ping', 'ai.complete').replace('"payload":null', '"payload":{"prompt":"hello"}'))
+  await flush(); now = 30000; t.mock.timers.tick(30000); assert.equal(signal.aborted, false)
+  now = 60000; t.mock.timers.tick(30000); assert.equal(signal.aborted, true); assert.equal(h.sent.at(-1).error.code, 'TIMEOUT')
+  await h.bridge.revoke()
+})
 function held() {
   let resolve; let reject
   const promise = new Promise((done, fail) => { resolve = done; reject = fail })

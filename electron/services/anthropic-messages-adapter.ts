@@ -1,5 +1,5 @@
 import type { AICompletionRequest } from './openai-compatible-adapter.ts'
-import { assertNoRedirect, getAIProviderHttpError, normalizeAITransportError, parseAIResponseJson } from './ai-provider-errors.ts'
+import { assertNoRedirect, getAIProviderHttpError, normalizeAITransportError, parseAIResponseJson, extractOutputTokens } from './ai-provider-errors.ts'
 
 interface AnthropicResponse {
   content?: Array<{ type?: unknown; text?: unknown }>
@@ -54,8 +54,10 @@ export class AnthropicMessagesAdapter {
     }
     assertNoRedirect(response)
     if (!response.ok) throw getAIProviderHttpError(response.status)
-    const text = extractText(await parseAIResponseJson(response))
+    const payload = await parseAIResponseJson(response)
+    const text = extractText(payload)
     if (!text) throw new Error('AI 服务没有返回文本内容。')
+    request.onOutputTokens?.(extractOutputTokens(payload, 'output_tokens'))
     return text
   }
 }

@@ -4,9 +4,12 @@ import {
   type FeatureInvocationRequest,
   type FeatureInvocationResult,
 } from '../../src/shared/feature-invocation-contracts.ts'
+import { createHash } from 'node:crypto'
 import type { FeatureRef } from '../../src/shared/feature-contracts.ts'
 import type { DeclarativeCompatibilityFeature } from '../plugins/feature-contracts.ts'
 import { DECLARATIVE_V1_FEATURE_ID } from '../plugins/declarative-feature-adapter.ts'
+import type { WebFeatureAuthority } from '../plugins/web-feature-authority.ts'
+import type { InvocationTextContext } from '../plugins/web-host-capabilities.ts'
 
 const BUILTIN_TRANSLATION_REF: FeatureRef = { pluginId: 'webtools.translation', featureId: 'translate-text' }
 // Retain every unique Main-side invocation ID for this authenticated pipe
@@ -24,6 +27,10 @@ export interface FeatureInvocationDependencies {
   ): Promise<{ completion: Promise<void> }>
   openDeclarative(requestId: string, feature: DeclarativeCompatibilityFeature): Promise<void>
   openTranslation(requestId: string): Promise<void>
+  isWebFeature?(ref: FeatureRef): boolean
+  authorizeWeb?(ref: FeatureRef, dispatch: (authority: WebFeatureAuthority) => Promise<void>): Promise<{ completion: Promise<void> }>
+  openWeb?(requestId: string, authority: WebFeatureAuthority, context?: InvocationTextContext): Promise<void>
+  now?: () => number
 }
 
 interface ReplayEntry {
@@ -43,7 +50,7 @@ export class FeatureInvocationService {
     const request = parseFeatureInvocationRequest(value)
     if (!request) return Promise.reject(new TypeError('Invalid Feature invocation request.'))
 
-    const fingerprint = JSON.stringify(request)
+    const fingerprint = createHash('sha256').update(JSON.stringify(request)).digest('hex')
     const previous = this.replay.get(request.requestId)
     if (previous) {
       if (previous.fingerprint === fingerprint) return previous.promise
@@ -82,6 +89,22 @@ export class FeatureInvocationService {
       } catch (error) { return failure(request.requestId, error) }
     }
 
+    if (this.deps.isWebFeature?.(request.ref) ?? request.ref.featureId !== DECLARATIVE_V1_FEATURE_ID) {
+      if (!this.deps.authorizeWeb || !this.deps.openWeb) return result(request.requestId, 'rejected', 'feature-not-found')
+      const context = request.context
+      const age = () => (this.deps.now ?? Date.now)() - (context?.capturedAtUnixMs ?? (this.deps.now ?? Date.now)())
+      if (context && (age() < 0 || age() >= 30000)) return result(request.requestId, 'rejected', 'stale-request')
+      try {
+        const ticket = await this.deps.authorizeWeb(request.ref, authority => {
+          if (!this.deps.isConnected()) throw codeError('MANAGER_DISCONNECTED')
+          const ageMs = age()
+          if (context && (ageMs < 0 || ageMs >= 30000)) throw codeError('STALE_REQUEST')
+          return this.deps.openWeb!(request.requestId, authority, context
+            ? { type: 'text', source: 'launcher-input', text: context.text, ageMs } : undefined)
+        })
+        await ticket.completion; return result(request.requestId, 'accepted', 'accepted')
+      } catch (error) { return failure(request.requestId, error) }
+    }
     if (request.ref.featureId !== DECLARATIVE_V1_FEATURE_ID) return result(request.requestId, 'rejected', 'feature-not-found')
     let completion: Promise<void> | null = null
     try {

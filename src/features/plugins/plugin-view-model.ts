@@ -1,6 +1,8 @@
-import type { PluginAction, PluginCapability, PluginInstallResult, PluginSummary } from '../../shared/plugin-contracts.ts'
+import type { PluginAction, InstalledPluginCapability as PluginCapability, PluginInstallResult, PluginSummary } from '../../shared/plugin-contracts.ts'
 
 const capabilityLabels: Record<PluginCapability, string> = {
+  'clipboard.read': '仅在原生操作后接收一次剪贴板文本',
+  'network.domains': '访问声明的网络域名（当前不支持）',
   'manager.page': '添加 Manager 页面',
   'plugin.config.read': '读取插件设置',
   'plugin.config.write': '保存插件设置',
@@ -47,6 +49,7 @@ export function pluginPermissionRows(plugin: Pick<PluginSummary, 'requested' | '
   return plugin.requested.map(capability => ({
     id: capability,
     requested: true,
+    grantable: capability !== 'network.domains',
     granted: plugin.granted.includes(capability),
     label: capabilityLabels[capability],
   }))

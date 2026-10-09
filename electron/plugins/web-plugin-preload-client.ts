@@ -6,7 +6,7 @@ interface Port { send(raw: string): void; listen(listener: (raw: unknown) => voi
 const failure = (code: BridgeErrorCode): Outcome & { ok: false } => ({ ok: false, error: { code, retryable: false } })
 
 /** Trusted preload owns IDs. The exposed cancel closure captures its ID privately. */
-export function createPluginPreloadFacade(port: Port) {
+export function createPluginPreloadFacade(port: Port, capabilityNamespaces: readonly ('ai' | 'clipboard')[] = []) {
   let nextId = 1
   let accepted = false
   let closed = false
@@ -45,6 +45,7 @@ export function createPluginPreloadFacade(port: Port) {
     } catch { dispose('INTERNAL_ERROR') }
   })
   const facade = Object.freeze({
+    capabilityNamespaces: Object.freeze([...new Set(capabilityNamespaces.filter(name => name === 'ai' || name === 'clipboard'))]),
     getReady: () => ready,
     onClose: (listener: () => void) => {
       if (typeof listener !== 'function') throw new TypeError('Invalid close listener')
@@ -75,7 +76,7 @@ export function createPluginPreloadFacade(port: Port) {
       const deadline = setTimeout(() => {
         if (!finish(id, failure('TIMEOUT'))) return
         try { port.send(encodeMessage({ type: 'cancel', protocolMajor: BRIDGE_MAJOR, requestId: id }, 'client')) } catch {}
-      }, 30_000)
+      }, method === 'ai.complete' ? 60_000 : 30_000)
       pending.set(id, { resolve, timer: deadline })
       try { port.send(raw) } catch { finish(id, failure('INTERNAL_ERROR')) }
       return Object.freeze({ response, cancel })

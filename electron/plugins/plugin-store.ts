@@ -69,5 +69,14 @@ export class PluginStore {
   async deletePrivateData(id: string): Promise<void> {
     await this.writes.run(async () => { for (const scope of ['config', 'data'] as const) await this.fs.remove(await this.fs.path(this.logical(scope, id))) })
   }
+  async deleteData(id: string, key: string, mayCommit: () => boolean): Promise<void> {
+    opaqueKey(key)
+    return this.writes.run(async () => {
+      const data = await this.readValues('data', id)
+      if (!Object.hasOwn(data, key)) { if (!mayCommit()) fail('SESSION_EXPIRED'); return }
+      delete data[key]; this.validateDocument(data)
+      await this.fs.atomicJson(this.logical('data', id), data, mayCommit)
+    })
+  }
   async flush(): Promise<void> { await this.writes.run(async () => undefined) }
 }

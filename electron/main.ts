@@ -47,8 +47,10 @@ import type { PluginManager } from './plugins/plugin-manager'
 import type { DeclarativeCompatibilityFeature } from './plugins/feature-contracts'
 import type { FeatureRef } from '../src/shared/feature-contracts'
 import { WebPluginRuntime } from './plugins/web-plugin-runtime.ts'
+import type { WebCapabilityEffects } from './plugins/web-host-capabilities.ts'
 import { validateWebPackageForRuntime } from './plugins/package-validator.ts'
 import { resolveWebRuntimeAcceptanceOptions } from './services/web-runtime-acceptance-options.ts'
+import { createWebCapabilityAcceptance, resolveWebCapabilityAcceptanceOptions } from './services/web-capability-acceptance.ts'
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'webtools-plugin',
@@ -79,6 +81,10 @@ app.setPath('userData', resolveManagerTestProfile(process.argv, process.env, {
   userProfilePath: join(appDataPath, 'Nook'),
   installRoot: managerTestInstallRoot,
 }) ?? webRuntimeAcceptanceOptions?.profilePath ?? join(appDataPath, isDevelopment ? 'WebTools-Dev' : 'Nook'))
+const webCapabilityAcceptanceOptions = resolveWebCapabilityAcceptanceOptions(process.argv, process.env, {
+  userProfilePath: join(appDataPath, 'Nook'), installRoot: managerTestInstallRoot,
+  packaged: app.isPackaged, executable: process.execPath, userDataPath: app.getPath('userData'),
+})
 
 let dataStore: DataStore
 let secretStore: SecretStore
@@ -98,9 +104,11 @@ let featureInvocationService: FeatureInvocationService | null = null
 let nativePluginProjectionPublisher: NativePluginProjectionPublisher | null = null
 let nativeFeatureProjectionPublisher: NativeFeatureProjectionPublisher | null = null
 let webPluginRuntime: WebPluginRuntime | null = null
+let webCapabilityEffects: Omit<WebCapabilityEffects, 'hasForegroundGesture'> | null = null
 let managerCloseStarted = false
 let runtimeQuitPrepared = false
 let webRuntimeAcceptanceStarted = false
+let webCapabilityAcceptance: Awaited<ReturnType<typeof createWebCapabilityAcceptance>> | null = null
 let disposeCatalogHandlers = () => {}
 let disposePluginHandlers: () => void = () => undefined
 let disposeBuiltinTranslationHandoffHandlers: () => void = () => undefined
@@ -365,7 +373,8 @@ function markManagerRendererReady(sender: WebContents): void {
   managerRendererReady = true
   if (webRuntimeAcceptance && !webRuntimeAcceptanceStarted) {
     webRuntimeAcceptanceStarted = true
-    void startWebRuntimeAcceptanceFixture()
+    if (webCapabilityAcceptance && pluginManager && webPluginRuntime) webCapabilityAcceptance.start(pluginManager, webPluginRuntime)
+    else void startWebRuntimeAcceptanceFixture()
   }
   builtinTranslationHandoff?.rendererReady()
   if (!nativeManaged || !nativeManagerClient?.isConnected) { deliverPendingNativeIntent(); return }
@@ -554,7 +563,8 @@ app.whenReady().then(async () => {
   }
 
   const heldAcceptancePing = createHeldWebRuntimeAcceptancePing()
-  webPluginRuntime = new WebPluginRuntime(() => managerWindow, heldAcceptancePing ? { holdPingUntilAbort: heldAcceptancePing } : {})
+  webPluginRuntime = new WebPluginRuntime(() => managerWindow, heldAcceptancePing ? { holdPingUntilAbort: heldAcceptancePing } : {},
+    () => pluginManager && webCapabilityEffects ? { store: pluginManager.store, effects: webCapabilityEffects } : null)
   webPluginRuntime.subscribe(status => {
     if (webRuntimeAcceptance) console.log(`[web-runtime-acceptance] state=${status.state} generation=${status.generation} feature=${status.featureId ?? ''}`)
     const window = managerWindow
@@ -601,7 +611,9 @@ app.whenReady().then(async () => {
       isGenerationCurrent: generation => builtinTranslationLifecycle?.isGenerationCurrent(generation) ?? false,
     },
   })
-  const pluginHost = createElectronPluginHost({ userData: app.getPath('userData'), hostVersion: app.getVersion(), sharedAI: sharedAIService, dataStore, getWindow: () => managerWindow })
+  if (webCapabilityAcceptanceOptions) webCapabilityAcceptance = await createWebCapabilityAcceptance(webCapabilityAcceptanceOptions, app.getVersion())
+  const pluginHost = createElectronPluginHost({ userData: app.getPath('userData'), hostVersion: app.getVersion(), sharedAI: sharedAIService, dataStore, getWindow: () => managerWindow }, webCapabilityAcceptance?.hostOverrides)
+  webCapabilityEffects = pluginHost.webEffects
   try { await pluginHost.manager.initialize(); pluginManager = pluginHost.manager }
   catch { pluginHost.manager.close() } // Fail closed without preventing existing Manager pages from opening.
   featureRegistry = new FeatureRegistry({
@@ -615,7 +627,10 @@ app.whenReady().then(async () => {
     disposeBuiltinFeatureSubscription = builtinTranslationLifecycle.subscribeFeatureStateChanged(() => { void refreshFeatureRegistry() })
   }
   await refreshFeatureRegistry()
-  pluginCatalog = new PluginCatalog(app.getVersion(), () => pluginManager, builtinTranslationLifecycle)
+  pluginCatalog = new PluginCatalog(app.getVersion(), () => pluginManager, builtinTranslationLifecycle, async authority => {
+    if (!webPluginRuntime) throw new Error('Web Plugin runtime unavailable')
+    await webPluginRuntime.openAuthority(authority)
+  })
   featureInvocationService = new FeatureInvocationService({
     isConnected: () => nativeManagerClient?.isConnected === true,
     isTranslationEnabled: () => builtinTranslationLifecycle?.isEnabled() ?? false,
@@ -629,6 +644,17 @@ app.whenReady().then(async () => {
     },
     openDeclarative: (requestId, feature: DeclarativeCompatibilityFeature) => beginNativeFeaturePageIntent(requestId, feature.ref),
     openTranslation: requestId => beginNativeTranslationHandoff(requestId, null),
+    isWebFeature: ref => pluginManager?.isWebPackage(ref.pluginId) ?? false,
+    authorizeWeb: (ref, dispatch) => {
+      const manager = pluginManager
+      if (!manager) return Promise.reject(new NativeManagerRequestError('FEATURE_UNAVAILABLE', 'Plugin manager unavailable'))
+      return manager.authorizeWebFeature(ref, manager.session, dispatch)
+    },
+    openWeb: async (_requestId, authority, context) => {
+      if (!webPluginRuntime) throw new Error('Web Plugin runtime unavailable')
+      showManager()
+      await webPluginRuntime.openAuthority(authority, context)
+    },
   })
   if (nativeManaged) {
     nativePluginProjectionPublisher = new NativePluginProjectionPublisher(async () => {
@@ -725,6 +751,7 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => app.quit())
 
 app.on('before-quit', event => {
+  webCapabilityAcceptance?.dispose()
   if (webPluginRuntime && !runtimeQuitPrepared) {
     event.preventDefault()
     runtimeQuitPrepared = true

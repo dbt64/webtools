@@ -94,7 +94,7 @@ const sectionLabel = computed(() => activeSection.value === 'translate'
     ? '翻译'
   : activeSection.value === 'plugins'
     ? '插件管理'
-    : activeSection.value === 'plugin-page'
+    : activeSection.value === 'plugin-page' || activeSection.value === 'web-runtime'
       ? activePluginName.value
   : navItems.find((item) => item.id === activeSection.value)?.label ?? '设置')
 
@@ -105,7 +105,8 @@ onMounted(() => {
     latestWebRuntimeGeneration = status.generation
     webRuntimeGeneration.value = status.generation
     if (status.state === 'CREATING' || status.state === 'LOADING' || status.state === 'READY') {
-      if (activeSection.value !== 'web-runtime') sectionBeforeWebRuntime = activeSection.value
+      if (activeSection.value !== 'web-runtime') sectionBeforeWebRuntime = activeSection.value === 'plugin-page' && activePluginRef.value?.kind === 'web'
+        ? 'plugins' : activeSection.value
       activeSection.value = 'web-runtime'
     } else if ((status.state === 'CLOSED' || status.state === 'ABSENT') && activeSection.value === 'web-runtime') {
       activeSection.value = sectionBeforeWebRuntime
@@ -344,6 +345,11 @@ async function openPluginPage(ref: PluginRef): Promise<boolean> {
   const current = () => !disposed && isCurrentCatalogRequest({ section: activeSection.value, ref: activePluginRef.value, generation: pluginPageGeneration }, { section: 'plugin-page', ref, generation })
   try {
     const result = await window.desktop.pluginCatalog.open({ ...ref })
+    if (result.ok && result.data.kind === 'web') {
+      if (disposed || generation !== pluginPageGeneration || ref.kind !== 'web' || result.data.id !== ref.id) return false
+      pluginPageLoading.value = false
+      return true // Main's runtime-state event owns the WebContentsView surface.
+    }
     if (!current()) return false
     if (!result.ok) { pluginPageError.value = result.error.message; pluginPageLoading.value = false; void refreshPlugins(); return false }
     const latest = catalogEntries.value.find(item => catalogKey(item) === catalogKey(ref))
@@ -354,6 +360,7 @@ async function openPluginPage(ref: PluginRef): Promise<boolean> {
       pluginPageLoading.value = false
       return true
     }
+    if (result.data.kind !== 'declarative') return false
     const page = result.data.page
     if (ref.kind !== 'declarative' || latest.kind !== 'declarative' || page.pluginId !== ref.id || page.version !== latest.package.version || page.hash !== latest.package.hash) {
       returnToPluginCenter(); void refreshPlugins(); return false

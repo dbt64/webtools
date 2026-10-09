@@ -6,36 +6,100 @@ public enum NativeFeatureInvocationEnqueueResult { Enqueued, InvalidRequest, Dup
 public sealed class NativeFeatureInvocationQueue
 {
     public const int MaximumCount = 4;
-    private readonly Queue<NativeFeatureInvocationRequest> _items = new();
+    private sealed record Pending(NativeFeatureInvocationRequest Request, long EnqueuedAt, TimeSpan? ContextLifetime);
+    private readonly Queue<Pending> _items = new();
     private readonly HashSet<string> _requestIds = new(StringComparer.Ordinal);
+    private readonly object _gate = new();
+    private readonly TimeProvider _clock;
+    private ITimer? _expiryTimer;
 
-    public int Count => _items.Count;
+    public NativeFeatureInvocationQueue() : this(TimeProvider.System) { }
+    public NativeFeatureInvocationQueue(TimeProvider clock) => _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+    public int Count { get { lock (_gate) { if (ExpireLocked()) ScheduleExpiryLocked(); return _items.Count; } } }
 
     public NativeFeatureInvocationEnqueueResult TryEnqueue(NativeFeatureInvocationRequest request)
     {
         if (!NativeFeatureInvocationProtocol.IsValidRequest(request)) return NativeFeatureInvocationEnqueueResult.InvalidRequest;
-        if (_requestIds.Contains(request.RequestId)) return NativeFeatureInvocationEnqueueResult.DuplicateRequest;
-        if (_items.Count >= MaximumCount) return NativeFeatureInvocationEnqueueResult.QueueFull;
-        _items.Enqueue(request with { Ref = request.Ref with { } });
-        _requestIds.Add(request.RequestId);
-        return NativeFeatureInvocationEnqueueResult.Enqueued;
+        lock (_gate)
+        {
+            if (ExpireLocked()) ScheduleExpiryLocked();
+            TimeSpan? lifetime = null;
+            if (request.Context is { } context)
+            {
+                var age = _clock.GetUtcNow().ToUnixTimeMilliseconds() - context.CapturedAtUnixMs;
+                if (age < 0 || age >= 30_000) return NativeFeatureInvocationEnqueueResult.InvalidRequest;
+                lifetime = TimeSpan.FromMilliseconds(30_000 - age);
+            }
+            if (_requestIds.Contains(request.RequestId)) return NativeFeatureInvocationEnqueueResult.DuplicateRequest;
+            if (_items.Count >= MaximumCount) return NativeFeatureInvocationEnqueueResult.QueueFull;
+            _items.Enqueue(new(request with { Ref = request.Ref with { } }, _clock.GetTimestamp(), lifetime));
+            _requestIds.Add(request.RequestId);
+            ScheduleExpiryLocked();
+            return NativeFeatureInvocationEnqueueResult.Enqueued;
+        }
     }
 
-    public NativeFeatureInvocationRequest? Peek() => _items.TryPeek(out var request)
-        ? request with { Ref = request.Ref with { } }
-        : null;
+    public NativeFeatureInvocationRequest? Peek()
+    {
+        lock (_gate)
+        {
+            if (ExpireLocked()) ScheduleExpiryLocked();
+            return _items.TryPeek(out var item) ? item.Request with { Ref = item.Request.Ref with { } } : null;
+        }
+    }
 
     public bool Complete(string requestId)
     {
-        if (!_items.TryPeek(out var request) || !StringComparer.Ordinal.Equals(request.RequestId, requestId)) return false;
-        _items.Dequeue();
-        _requestIds.Remove(request.RequestId);
-        return true;
+        lock (_gate)
+        {
+            if (ExpireLocked()) ScheduleExpiryLocked();
+            if (!_items.TryPeek(out var item) || !StringComparer.Ordinal.Equals(item.Request.RequestId, requestId)) return false;
+            _items.Dequeue();
+            _requestIds.Remove(item.Request.RequestId);
+            ScheduleExpiryLocked();
+            return true;
+        }
     }
 
     public void Clear()
     {
-        _items.Clear();
-        _requestIds.Clear();
+        lock (_gate)
+        {
+            _expiryTimer?.Dispose(); _expiryTimer = null;
+            _items.Clear();
+            _requestIds.Clear();
+        }
+    }
+    private bool ExpireLocked()
+    {
+        var changed = false;
+        var now = _clock.GetTimestamp();
+        for (var remaining = _items.Count; remaining > 0; remaining--)
+        {
+            var item = _items.Dequeue();
+            if (item.ContextLifetime is { } lifetime && _clock.GetElapsedTime(item.EnqueuedAt, now) >= lifetime)
+            {
+                _requestIds.Remove(item.Request.RequestId); changed = true; // Drop the only queued plaintext reference.
+            }
+            else _items.Enqueue(item);
+        }
+        return changed;
+    }
+    private void ScheduleExpiryLocked()
+    {
+        _expiryTimer?.Dispose(); _expiryTimer = null;
+        var now = _clock.GetTimestamp();
+        TimeSpan? earliest = null;
+        foreach (var item in _items)
+        {
+            if (item.ContextLifetime is not { } lifetime) continue;
+            var remaining = lifetime - _clock.GetElapsedTime(item.EnqueuedAt, now);
+            if (earliest is null || remaining < earliest) earliest = remaining;
+        }
+        if (earliest is null) return;
+        _expiryTimer = _clock.CreateTimer(_ =>
+        {
+            lock (_gate) { ExpireLocked(); ScheduleExpiryLocked(); }
+        }, null, earliest < TimeSpan.Zero ? TimeSpan.Zero : earliest.Value, Timeout.InfiniteTimeSpan);
     }
 }

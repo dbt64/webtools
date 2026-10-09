@@ -4,6 +4,16 @@ import { parseFeatureInvocationRequest, parseFeatureInvocationResult } from './f
 
 const requestId = '6528d127-0182-4a60-9e4b-8c89070c50f0'
 const ref = { pluginId: 'org.example.private-notes', featureId: 'legacy-manager-page' }
+test('typed Launcher context preserves exact text and rejects generic payload, clipboard source, excess and malformed timestamp', () => {
+  const context = { type: 'text', source: 'launcher-input', text: ' 中文 exact 😀 ', capturedAtUnixMs: 123456 }
+  const value = { requestId, ref, source: 'launcher', context }
+  assert.deepEqual(parseFeatureInvocationRequest(value), value)
+  for (const bad of [{ ...context, pluginId: 'forged' }, { ...context, source: 'clipboard' }, { ...context, text: 'x'.repeat(301) },
+    { ...context, capturedAtUnixMs: -1 }, { ...context, capturedAtUnixMs: Infinity }]) {
+    assert.equal(parseFeatureInvocationRequest({ ...value, context: bad }), null)
+  }
+  assert.ok(parseFeatureInvocationRequest({ ...value, context: { ...context, text: 'x'.repeat(300) } }))
+})
 
 test('Feature invocation request accepts only a bounded closed launcher request', () => {
   assert.deepEqual(parseFeatureInvocationRequest({ requestId, ref, source: 'launcher' }), { requestId, ref, source: 'launcher' })

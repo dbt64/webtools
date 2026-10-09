@@ -9,6 +9,8 @@ import { WebPluginBridge } from './web-plugin-bridge.ts'
 import { PLUGIN_BRIDGE_CLIENT_ROUTE, PLUGIN_BRIDGE_HOST_ROUTE } from './web-plugin-bridge-routes.ts'
 import { webManifest, webPackage } from './fixtures.mjs'
 import { isValidatedWebPackageSnapshot, validateWebPackageForRuntime } from './package-validator.ts'
+import { isWebFeatureAuthority } from './web-feature-authority.ts'
+import { WebHostCapabilities } from './web-host-capabilities.ts'
 import { buildRuntimeCsp, buildRuntimeResourceUrl, createRuntimeOrigin, parseRuntimePackageUrl, selectValidatedWebFeature } from './web-runtime-policy.ts'
 
 const source = stripTypeScriptTypes((await readFile(new URL('./web-plugin-runtime.ts', import.meta.url), 'utf8'))
@@ -20,7 +22,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-function harness(preloadHello = true, autoFinish = true, runtimeOptions = undefined) {
+function harness(preloadHello = true, autoFinish = true, runtimeOptions = undefined, capabilityDependencies = undefined) {
   const ipcMain = new EventEmitter()
   const views = []
   const currentSession = Object.assign(new EventEmitter(), {
@@ -35,6 +37,7 @@ function harness(preloadHello = true, autoFinish = true, runtimeOptions = undefi
     getURL() { return this.mainFrame.url }
     send(route, raw) { this.sent.push({ route, message: JSON.parse(raw) }) }
     isDestroyed() { return this.destroyed }
+    isFocused() { return true }
     setWebRTCIPHandlingPolicy() {}
     setWindowOpenHandler() {}
     async loadURL(url) {
@@ -49,22 +52,82 @@ function harness(preloadHello = true, autoFinish = true, runtimeOptions = undefi
   }
   class View {
     webContents = new Contents()
-    constructor() { views.push(this) }
+    constructor(options) { this.options = options; views.push(this) }
     setBounds() {}
   }
   const children = []
   const window = {
-    isDestroyed: () => false, webContents: { isDestroyed: () => false },
+    isDestroyed: () => false, isFocused: () => true, webContents: { isDestroyed: () => false },
     contentView: { children, addChildView: view => children.push(view), removeChildView: view => children.splice(children.indexOf(view), 1) },
   }
   const Runtime = runInNewContext(`${source}\nWebPluginRuntime`, {
     WebContentsView: View, session: { fromPartition: () => currentSession },
     ipcMain, WebPluginBridge, PLUGIN_BRIDGE_CLIENT_ROUTE, PLUGIN_BRIDGE_HOST_ROUTE, join, __dirname: '.',
     buildRuntimeCsp, buildRuntimeResourceUrl, createRuntimeOrigin, parseRuntimePackageUrl, selectValidatedWebFeature,
-    isValidatedWebPackageSnapshot, setTimeout, clearTimeout, process: { argv: [], env: {} }, Headers, Response,
+    isValidatedWebPackageSnapshot, isWebFeatureAuthority, WebHostCapabilities, Date, performance, setTimeout, clearTimeout, process: { argv: [], env: {} }, Headers, Response,
   })
-  return { runtime: new Runtime(() => window, runtimeOptions), currentSession, views, ipcMain }
+  return { runtime: new Runtime(() => window, runtimeOptions, capabilityDependencies), currentSession, views, ipcMain }
 }
+
+test('ordinary capabilities require real installed authority; revoke synchronously cancels the production runtime before teardown', async t => {
+  const { PluginManager } = await import('./plugin-manager.ts')
+  const { mkdtemp, rm } = await import('node:fs/promises'); const { tmpdir } = await import('node:os')
+  const root = await mkdtemp(join(tmpdir(), 'webtools-runtime-authority-')); t.after(() => rm(root, { recursive: true, force: true }))
+  const effects = { confirm: async () => true, isAIConfigured: async () => true, completeAI: async () => ({ text: 'test' }), clipboardWrite: () => {} }
+  const manager = new PluginManager({ userData: root, hostVersion: '0.1.0', confirm: async () => true, externalOpen: async () => {}, clipboardWrite: () => {},
+    ai: { complete: async () => ({ text: 'test' }), getDefaultProviderInfo: async () => ({ providerName: 'test', model: 'test' }) } })
+  await manager.initialize(); t.after(() => manager.close())
+  const base = webManifest(); const m = webManifest({ requestedCapabilities: ['plugin.storage.read', 'plugin.storage.write'],
+    features: [{ ...base.features[0], requiredCapabilities: ['plugin.storage.read', 'plugin.storage.write'], acceptedContexts: [{ type: 'text', sources: ['launcher-input'] }] }] })
+  await manager.install(webPackage(m), manager.session); await manager.setEnabled(m.id, true, manager.session)
+  const h = harness(true, true, undefined, () => ({ store: manager.store, effects }))
+  t.after(() => h.runtime.close())
+  let originalAuthority
+  const opened = await manager.authorizeWebFeature({ pluginId: m.id, featureId: 'hello' }, manager.session,
+    authority => { originalAuthority = authority; return h.runtime.openAuthority(authority, { type: 'text', source: 'launcher-input', text: 'exact 中文', ageMs: 0 }).then(() => {}) })
+  await opened.completion
+  const contents = h.views[0].webContents
+  h.ipcMain.emit(PLUGIN_BRIDGE_CLIENT_ROUTE, { sender: contents, senderFrame: contents.mainFrame },
+    '{"type":"request","protocolMajor":1,"requestId":"1","method":"context.current","payload":null}')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(contents.sent.at(-1).message.result, { type: 'text', source: 'launcher-input', text: 'exact 中文' })
+  const replacement = await manager.authorizeWebFeature({ pluginId: m.id, featureId: 'hello' }, manager.session, authority => {
+    const switching = h.runtime.openAuthority(authority); switching.catch(() => {})
+    assert.equal(originalAuthority.isCurrent(), false, 'READY Feature loses authority synchronously on replacement request')
+    assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 0)
+    return switching.then(() => {})
+  })
+  await replacement.completion
+  const disabled = manager.setEnabled(m.id, false, manager.session)
+  assert.equal(h.runtime.status.state, 'ABSENT'); assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 0)
+  await disabled; await h.runtime.close(); assert.equal(contents.destroyed, true)
+})
+
+test('a READY production Runtime is synchronously revoked before update confirmation completes', async t => {
+  const { PluginManager } = await import('./plugin-manager.ts')
+  const { mkdtemp, rm } = await import('node:fs/promises'); const { tmpdir } = await import('node:os')
+  const root = await mkdtemp(join(tmpdir(), 'webtools-ready-update-')); t.after(() => rm(root, { recursive: true, force: true }))
+  const deps = { userData: root, hostVersion: '0.1.0', confirm: async () => true, externalOpen: async () => {}, clipboardWrite: () => {},
+    ai: { complete: async () => ({ text: 'isolated' }), getDefaultProviderInfo: async () => ({ providerName: 'test', model: 'test' }) } }
+  const manager = new PluginManager(deps); await manager.initialize(); t.after(() => manager.close())
+  const m = webManifest(); await manager.install(webPackage(m), manager.session); await manager.setEnabled(m.id, true, manager.session)
+  const effects = { confirm: async () => true, isAIConfigured: async () => true, completeAI: async () => ({ text: 'isolated', outputTokens: 1 }), clipboardWrite: () => {} }
+  const h = harness(true, true, undefined, () => ({ store: manager.store, effects })); t.after(() => h.runtime.close())
+  let authority
+  const opened = await manager.authorizeWebFeature({ pluginId: m.id, featureId: 'hello' }, manager.session,
+    value => { authority = value; return h.runtime.openAuthority(value).then(() => {}) })
+  await opened.completion; assert.equal(h.runtime.status.state, 'READY')
+  const entered = deferred(); const answer = deferred()
+  deps.confirm = async () => { entered.resolve(); return answer.promise }
+  const replacement = manager.install(webPackage(webManifest({ version: '2.0.0' })), manager.session)
+  await entered.promise
+  try {
+    assert.equal(authority.isCurrent(), false)
+    assert.equal(h.runtime.status.state, 'ABSENT')
+    assert.equal(h.ipcMain.listenerCount(PLUGIN_BRIDGE_CLIENT_ROUTE), 0)
+  } finally { answer.resolve(false); await replacement }
+  assert.equal(authority.isCurrent(), false)
+})
 
 test('loaded document alone stays LOADING until the dedicated preload handshake arrives', async () => {
   const snapshot = await validateWebPackageForRuntime(webPackage(webManifest()), '0.1.0')

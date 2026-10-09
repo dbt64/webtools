@@ -3,6 +3,15 @@ import assert from 'node:assert/strict'
 import { OpenAICompatibleAdapter } from './openai-compatible-adapter.ts'
 
 const response = (body, status = 200) => new Response(JSON.stringify(body), { status })
+test('internal output-token observer receives only valid provider completion usage; text API remains compatible', async () => {
+  for (const value of [1024, 1025, undefined, -1, 0.5]) {
+    let observed
+    const adapter = new OpenAICompatibleAdapter(async () => response({ choices: [{ message: { content: 'short' } }], usage: { completion_tokens: value } }))
+    assert.equal(await adapter.complete({ endpoint: new URL('https://example.test'), apiKey: 'isolated', model: 'test', messages: [{ role: 'user', content: 'safe' }],
+      signal: new AbortController().signal, maxOutputTokens: 1024, onOutputTokens: tokens => { observed = tokens } }), 'short')
+    assert.equal(observed, Number.isSafeInteger(value) && value >= 0 ? value : null)
+  }
+})
 
 test('sends generic messages using the OpenAI chat-completions protocol', async () => {
   let captured

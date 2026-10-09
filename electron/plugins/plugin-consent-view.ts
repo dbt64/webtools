@@ -1,4 +1,4 @@
-import type { PluginCapability, PluginVersionChangeKind } from '../../src/shared/plugin-contracts.ts'
+import type { InstalledPluginCapability as PluginCapability, PluginVersionChangeKind } from '../../src/shared/plugin-contracts.ts'
 import type { PluginConsent } from './permission-broker.ts'
 
 const capabilityNames: Record<PluginCapability, string> = {
@@ -10,6 +10,8 @@ const capabilityNames: Record<PluginCapability, string> = {
   'external.open': '打开插件声明的网址',
   'clipboard.write': '写入剪贴板',
   'sharedAI.complete': '使用共享 AI',
+  'clipboard.read': '仅在原生操作后接收一次剪贴板文本',
+  'network.domains': '访问声明的网络域名（当前不支持）',
 }
 
 const changeNames: Record<PluginVersionChangeKind, string> = {

@@ -5,6 +5,9 @@ import { PLUGIN_BRIDGE_CLIENT_ROUTE, PLUGIN_BRIDGE_HOST_ROUTE } from './web-plug
 import { buildRuntimeCsp, buildRuntimeResourceUrl, createRuntimeOrigin, parseRuntimePackageUrl, selectValidatedWebFeature } from './web-runtime-policy.ts'
 import type { ValidatedWebPackageSnapshot } from './validated-web-package-snapshot.ts'
 import { isValidatedWebPackageSnapshot } from './package-validator.ts'
+import { isWebFeatureAuthority, type WebFeatureAuthority } from './web-feature-authority.ts'
+import { WebHostCapabilities, type InvocationTextContext, type WebCapabilityEffects } from './web-host-capabilities.ts'
+import type { PluginStore } from './plugin-store.ts'
 
 const PARTITION = 'webtools-web-plugin-runtime'
 const LOAD_TIMEOUT_MS = 15_000
@@ -29,6 +32,10 @@ interface RuntimeInstance {
   initialNavigationStarted: boolean
   bridge?: WebPluginBridge
   removeBridgeListener?: () => void
+  authority?: WebFeatureAuthority
+  capabilities?: WebHostCapabilities
+  removeAuthorityListener?: () => void
+  gestureAt?: number
 }
 
 interface WebRuntimeAcceptanceTestOptions {
@@ -38,6 +45,7 @@ interface WebRuntimeAcceptanceTestOptions {
 export class WebPluginRuntime {
   private readonly getWindow: () => BrowserWindow | null
   private readonly acceptanceTestOptions: WebRuntimeAcceptanceTestOptions
+  private readonly getCapabilityDependencies?: () => { store: PluginStore; effects: Omit<WebCapabilityEffects, 'hasForegroundGesture'> } | null
   private active: RuntimeInstance | null = null
   private runtimeSession: Session | null = null
   private pendingTeardown: Promise<void> = Promise.resolve()
@@ -47,9 +55,11 @@ export class WebPluginRuntime {
   private operationQueue: Promise<void> = Promise.resolve()
   private readonly listeners = new Set<(status: WebRuntimeStatus) => void>()
 
-  constructor(getWindow: () => BrowserWindow | null, acceptanceTestOptions: WebRuntimeAcceptanceTestOptions = {}) {
+  constructor(getWindow: () => BrowserWindow | null, acceptanceTestOptions: WebRuntimeAcceptanceTestOptions = {},
+    getCapabilityDependencies?: () => { store: PluginStore; effects: Omit<WebCapabilityEffects, 'hasForegroundGesture'> } | null) {
     this.getWindow = getWindow
     this.acceptanceTestOptions = acceptanceTestOptions
+    this.getCapabilityDependencies = getCapabilityDependencies
   }
 
   subscribe(listener: (status: WebRuntimeStatus) => void): () => void {
@@ -71,29 +81,40 @@ export class WebPluginRuntime {
     active.view.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.round(bounds.width), height: Math.round(bounds.height) })
   }
 
-  async open(snapshot: ValidatedWebPackageSnapshot, featureId: string): Promise<WebRuntimeStatus> {
+  openAuthority(authority: WebFeatureAuthority, context?: InvocationTextContext): Promise<WebRuntimeStatus> {
+    if (!isWebFeatureAuthority(authority) || !authority.isCurrent()) return Promise.reject(new Error('Web Feature authority unavailable'))
+    return this.open(authority.snapshot, authority.featureId, { authority, context, receivedAtUnixMs: Date.now() })
+  }
+
+  async open(snapshot: ValidatedWebPackageSnapshot, featureId: string,
+    invocation?: { authority: WebFeatureAuthority; context?: InvocationTextContext; receivedAtUnixMs: number }): Promise<WebRuntimeStatus> {
     const requestGeneration = ++this.requestGeneration
-    const loading = this.active
-    const preempt = loading && (loading.state === 'CREATING' || loading.state === 'LOADING')
-      ? this.closeRuntime(loading)
+    const previous = this.active
+    const reuse = previous && !invocation && !previous.authority && previous.state === 'READY'
+      && previous.snapshot.packageHash === snapshot.packageHash && previous.featureId === featureId
+    const preempt = previous && !reuse
+      ? this.closeRuntime(previous)
       : Promise.resolve()
     const operation = this.operationQueue.then(async () => {
       await preempt
-      return this.openInternal(snapshot, featureId, requestGeneration)
+      return this.openInternal(snapshot, featureId, requestGeneration, invocation)
     })
     this.operationQueue = operation.then(() => undefined, () => undefined)
     return operation
   }
 
-  private async openInternal(snapshot: ValidatedWebPackageSnapshot, featureId: string, requestGeneration: number): Promise<WebRuntimeStatus> {
+  private async openInternal(snapshot: ValidatedWebPackageSnapshot, featureId: string, requestGeneration: number,
+    invocation?: { authority: WebFeatureAuthority; context?: InvocationTextContext; receivedAtUnixMs: number }): Promise<WebRuntimeStatus> {
     // Crash teardown starts outside operationQueue; replacement must still wait for it.
     await this.pendingTeardown
     this.assertCurrentRequest(requestGeneration)
     if (this.unavailable) throw new Error('Web Plugin runtime is unavailable after an incomplete security cleanup')
     if (!isValidatedWebPackageSnapshot(snapshot)) throw new TypeError('Web Plugin runtime accepts only Host-validated package snapshots')
+    if (invocation && (!isWebFeatureAuthority(invocation.authority) || !invocation.authority.isCurrent()
+      || invocation.authority.snapshot !== snapshot || invocation.authority.featureId !== featureId)) throw new Error('Web Feature authority unavailable')
     const selection = selectValidatedWebFeature(snapshot, featureId)
     const existing = this.active
-    if (existing && existing.snapshot.packageHash === snapshot.packageHash && existing.featureId === featureId && existing.state === 'READY') return this.status
+    if (existing && !invocation && !existing.authority && existing.snapshot.packageHash === snapshot.packageHash && existing.featureId === featureId && existing.state === 'READY') return this.status
     // This method already runs inside operationQueue; enqueueing close() here would await itself.
     if (existing) await this.closeRuntime(existing)
     this.assertCurrentRequest(requestGeneration)
@@ -104,6 +125,9 @@ export class WebPluginRuntime {
     const identity = createRuntimeOrigin()
     const currentSession = await this.getRuntimeSession()
     this.assertCurrentRequest(requestGeneration)
+    if (invocation && !invocation.authority.isCurrent()) throw new Error('Web Feature authority revoked')
+    const capabilityDependencies = invocation ? this.getCapabilityDependencies?.() : null
+    if (invocation && !capabilityDependencies) throw new Error('Web capabilities unavailable')
     const view = new WebContentsView({ webPreferences: {
       session: currentSession,
       preload: join(__dirname, '../preload/web-plugin.js'),
@@ -114,19 +138,38 @@ export class WebPluginRuntime {
       webviewTag: false,
       allowRunningInsecureContent: false,
       devTools: false,
+      additionalArguments: invocation ? [
+        ...(invocation.authority.isCurrent('sharedAI.complete') ? ['--webtools-plugin-ai'] : []),
+        ...(invocation.authority.isCurrent('clipboard.write') ? ['--webtools-plugin-clipboard'] : []),
+      ] : [],
     } })
     const runtime: RuntimeInstance = {
       snapshot, featureId, feature: selection.feature, host: identity.host,
       generation: ++this.generation, view, state: 'CREATING', removeView: false,
       entryUrl: buildRuntimeResourceUrl(identity.host, selection.entryPath), documentLoaded: false, initialNavigationStarted: false,
+      authority: invocation?.authority,
     }
     this.active = runtime
+    if (invocation && capabilityDependencies) {
+      try {
+        runtime.capabilities = new WebHostCapabilities({ authority: invocation.authority, store: capabilityDependencies.store,
+          context: invocation.context ? { ...invocation.context, ageMs: invocation.context.ageMs + Math.max(0, Date.now() - invocation.receivedAtUnixMs) } : undefined,
+          isRuntimeCurrent: () => this.active === runtime && runtime.generation === this.generation && runtime.state === 'READY',
+          effects: { ...capabilityDependencies.effects, hasForegroundGesture: () => {
+            const gestureAt = runtime.gestureAt; runtime.gestureAt = undefined
+            return gestureAt !== undefined && performance.now() - gestureAt >= 0 && performance.now() - gestureAt < 5000 && runtime.state === 'READY'
+              && this.active === runtime && window.isFocused() && runtime.view.webContents.isFocused()
+          } } })
+        runtime.removeAuthorityListener = invocation.authority.onRevoke(() => { void this.closeRuntime(runtime) })
+      } catch (error) { await this.closeRuntime(runtime); throw error }
+    }
     runtime.bridge = new WebPluginBridge({
       authenticate: event => this.authenticateBridge(runtime, event),
       send: raw => view.webContents.send(PLUGIN_BRIDGE_HOST_ROUTE, raw),
       onReady: () => { runtime.state = 'READY'; this.publish(runtime) },
       onFatal: () => { void this.closeRuntime(runtime) },
       dispatchPing: this.acceptanceTestOptions.holdPingUntilAbort,
+      dispatchCapability: runtime.capabilities ? (request, signal) => runtime.capabilities!.dispatch(request, signal) : undefined,
     })
     const receive = (event: Electron.IpcMainEvent, raw: unknown) => runtime.bridge?.receive(event, raw)
     ipcMain.on(PLUGIN_BRIDGE_CLIENT_ROUTE, receive)
@@ -141,6 +184,12 @@ export class WebPluginRuntime {
     view.setBounds({ x: 1, y: 1, width: 1, height: 1 })
     view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
     view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    view.webContents.on('before-input-event', (_event, input) => {
+      if (input.type === 'keyDown' && !input.isAutoRepeat && !input.control && !input.meta && !input.alt) runtime.gestureAt = performance.now()
+    })
+    view.webContents.on('before-mouse-event', (_event, input) => {
+      if (input.type === 'mouseDown') runtime.gestureAt = performance.now()
+    })
     this.bindNavigationPolicy(runtime)
     runtime.state = 'LOADING'
     this.publish(runtime)
@@ -331,6 +380,7 @@ export class WebPluginRuntime {
       || contents.getURL().split(/[?#]/, 1)[0] !== runtime.entryUrl
       || !isValidatedWebPackageSnapshot(runtime.snapshot)
       || runtime.feature.id !== runtime.featureId || !runtime.snapshot.manifest.features.includes(runtime.feature)) return 'invalid'
+    if (runtime.authority && !runtime.authority.isCurrent()) return 'invalid'
     return 'current'
   }
 
@@ -345,6 +395,10 @@ export class WebPluginRuntime {
     if (runtime.state === 'CLOSED') return
     runtime.state = 'CLOSING'
     if (this.active === runtime) this.active = null // Revoke generation and protocol access before touching WebContents.
+    runtime.gestureAt = undefined
+    runtime.removeAuthorityListener?.(); runtime.removeAuthorityListener = undefined
+    runtime.capabilities?.dispose(); runtime.capabilities = undefined
+    runtime.authority?.revoke()
     const bridgeClosed = runtime.bridge?.revoke()
     runtime.removeBridgeListener?.()
     runtime.removeBridgeListener = undefined

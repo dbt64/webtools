@@ -71,6 +71,23 @@ test('late CLOSED state from a replaced Web Runtime generation cannot restore th
     assert.equal(env.state.activeSection, 'web-runtime')
   } finally { env.app.unmount() }
 })
+test('closing a Manager-opened Web Feature returns to Plugin Center rather than its transient declarative loading route', async () => {
+  const entry = { kind: 'web', id: 'org.example.web-route', icon: { kind: 'fallback' }, package: {
+    id: 'org.example.web-route', name: 'Web Route', enabled: true, status: 'active', manifestVersion: 2,
+    requested: [], granted: [], webFeatures: [{ id: 'hello', title: 'Hello', available: true }] } }
+  let finish
+  const env = mount({ pluginCatalog: { list: async () => ({ ok: true, data: { ...snapshot(1).data, entries: [entry] } }),
+    open: () => new Promise(resolve => { finish = resolve }) } })
+  try {
+    await tick(); env.state.activeSection = 'plugins'
+    const opening = env.state.openPluginPage({ kind: 'web', id: entry.id, featureId: 'hello' })
+    env.publishWebRuntimeState({ state: 'CREATING', featureId: 'hello', generation: 1 })
+    env.publishWebRuntimeState({ state: 'READY', featureId: 'hello', generation: 1 })
+    finish({ ok: true, data: { kind: 'web', id: entry.id, featureId: 'hello' } }); await opening
+    env.publishWebRuntimeState({ state: 'CLOSED', featureId: 'hello', generation: 1 })
+    assert.equal(env.state.activeSection, 'plugins')
+  } finally { env.app.unmount() }
+})
 test('reopening active Translation does not leave its section or invoke another page load', async () => {
   let opens = 0; let cancellations = 0; let finishTranslation
   const env = mount({

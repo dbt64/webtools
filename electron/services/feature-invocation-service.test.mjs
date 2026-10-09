@@ -4,6 +4,28 @@ import { FeatureInvocationService } from './feature-invocation-service.ts'
 
 const id = '6528d127-0182-4a60-9e4b-8c89070c50f0'
 const request = (ref, requestId = id) => ({ requestId, ref, source: 'launcher' })
+test('Web Feature invocation goes through live authority and typed context expiry without widening Native projection', async () => {
+  let captured; let calls = 0; let now = 100000
+  const env = setup({ now: () => now, authorizeWeb: async (ref, dispatch) => { calls++; return { completion: dispatch({ featureId: ref.featureId }) } },
+    openWeb: async (_id, _authority, context) => { captured = context } })
+  const value = { ...request({ pluginId: 'org.example.web', featureId: 'hello' }),
+    context: { type: 'text', source: 'launcher-input', text: 'exact 中文', capturedAtUnixMs: now } }
+  assert.equal((await env.service.invoke(value)).status, 'accepted')
+  assert.deepEqual(captured, { type: 'text', source: 'launcher-input', text: 'exact 中文', ageMs: 0 })
+  now += 30000
+  assert.equal((await env.service.invoke({ ...value, requestId: 'eec8790c-1b26-428e-b41f-33acdb9d3fb5' })).reasonCode, 'stale-request')
+  assert.equal(calls, 1)
+})
+test('completed invocation replay retains no plaintext context while preserving exact at-most-once discrimination', async () => {
+  let calls = 0
+  const env = setup({ now: () => 100000, authorizeWeb: async (ref, dispatch) => { calls++; return { completion: dispatch({ featureId: ref.featureId }) } }, openWeb: async () => {} })
+  const value = { ...request({ pluginId: 'org.example.web', featureId: 'hello' }), context: {
+    type: 'text', source: 'launcher-input', text: 'SYNTHETIC-CONTEXT-MUST-NOT-STAY-IN-REPLAY', capturedAtUnixMs: 100000 } }
+  assert.equal((await env.service.invoke(value)).status, 'accepted')
+  assert.equal(JSON.stringify([...env.service.replay.values()]).includes(value.context.text), false)
+  assert.equal((await env.service.invoke(value)).status, 'accepted'); assert.equal(calls, 1)
+  assert.equal((await env.service.invoke({ ...value, context: { ...value.context, text: 'changed' } })).reasonCode, 'stale-request')
+})
 const pluginFeature = {
   ref: { pluginId: 'org.example.notes', featureId: 'legacy-manager-page' },
   sourceKind: 'declarative',

@@ -1,4 +1,5 @@
 import { ERROR_CODES, validateRequestInput } from './protocol.mjs'
+import { validateCapabilityRequest, validateCapabilityResult } from './capability-methods.mjs'
 
 function safeError(code) {
   const error = new Error(code === 'CANCELLED' ? 'WebTools call cancelled' : 'WebTools bridge unavailable')
@@ -31,7 +32,22 @@ export function createBridgeConnection(facade) {
     if (closed) throw safeError('RUNTIME_CLOSED')
   }).catch(error => { throw safeError(error?.code ?? 'NOT_AVAILABLE') })
   ready.catch(() => {}) // Connection may be created before the caller awaits ready.
-  const publicClient = Object.freeze({ ready, onClose(listener) {
+  const namespaces = Array.isArray(facade?.capabilityNamespaces) ? facade.capabilityNamespaces : []
+  async function capability(method, payload, options) {
+    try { validateCapabilityRequest(method, payload) } catch (error) { throw safeError(error.code ?? 'INVALID_REQUEST') }
+    const result = await request(method, payload, options)
+    try { validateCapabilityResult(method, result) } catch { throw safeError('INTERNAL_ERROR') }
+    if (method === 'context.current') return result === null ? null : Object.freeze({ ...result })
+    return ['storage.set', 'storage.delete', 'clipboard.write'].includes(method) ? undefined : result
+  }
+  const publicClient = Object.freeze({ ready,
+    context: Object.freeze({ current: options => capability('context.current', null, options) }),
+    storage: Object.freeze({ get: (key, options) => capability('storage.get', { key }, options),
+      set: (key, value, options) => capability('storage.set', { key, value }, options),
+      delete: (key, options) => capability('storage.delete', { key }, options) }),
+    ...(namespaces.includes('ai') ? { ai: Object.freeze({ complete: (input, options) => capability('ai.complete', input, options) }) } : {}),
+    ...(namespaces.includes('clipboard') ? { clipboard: Object.freeze({ writeText: (text, options) => capability('clipboard.write', { text }, options) }) } : {}),
+    onClose(listener) {
     if (typeof listener !== 'function') throw new TypeError('Invalid close listener')
     if (closed) { listener(); return () => {} }
     if (listeners.size >= 4) throw safeError('LIMIT_EXCEEDED')

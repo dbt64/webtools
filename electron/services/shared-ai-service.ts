@@ -72,9 +72,10 @@ export class SharedAIService {
     }
   }
 
-  async complete(messages: AIMessage[], signal: AbortSignal, maxOutputTokens = 2048): Promise<SharedAICompletion> {
+  async complete(messages: AIMessage[], signal: AbortSignal, maxOutputTokens = 2048,
+    onOutputTokens?: (tokens: number | null) => void): Promise<SharedAICompletion> {
     const settings = this.dataStore.snapshot().settings.sharedAI
-    return this.completeWithProvider(settings.defaultProviderId, messages, signal, maxOutputTokens)
+    return this.completeWithProvider(settings.defaultProviderId, messages, signal, maxOutputTokens, onOutputTokens)
   }
 
   async testConnection(signal: AbortSignal): Promise<SharedAICompletion> {
@@ -85,7 +86,8 @@ export class SharedAIService {
     return result
   }
 
-  private async completeWithProvider(providerId: AIProviderId, messages: AIMessage[], signal: AbortSignal, maxOutputTokens: number): Promise<SharedAICompletion> {
+  private async completeWithProvider(providerId: AIProviderId, messages: AIMessage[], signal: AbortSignal, maxOutputTokens: number,
+    onOutputTokens?: (tokens: number | null) => void): Promise<SharedAICompletion> {
     if (!Array.isArray(messages) || messages.length === 0 || messages.length > 100
       || messages.some((message) => !message || !['system', 'user', 'assistant'].includes(message.role) || typeof message.content !== 'string' || message.content.length > 50_000)) {
       throw new ServiceError('INVALID_AI_REQUEST', 'AI 请求内容无效。')
@@ -101,7 +103,7 @@ export class SharedAIService {
     try { endpoint = resolveAIProviderEndpoint(providerId, config) }
     catch (error) { throw new ServiceError('AI_CONFIGURATION_INVALID', error instanceof Error ? error.message : 'AI 服务配置无效。') }
 
-    const request: AICompletionRequest = { endpoint, apiKey, model, messages, signal, maxOutputTokens }
+    const request: AICompletionRequest = { endpoint, apiKey, model, messages, signal, maxOutputTokens, ...(onOutputTokens ? { onOutputTokens } : {}) }
     const adapter = descriptor.protocol === 'anthropic-messages' ? this.anthropicAdapter : this.openAICompatibleAdapter
     const text = await adapter.complete(request)
     return { text, providerId, providerName: descriptor.name, model }

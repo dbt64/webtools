@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PluginCatalog } from './plugin-catalog.ts'
 import { PluginManager } from './plugin-manager.ts'
-import { manifest, packageBytes } from './fixtures.mjs'
+import { manifest, packageBytes, webManifest, webPackage } from './fixtures.mjs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -34,6 +34,23 @@ function setup() {
   const catalog = new PluginCatalog('0.1.0', () => core, builtin)
   return { catalog, core, builtin, calls, rows: value => { rows = value }, rotate: () => { session = 'new' } }
 }
+test('installed v2 appears as a Web package and opens only through live Main authority; frozen Native projections stay unchanged', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'webtools-catalog-web-')); t.after(() => rm(root, { recursive: true, force: true }))
+  const core = new PluginManager({ userData: root, hostVersion: '0.1.0', confirm: async () => true, externalOpen: async () => {}, clipboardWrite: () => {},
+    ai: { complete: async () => ({ text: 'test' }), getDefaultProviderInfo: async () => ({ providerName: 'test', model: 'test' }) } })
+  await core.initialize(); t.after(() => core.close())
+  const m = webManifest(); await core.install(webPackage(m), core.session); await core.setEnabled(m.id, true, core.session)
+  let opened
+  const catalog = new PluginCatalog('0.1.0', () => core, builtinLifecycle(), async authority => { opened = authority })
+  const entry = (await catalog.list(catalog.session)).entries.find(e => e.id === m.id)
+  assert.equal(entry.kind, 'web'); assert.equal(entry.package.webFeatures[0].id, 'hello')
+  assert.equal((await catalog.open({ kind: 'web', id: m.id, featureId: 'hello' }, catalog.session)).kind, 'web')
+  assert.equal(opened.isCurrent(), true)
+  assert.equal((await catalog.launcherProjection(catalog.session)).plugins.some(p => p.ref.id === m.id), false)
+  assert.deepEqual(await core.listFeatureCandidates(), [])
+  await assert.rejects(() => catalog.open({ kind: 'web', id: m.id, featureId: 'forged' }, catalog.session))
+  await core.setEnabled(m.id, false, core.session); assert.equal(opened.isCurrent(), false)
+})
 test('bundled Translation can be disabled and re-enabled without affecting a same-ID declarative package', async () => {
   const { catalog, calls } = setup()
   const snapshot = await catalog.list(catalog.session)

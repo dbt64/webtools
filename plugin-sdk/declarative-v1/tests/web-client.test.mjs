@@ -11,10 +11,10 @@ function harness() {
     submit: () => { calls++; return { response: new Promise(resolve => { complete = resolve }), cancel: () => cancels++ } } }
   return { client: module.createBridgeConnection(facade), close: () => close(), complete: value => complete(value), calls: () => calls, cancels: () => cancels, unsubscribed: () => unsubscribed }
 }
-test('public browser client exposes only readiness/close and fails safely outside Host', async () => {
+test('public browser client exposes readiness/close and unprivileged typed families; privileged namespaces are absent without authority', async () => {
   assert.ok(module)
   const h = harness(); await h.client.publicClient.ready
-  assert.deepEqual(Object.keys(h.client.publicClient).sort(), ['onClose', 'ready'])
+  assert.deepEqual(Object.keys(h.client.publicClient).sort(), ['context', 'onClose', 'ready', 'storage'])
   const publicEntry = await import('@webtools/plugin-sdk/web')
   assert.deepEqual(Object.keys(publicEntry), ['connectWebTools'])
   await assert.rejects(publicEntry.connectWebTools().ready, error => error.code === 'NOT_AVAILABLE' && error.retryable === false)

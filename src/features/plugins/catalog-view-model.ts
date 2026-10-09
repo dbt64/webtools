@@ -1,9 +1,10 @@
 import type { CatalogEntryDTO, PluginRef } from '../../shared/plugin-catalog-contracts.ts'
 import { pluginCanOpen, pluginStatusView } from './plugin-view-model.ts'
 
-export function catalogRef(entry: CatalogEntryDTO): PluginRef { return entry.kind === 'builtin' ? { kind: 'builtin', id: entry.id } : { kind: 'declarative', id: entry.id } }
+export function catalogRef(entry: CatalogEntryDTO): PluginRef { return entry.kind === 'builtin' ? { kind: 'builtin', id: entry.id } : { kind: entry.kind, id: entry.id } }
 export function catalogKey(ref: PluginRef): string { return `${ref.kind}:${ref.id}` }
-export function catalogCanOpen(entry: CatalogEntryDTO): boolean { return entry.kind === 'builtin' ? entry.state.status === 'ready' && entry.state.enabled : pluginCanOpen(entry.package) }
+export function catalogCanOpen(entry: CatalogEntryDTO): boolean { return entry.kind === 'builtin' ? entry.state.status === 'ready' && entry.state.enabled
+  : entry.kind === 'web' ? entry.package.enabled && Boolean(entry.package.webFeatures?.some(f => f.available)) : pluginCanOpen(entry.package) }
 export function catalogPresentation(entry: CatalogEntryDTO) {
   return entry.kind === 'builtin'
     ? {

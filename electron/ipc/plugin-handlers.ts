@@ -1,5 +1,5 @@
 import { IPC_CHANNELS, type IpcResult } from '../../src/shared/ipc.ts'
-import { PLUGIN_CAPABILITIES, type PluginCapability, type PluginInvokeRequest } from '../../src/shared/plugin-contracts.ts'
+import { INSTALLED_PLUGIN_CAPABILITIES as PLUGIN_CAPABILITIES, type InstalledPluginCapability as PluginCapability, type PluginInvokeRequest } from '../../src/shared/plugin-contracts.ts'
 import { opaqueKey, record, validPluginId, versionParts } from '../plugins/manifest.ts'
 import { PluginManager } from '../plugins/plugin-manager.ts'
 import { fail, safePluginError } from '../plugins/errors.ts'

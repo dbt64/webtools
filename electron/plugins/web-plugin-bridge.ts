@@ -1,4 +1,5 @@
-import { BRIDGE_MAJOR, decodeRaw, encodeMessage, validateParsed, validRequestId, type BridgeErrorCode, type ClientMessage, type HostMessage } from '../../plugin-sdk/declarative-v1/web/protocol.mjs'
+import { BRIDGE_MAJOR, BridgeWireError, decodeRaw, encodeMessage, validateParsed, validRequestId, type JsonValue, type BridgeErrorCode, type ClientMessage, type HostMessage } from '../../plugin-sdk/declarative-v1/web/protocol.mjs'
+import { validateCapabilityRequest, validateCapabilityResult, type CapabilityRequest } from '../../plugin-sdk/declarative-v1/web/capability-methods.mjs'
 
 interface BridgeOptions {
   authenticate(event: unknown): 'current' | 'invalid' | 'unrelated'
@@ -8,6 +9,7 @@ interface BridgeOptions {
   now?: () => number
   /** Internal fixed ping implementation seam; never a method router/capability. */
   dispatchPing?: (signal: AbortSignal) => null | Promise<null>
+  dispatchCapability?: (request: CapabilityRequest, signal: AbortSignal) => JsonValue | Promise<JsonValue>
 }
 interface Pending {
   event: unknown
@@ -96,20 +98,31 @@ export class WebPluginBridge {
     if (!message) { this.reply(id, 'INVALID_REQUEST'); return }
     if (message.type !== 'request') return
     if (!this.accepted || message.protocolMajor !== BRIDGE_MAJOR) { this.reply(id, 'NOT_AVAILABLE'); return }
-    if (message.method !== 'bridge.ping') { this.reply(id, 'NOT_AVAILABLE'); return }
-    if (message.payload !== null) { this.reply(id, 'INVALID_REQUEST'); return }
+    let capability: CapabilityRequest | undefined
+    if (message.method === 'bridge.ping') {
+      if (message.payload !== null) { this.reply(id, 'INVALID_REQUEST'); return }
+    } else {
+      try { capability = validateCapabilityRequest(message.method, message.payload) }
+      catch (error) { this.reply(id, error instanceof BridgeWireError ? error.code : 'INVALID_REQUEST'); return }
+      if (!this.options.dispatchCapability) { this.reply(id, 'NOT_AVAILABLE'); return }
+    }
     if (this.pending.size >= 4) { this.reply(id, 'LIMIT_EXCEEDED'); return }
     const controller = new AbortController()
-    const entry: Pending = { event, controller, deadline: this.now() + 30_000,
-      timer: setTimeout(() => this.finish(id, entry, 'TIMEOUT'), 30_000) }
+    const timeout = capability?.method === 'ai.complete' ? 60_000 : 30_000
+    const entry: Pending = { event, controller, deadline: this.now() + timeout,
+      timer: setTimeout(() => this.finish(id, entry, 'TIMEOUT'), timeout) }
     this.pending.set(id, entry)
     entry.work = Promise.resolve().then(() => {
       if (this.closed || this.pending.get(id) !== entry || this.authenticate(event) !== 'current') return null
+      if (capability) return this.options.dispatchCapability!(capability, controller.signal)
       return this.options.dispatchPing ? this.options.dispatchPing(controller.signal) : null
     }).then(result => {
-      if (result !== null) this.finish(id, entry, 'INTERNAL_ERROR')
-      else this.finish(id, entry, this.now() > entry.deadline ? 'TIMEOUT' : undefined)
-    }, () => this.finish(id, entry, 'INTERNAL_ERROR'))
+      try {
+        if (capability) validateCapabilityResult(capability.method, result)
+        else if (result !== null) throw new Error('Invalid ping result')
+        this.finish(id, entry, this.now() > entry.deadline ? 'TIMEOUT' : undefined, result)
+      } catch (error) { this.finish(id, entry, error instanceof BridgeWireError ? error.code : 'INTERNAL_ERROR') }
+    }, error => this.finish(id, entry, error instanceof BridgeWireError ? error.code : 'INTERNAL_ERROR'))
   }
 
   revoke(): Promise<void> {
@@ -147,14 +160,14 @@ export class WebPluginBridge {
     if (this.tokens < 1) return false
     this.tokens--; return true
   }
-  private finish(id: string, entry: Pending, error?: BridgeErrorCode): void {
+  private finish(id: string, entry: Pending, error?: BridgeErrorCode, result: JsonValue = null): void {
     if (this.closed || this.pending.get(id) !== entry) return
     if (this.now() > entry.deadline) error = 'TIMEOUT'
     this.pending.delete(id); clearTimeout(entry.timer)
     if (error) entry.controller.abort()
     if (this.authenticate(entry.event) !== 'current') { this.fatal(); return }
     if (error) this.reply(id, error)
-    else this.send({ type: 'response', protocolMajor: BRIDGE_MAJOR, requestId: id, ok: true, result: null })
+    else this.send({ type: 'response', protocolMajor: BRIDGE_MAJOR, requestId: id, ok: true, result })
   }
   private reply(id: string, code: BridgeErrorCode): void {
     this.send({ type: 'response', protocolMajor: BRIDGE_MAJOR, requestId: id, ok: false, error: { code, retryable: false } })

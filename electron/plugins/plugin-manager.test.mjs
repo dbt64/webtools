@@ -51,7 +51,7 @@ test('rejected adversarial packages leave installed registry, grants, and privat
   assert.deepEqual(await readdir(join(env.root, 'plugins', 'staging')), [])
   await assert.rejects(() => readFile(join(env.root, 'plugins', 'data', 'org.example.attack.json')), { code: 'ENOENT' })
 })
-test('Manifest v2 validation and unsupported install leave a current v1 installation fully unchanged', async t => {
+test('invalid v2 replacement leaves v1 unchanged; authorized v2 replacement does not inherit v1 grants', async t => {
   const env = await setup(t)
   const current = await enabled(env, allManifest({ id: 'org.example.preserved-v2' }))
   await env.manager.invoke(request(current, 'write', { value: { sentinel: 'preserve' } }), env.session)
@@ -71,9 +71,6 @@ test('Manifest v2 validation and unsupported install leave a current v1 installa
   }))
   await assert.rejects(() => env.manager.install(invalidUpdate, env.session), error => error.code === 'INVALID_FIELD')
 
-  const validButNotInstallableYet = webPackage(webManifest({ id: current.id, version: '2.0.0' }))
-  await assert.rejects(() => env.manager.install(validButNotInstallableYet, env.session), error => error.code === 'INCOMPATIBLE_PLUGIN')
-
   assert.deepEqual(await env.manager.list(), rowsBefore)
   assert.deepEqual(await readFile(registryPath), registryBefore)
   assert.deepEqual(await readFile(dataPath), dataBefore)
@@ -81,6 +78,11 @@ test('Manifest v2 validation and unsupported install leave a current v1 installa
   assert.deepEqual(await readdir(join(env.root, 'plugins', 'staging')), [])
   assert.equal(env.prompts.length, promptCount, 'validation/rejection occurs before install consent')
   assert.deepEqual((await env.manager.invoke(request(current, 'read'), env.session)).value, { sentinel: 'preserve' })
+  const replacement = await env.manager.install(webPackage(webManifest({ id: current.id, version: '2.0.0' })), env.session)
+  assert.equal(replacement.plugin.manifestVersion, 2)
+  assert.deepEqual(replacement.plugin.granted, [])
+  assert.deepEqual(await readFile(dataPath), dataBefore)
+  await assert.rejects(() => env.manager.getPages(current.id, env.session))
 })
 test('conflicting hash and downgrade require separate consent; upgrade retains rollback and data', async t => {
   const env = await setup(t); let p = await enabled(env)
@@ -143,12 +145,13 @@ test('pending upgrade cannot reactivate after disable or revoke intent, includin
   for (const mode of ['disable', 'revoke']) {
     const env = await setup(t); const p = await enabled(env); let consent; let releaseFlush; let flushCalls = 0
     env.deps.confirm = () => new Promise(resolve => { consent = resolve })
-    const upgrading = env.manager.install(packageBytes(allManifest({ version: '2.0.0' })), env.session); await until(() => consent)
+    const upgrading = env.manager.install(packageBytes(allManifest({ version: '2.0.0' })), env.session); upgrading.catch(() => {}); await until(() => consent)
     const flush = env.manager.store.flush.bind(env.manager.store)
-    env.manager.store.flush = async () => { if (++flushCalls === 2) await new Promise(resolve => { releaseFlush = resolve }); await flush() }
+    env.manager.store.flush = async () => { if (++flushCalls === 1) await new Promise(resolve => { releaseFlush = resolve }); await flush() }
     const stopping = mode === 'disable' ? env.manager.setEnabled(p.id, false, env.session) : env.manager.setGrants(p.id, ['manager.page'], env.session)
-    consent(true); await upgrading; await until(() => releaseFlush)
+    consent(true); await assert.rejects(upgrading, error => error.code === 'INTENT_SUPERSEDED'); await until(() => releaseFlush)
     const upgraded = (await env.manager.list())[0]
+    assert.equal(upgraded.version, '1.0.0', 'superseded replacement must retain the previous package')
     await assert.rejects(() => env.manager.invoke(request(upgraded, 'get'), env.session))
     assert.notEqual(upgraded.status, 'active')
     // Restoration is queued too; it must not reopen access after the stop commits.
@@ -222,10 +225,10 @@ test('compatible upgrade defaults, new capabilities require grants, and incompat
 test('disabling immediately blocks new calls even when another mutation waits for consent', async t => {
   const env = await setup(t); const p = await enabled(env); let release
   env.deps.confirm = () => new Promise(resolve => { release = resolve })
-  const install = env.manager.install(packageBytes(allManifest({ version: '2.0.0' })), env.session); await until(() => release)
+  const install = env.manager.install(packageBytes(allManifest({ version: '2.0.0' })), env.session); install.catch(() => {}); await until(() => release)
   const disable = env.manager.setEnabled(p.id, false, env.session)
   await assert.rejects(() => env.manager.invoke(request(p, 'get'), env.session))
-  release(true); await install; await disable
+  release(true); await assert.rejects(install, error => error.code === 'INTENT_SUPERSEDED'); await disable
   assert.equal((await env.manager.list())[0].enabled, false)
 })
 test('late configuration writes cannot bypass upgraded schema compatibility', async t => {
