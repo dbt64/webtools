@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron'
+import type { ManagerInvokeRegistry } from './window-security.ts'
+import { createManagerInvokeRegistry, type IpcSenderContext } from './window-security.ts'
 import type { WebsiteService } from '../services/website-service'
 import type { WebsiteMetadataService } from '../services/website-metadata'
 import type { BookmarkService } from '../services/bookmark-service'
@@ -13,42 +14,43 @@ function isWebsiteCollection(value: unknown): value is WebsiteCollection {
   return value.kind === 'folder' && typeof value.folderId === 'string' && value.folderId.length > 0 && value.folderId.length <= 128
 }
 
-export function registerWebsiteIpcHandlers(deps: { websiteService: WebsiteService; websiteMetadata: WebsiteMetadataService; bookmarkService: BookmarkService; onWebsitesChanged: () => void | Promise<void> }): void {
-  ipcMain.handle('websites:list', (_event, folderId: unknown) => deps.websiteService.list(typeof folderId === 'string' ? folderId : undefined))
-  ipcMain.handle('websites:get-order', () => deps.websiteService.getOrderByCollection())
-  ipcMain.handle('websites:reorder', (_event, collection: unknown, orderedIds: unknown) => {
+export function registerWebsiteIpcHandlers(ipc: ManagerInvokeRegistry, deps: { isManagerMainFrame: (context: IpcSenderContext) => boolean; websiteService: WebsiteService; websiteMetadata: WebsiteMetadataService; bookmarkService: BookmarkService; onWebsitesChanged: () => void | Promise<void> }): void {
+  const managerIpc = createManagerInvokeRegistry(ipc, deps.isManagerMainFrame)
+  managerIpc.handle('websites:list', (_event, folderId: unknown) => deps.websiteService.list(typeof folderId === 'string' ? folderId : undefined))
+  managerIpc.handle('websites:get-order', () => deps.websiteService.getOrderByCollection())
+  managerIpc.handle('websites:reorder', (_event, collection: unknown, orderedIds: unknown) => {
     if (!isWebsiteCollection(collection) || !Array.isArray(orderedIds) || orderedIds.length > 10_000 || !orderedIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 128)) return fail('INVALID_ORDER', '网址顺序信息无效。')
     return deps.websiteService.reorder(collection, orderedIds)
   })
-  ipcMain.handle('websites:save', async (_event, input: unknown) => {
+  managerIpc.handle('websites:save', async (_event, input: unknown) => {
     if (!isRecord(input) || typeof input.name !== 'string' || typeof input.url !== 'string' || !Array.isArray(input.folderIds) || !input.folderIds.every((value) => typeof value === 'string') || (input.id !== undefined && typeof input.id !== 'string') || (input.description !== undefined && typeof input.description !== 'string') || (input.favicon !== undefined && typeof input.favicon !== 'string')) return fail('INVALID_ENTRY', '网址信息无效。')
     const result = await deps.websiteService.save({ id: input.id as string | undefined, name: input.name, url: input.url, description: input.description as string | undefined, favicon: input.favicon as string | undefined, folderIds: input.folderIds })
     if (result.ok) await deps.onWebsitesChanged()
     return result
   })
-  ipcMain.handle('websites:delete', async (_event, id: unknown) => {
+  managerIpc.handle('websites:delete', async (_event, id: unknown) => {
     if (typeof id !== 'string') return fail('INVALID_ID', '网址编号无效。')
     const result = await deps.websiteService.delete(id)
     if (result.ok) await deps.onWebsitesChanged()
     return result
   })
-  ipcMain.handle('websites:add-to-folders', async (_event, id: unknown, folderIds: unknown) => {
+  managerIpc.handle('websites:add-to-folders', async (_event, id: unknown, folderIds: unknown) => {
     if (typeof id !== 'string' || !Array.isArray(folderIds) || !folderIds.every((value) => typeof value === 'string')) return fail('INVALID_FOLDER', '收藏夹编号无效。')
     const result = await deps.websiteService.addWebsiteToFolders(id, folderIds)
     if (result.ok) await deps.onWebsitesChanged()
     return result
   })
-  ipcMain.handle('websites:fetch-metadata', async (_event, url: unknown) => {
+  managerIpc.handle('websites:fetch-metadata', async (_event, url: unknown) => {
     if (typeof url !== 'string') return fail('INVALID_URL', '网址格式不正确。')
     try { return { ok: true, data: await deps.websiteMetadata.fetch(url) } } catch (error) { return fail('FETCH_METADATA_FAILED', error instanceof Error ? error.message : '无法获取网站信息。') }
   })
-  ipcMain.handle('websites:open', async (_event, id: unknown) => typeof id === 'string' ? deps.websiteService.open(id) : fail('INVALID_ID', '网址编号无效。'))
-  ipcMain.handle('bookmarks:list-folders', () => deps.bookmarkService.listFolders())
-  ipcMain.handle('bookmarks:save-folder', async (_event, input: unknown): Promise<IpcResult<Awaited<ReturnType<BookmarkService['saveFolder']>>>> => {
+  managerIpc.handle('websites:open', async (_event, id: unknown) => typeof id === 'string' ? deps.websiteService.open(id) : fail('INVALID_ID', '网址编号无效。'))
+  managerIpc.handle('bookmarks:list-folders', () => deps.bookmarkService.listFolders())
+  managerIpc.handle('bookmarks:save-folder', async (_event, input: unknown): Promise<IpcResult<Awaited<ReturnType<BookmarkService['saveFolder']>>>> => {
     if (!isRecord(input) || typeof input.name !== 'string' || input.name.length > 80 || (input.id !== undefined && typeof input.id !== 'string')) return fail('INVALID_FOLDER', '收藏夹信息无效。')
     try { return { ok: true, data: await deps.bookmarkService.saveFolder({ id: input.id as string | undefined, name: input.name }) } } catch (error) { return fail('SAVE_FOLDER_FAILED', error instanceof Error ? error.message : '无法保存收藏夹。') }
   })
-  ipcMain.handle('bookmarks:delete-folder', async (_event, folderId: unknown): Promise<IpcResult<void>> => {
+  managerIpc.handle('bookmarks:delete-folder', async (_event, folderId: unknown): Promise<IpcResult<void>> => {
     if (typeof folderId !== 'string') return fail('INVALID_FOLDER', '收藏夹编号无效。')
     try { await deps.bookmarkService.deleteFolder(folderId); await deps.onWebsitesChanged(); return { ok: true, data: undefined } } catch (error) { return fail('DELETE_FOLDER_FAILED', error instanceof Error ? error.message : '无法删除收藏夹。') }
   })

@@ -28,11 +28,20 @@ export function createDefaultSharedAISettings(): SharedAISettings {
   return { defaultProviderId: 'openai', providers: {} }
 }
 
+/** Model IDs are public metadata; credentials must never be accepted in this field. */
+export function isCredentialLikeAIValue(value: string): boolean {
+  return /(?:^|\s)(?:sk-[A-Za-z0-9_-]{12,}|gsk_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|Bearer\s+\S+)/i.test(value)
+}
+
+export function safeAIModel(value: string): string {
+  return isCredentialLikeAIValue(value) ? '' : value
+}
+
 export function cloneSharedAISettings(value: SharedAISettings): SharedAISettings {
   const providers: SharedAISettings['providers'] = {}
   for (const providerId of AI_PROVIDER_IDS) {
     const config = value.providers[providerId]
-    if (config) providers[providerId] = { ...config }
+    if (config) providers[providerId] = { ...config, model: safeAIModel(config.model) }
   }
   return { defaultProviderId: value.defaultProviderId, providers }
 }
@@ -44,7 +53,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function normalizeProviderConfig(providerId: AIProviderId, value: unknown): AIProviderConfig | undefined {
   if (!isRecord(value)) return undefined
   const config: AIProviderConfig = {
-    model: typeof value.model === 'string' && value.model.length <= 120 ? value.model : '',
+    model: typeof value.model === 'string' && value.model.length <= 120 ? safeAIModel(value.model) : '',
   }
   if (providerId === 'custom' && typeof value.baseUrl === 'string' && value.baseUrl.length <= 500) {
     config.baseUrl = value.baseUrl
@@ -69,7 +78,7 @@ export function normalizeSharedAISettings(value: unknown, legacyBaseUrl = '', le
 
   const hasLegacyConfig = Boolean(legacyBaseUrl.trim() || legacyModel.trim())
   if (!providers.custom && hasLegacyConfig) {
-    providers.custom = { model: legacyModel, baseUrl: legacyBaseUrl }
+    providers.custom = { model: safeAIModel(legacyModel), baseUrl: legacyBaseUrl }
   }
   const requestedDefault = isRecord(value) && isAIProviderId(value.defaultProviderId)
     ? value.defaultProviderId
@@ -83,7 +92,7 @@ export function isValidSharedAISettings(value: unknown): value is SharedAISettin
   if (Object.keys(value).some((key) => !['defaultProviderId', 'providers'].includes(key))) return false
   for (const [providerId, rawConfig] of Object.entries(value.providers)) {
     if (!isAIProviderId(providerId) || !isRecord(rawConfig)) return false
-    if (typeof rawConfig.model !== 'string' || rawConfig.model.length > 120) return false
+    if (typeof rawConfig.model !== 'string' || rawConfig.model.length > 120 || isCredentialLikeAIValue(rawConfig.model)) return false
     if (providerId === 'custom') {
       if (Object.keys(rawConfig).some((key) => !['model', 'baseUrl'].includes(key))) return false
       if (rawConfig.baseUrl !== undefined) {

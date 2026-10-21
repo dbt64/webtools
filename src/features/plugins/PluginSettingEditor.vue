@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { Save } from '@lucide/vue'
 import type { PluginSetting, PluginSettingValue } from '../../shared/plugin-contracts.ts'
 
-const props = defineProps<{ setting: PluginSetting; value: PluginSettingValue; error?: string; busy?: boolean; canSave?: boolean; idSuffix?: string }>()
+const props = defineProps<{ setting: PluginSetting; value: PluginSettingValue; error?: string; busy?: boolean; canSave?: boolean; idSuffix?: string; showSaveButton?: boolean }>()
 const emit = defineEmits<{ 'update:value': [value: PluginSettingValue]; save: [] }>()
 const inputId = computed(() => `plugin-setting-${props.setting.key}-${props.idSuffix ?? 'main'}`)
 function changed(event: Event): void {
@@ -27,7 +27,7 @@ function changed(event: Event): void {
     <input v-else type="number" :id="inputId" :value="value" :min="setting.min" :max="setting.max" step="any" :disabled="!canSave || busy" :aria-invalid="Boolean(error)" @input="changed" />
     <small v-if="error" class="plugin-field-error" role="alert">{{ error }}</small>
     <small v-else-if="!canSave" class="plugin-setting-readonly">没有声明可用的保存操作，此设置只读。</small>
-    <button v-if="canSave" type="button" class="secondary-button plugin-save-setting" :disabled="Boolean(busy) || Boolean(error)" @click="emit('save')"><Save :size="13" />{{ busy ? '保存中…' : '保存设置' }}</button>
+    <button v-if="canSave && showSaveButton !== false" type="button" class="secondary-button plugin-save-setting" :disabled="Boolean(busy) || Boolean(error)" @click="emit('save')"><Save :size="13" />{{ busy ? '保存中…' : '保存设置' }}</button>
   </div>
 </template>
 

@@ -8,5 +8,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\WebTools.NativeHost\WebTools.NativeHost.csproj" />
+    <None Include="..\..\tests\fixtures\selected-text-matching.json" Link="selected-text-matching.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

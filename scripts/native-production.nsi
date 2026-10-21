@@ -3,6 +3,7 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
+SetOverwrite on
 
 !include MUI2.nsh
 !include FileFunc.nsh
@@ -28,10 +29,14 @@ ${StrStr}
 !endif
 
 Name "${PRODUCT_NAME}"
-!if "${WEBTOOLS_CHANNEL}" == "stable"
-  OutFile "WebTools-Setup-${WEBTOOLS_PRODUCT_VERSION}.exe"
+!ifdef WEBTOOLS_PREVIEW_NAME
+  OutFile "${WEBTOOLS_PREVIEW_NAME}-Setup-${WEBTOOLS_PRODUCT_VERSION}.exe"
 !else
-  OutFile "WebTools-Setup-${WEBTOOLS_PRODUCT_VERSION}-${WEBTOOLS_CHANNEL}.exe"
+  !if "${WEBTOOLS_CHANNEL}" == "stable"
+    OutFile "WebTools-Setup-${WEBTOOLS_PRODUCT_VERSION}.exe"
+  !else
+    OutFile "WebTools-Setup-${WEBTOOLS_PRODUCT_VERSION}-${WEBTOOLS_CHANNEL}.exe"
+  !endif
 !endif
 VIProductVersion "${WEBTOOLS_FILE_VERSION}"
 VIAddVersionKey /LANG=2052 "ProductName" "${PRODUCT_NAME}"
@@ -40,12 +45,12 @@ VIAddVersionKey /LANG=2052 "FileVersion" "${WEBTOOLS_FILE_VERSION}"
 VIAddVersionKey /LANG=2052 "FileDescription" "WebTools Installer"
 InstallDir "$LOCALAPPDATA\Programs\WebTools"
 InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
-Icon "stage\app.ico"
-UninstallIcon "stage\app.ico"
+Icon "stage\application\app.ico"
+UninstallIcon "stage\application\app.ico"
 
 !define MUI_ABORTWARNING
-!define MUI_ICON "stage\app.ico"
-!define MUI_UNICON "stage\app.ico"
+!define MUI_ICON "stage\application\app.ico"
+!define MUI_UNICON "stage\application\app.ico"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\WebTools.NativeHost.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "启动 WebTools"
 !define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPagePre
@@ -242,11 +247,9 @@ Section "Install WebTools NativeHost and Manager" SEC_INSTALL
   Call RemovePreviousWebTools
 
   SetOutPath "$INSTDIR"
-  File "stage\app.ico"
-  File /r "stage\host\*.*"
-
-  SetOutPath "$INSTDIR\Manager"
-  File /r "stage\manager\*.*"
+  ; The same complete application tree is also the Portable ZIP source.
+  ; Preserve Manager/ relative layout and preview-build.json without a second staging source.
+  File /r "stage\application\*.*"
 
   ${If} $IsTestInstall == "1"
     FileOpen $R0 "$INSTDIR\.phase4f-test-install" w

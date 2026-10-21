@@ -16,6 +16,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Reference Include="UIAutomationClient" />
+    <Reference Include="UIAutomationTypes" />
     <EmbeddedResource Include="Search\pinyin-map.txt" LogicalName="WebTools.NativeHost.Search.pinyin-map.txt" />
     <Content Include="Search\PINYIN-PRO-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\launcher-logo.png" TargetPath="launcher-logo.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

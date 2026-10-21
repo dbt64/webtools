@@ -1,0 +1,9 @@
+/* Optional Web plugin stylesheet. Import it to consume WebTools Host theme tokens. */
+:root {
+  color-scheme: var(--webtools-color-scheme, light dark);
+}
+
+body {
+  color: var(--webtools-color-text, #1b2633);
+  background-color: var(--webtools-color-background, #f3f5f8);
+}

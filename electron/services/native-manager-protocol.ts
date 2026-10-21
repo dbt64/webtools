@@ -1,3 +1,4 @@
+import { parseQuickResultJson } from '../../src/shared/feature-quick-result-contracts.ts'
 export const NATIVE_MANAGER_PROTOCOL_VERSION = 1
 export const MAX_PROTOCOL_MESSAGE_BYTES = 4 * 1024 * 1024
 
@@ -50,8 +51,11 @@ export class ProtocolFrameDecoder {
       const length = this.buffered.readUInt32LE(offset)
       if (length === 0 || length > MAX_PROTOCOL_MESSAGE_BYTES) throw new RangeError('Native Manager protocol message is too large.')
       if (this.buffered.length - offset - 4 < length) break
-      const parsed: unknown = JSON.parse(this.buffered.toString('utf8', offset + 4, offset + 4 + length))
+      const raw = this.buffered.toString('utf8', offset + 4, offset + 4 + length)
+      const parsed: unknown = JSON.parse(raw)
       if (!isNativeManagerEnvelope(parsed)) throw new TypeError('Native Manager protocol envelope is malformed.')
+      if (['feature-invoke', 'feature-result-v1', 'feature-result-cancel-v1', 'feature-result-clear-v1', 'feature-ai-confirm-v1', 'feature-ai-decision-v1'].includes(parsed.type)
+        && parseQuickResultJson(raw) === null) throw new TypeError('Invalid or duplicate Quick Result JSON fields.')
       messages.push(parsed)
       offset += 4 + length
     }

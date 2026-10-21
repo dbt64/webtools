@@ -49,6 +49,12 @@ public static class NativePipeFrameCodec
         var envelope = JsonSerializer.Deserialize<NativePipeEnvelope>(body, JsonOptions);
         if (envelope is null || string.IsNullOrWhiteSpace(envelope.RequestId) || envelope.RequestId.Length > 128 || string.IsNullOrWhiteSpace(envelope.Type) || envelope.Type.Length > 48 || envelope.Payload.ValueKind == JsonValueKind.Undefined)
             throw new InvalidDataException("Native Manager protocol envelope is malformed.");
+        if (envelope.Type is "feature-result-v1" or "feature-result-clear-v1" or "feature-ai-confirm-v1")
+        {
+            using var document = JsonDocument.Parse(body);
+            if (!NativeFeatureQuickResultProtocol.Exact(document.RootElement, "protocolVersion", "requestId", "type", "payload"))
+                throw new InvalidDataException("Invalid Quick Result envelope.");
+        }
         return envelope;
     }
 

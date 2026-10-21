@@ -6,7 +6,7 @@ The deterministic behavior fixtures live in `tests/fixtures/launcher-parity.json
 
 - **NativeHost** is the production launcher and owns the WPF search window, input and selection state, Windows app discovery/launch, icons, Everything integration, tray, global hotkey, login startup, and the Native launcher state store.
 - **Native search behavior** implements command parsing, normalization, matching, ranking, pinyin, result limits, app-search memory, and typed actions. The JSON parity fixtures and contract tests describe cross-implementation behavior; changes to those semantics must update the fixtures and relevant implementations.
-- **Electron Main** is Manager-only in production. It owns the Manager window, secure renderer IPC, the Manager DataStore, and the Named Pipe client to NativeHost. It does not create a production Launcher window, tray icon, global shortcut, or startup entry.
+- **Electron Main** is the on-demand Electron Host in production. It owns Manager, independent plugin windows, finite Node command executions, guarded Manager IPC, the Manager DataStore, the Plugin Registry and the authenticated Named Pipe client to NativeHost. It does not create a production Launcher window, tray icon, global shortcut, or startup entry.
 - **Manager** owns website management, Settings UI, translation providers, and other full-page tools. Launcher settings and website changes are projected to NativeHost over the versioned Named Pipe protocol.
 
 ## Current behavior baseline
@@ -15,6 +15,9 @@ The deterministic behavior fixtures live in `tests/fixtures/launcher-parity.json
 - Ordinary local search mixes applications and saved websites. `/` mode limits candidates to saved websites. Website names, URL aliases, and descriptions are indexed; opening a website uses its saved ID.
 - Search normalizes case, accents, and punctuation, supports pinyin, and sorts by the current rank tiers before name ordering. Ordinary app and website rows share an eight-result limit. Any nonblank ordinary local text within the 20,000-character handoff bound appends a translation action after those rows, including as row nine. Chinese, mixed scripts, emoji and punctuation are eligible; `?`, `/`, and `file:` modes keep their existing behavior. Current action expectations are in `native/search-contract/launcher-search-parity.json`.
 - Native launcher row actions distinguish application, website, file, and translation. Web search is a command mode rather than a row action. App and website launches use stable IDs; file launch uses an opaque Everything result ID.
+- Plugin Feature rows are a separate result kind/group keyed by `{ pluginId, featureId }`. Native searches its persisted Host-validated projection with no per-keypress RPC or Electron startup. Ordinary query results retain the eight app/website rows followed by at most six Feature matches; commands aliases and descriptions use existing match tiers. Prefix modes remain unchanged.
+- Window Features use the unified activation service and singleton PluginWindowManager. Node command entries execute once in a temporary owned Utility child; Web/HTML commands remain unsupported. Feature-only cold start uses Host readiness, never Manager Renderer readiness. Main revalidates every activation; cached metadata does not confer package, filesystem, secret or capability authority.
+- See [Plugin Runtime and Surface Lifecycle](plugin-runtime.md) for projection refresh/cache bounds, safe inline icons, command ownership and Native/Electron shutdown coordination.
 
 ## Change rule
 

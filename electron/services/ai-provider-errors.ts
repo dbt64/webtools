@@ -21,3 +21,11 @@ export async function parseAIResponseJson(response: Response): Promise<unknown> 
   try { return await response.json() }
   catch { throw new Error('AI 服务返回的数据格式无效。') }
 }
+/** Observe only exact nonnegative output usage; missing/malformed metadata is never inferred from bytes. */
+export function extractOutputTokens(payload: unknown, field: 'completion_tokens' | 'output_tokens'): number | null {
+  if (!payload || typeof payload !== 'object' || !('usage' in payload)) return null
+  const usage = payload.usage
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage) || !(field in usage)) return null
+  const tokens = (usage as Record<string, unknown>)[field]
+  return typeof tokens === 'number' && Number.isSafeInteger(tokens) && tokens >= 0 ? tokens : null
+}

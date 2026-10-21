@@ -1,4 +1,3 @@
-import { ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { basename, isAbsolute } from 'node:path'
 import type { DataStore } from '../services/data-store'
 import type { NativeLauncherSettingsUpdate } from '../services/native-manager-client'
@@ -7,30 +6,53 @@ import { isValidTranslationSettings, type TranslationSettings } from '../../src/
 import { normalizeSearchEngines } from '../../src/shared/search-providers'
 import type { AppSettings, ThemePreference } from '../../src/shared/domain'
 import type { IpcResult } from '../../src/shared/ipc'
-import type { IpcSenderContext } from './window-security'
+import { createManagerInvokeRegistry, type IpcSenderContext, type ManagerInvokeRegistry } from './window-security.ts'
+import { parseSuperPanelSettings, type SuperPanelSettings, type SuperPanelSettingsStatus } from '../../src/shared/super-panel-settings.ts'
 
 function fail<T>(code: string, message: string): IpcResult<T> { return { ok: false, error: { code, message } } }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 
-export function registerSettingsIpcHandlers(deps: {
+export function registerSettingsIpcHandlers(ipc: ManagerInvokeRegistry, deps: {
   dataStore: DataStore
   isManagerMainFrame: (event: IpcSenderContext) => boolean
   cancelTranslations: () => void
   getSettings?: () => AppSettings
   updateNativeLauncherSettings?: (settings: NativeLauncherSettingsUpdate) => Promise<AppSettings>
+  getSuperPanelSettings?: () => Promise<SuperPanelSettingsStatus>
+  updateSuperPanelSettings?: (settings: SuperPanelSettings) => Promise<SuperPanelSettingsStatus>
+  onThemePreferenceChanged?: () => void
 }): void {
   const { dataStore } = deps
   let pendingSettingsUpdate: Promise<void> = Promise.resolve()
+  const managerIpc = createManagerInvokeRegistry(ipc, deps.isManagerMainFrame)
 
-  ipcMain.handle('settings:get', (event: IpcMainInvokeEvent) => {
+  managerIpc.handle('settings:super-panel-get', async (): Promise<IpcResult<SuperPanelSettingsStatus>> => {
+    try {
+      if (!deps.getSuperPanelSettings) return fail('SUPER_PANEL_UNAVAILABLE', '请通过 NativeHost 打开 Manager 后配置 Super Panel。')
+      return { ok: true, data: await deps.getSuperPanelSettings() }
+    } catch (error) { return fail('SUPER_PANEL_UNAVAILABLE', error instanceof Error ? error.message : '无法读取 Super Panel 状态。') }
+  })
+  managerIpc.handle('settings:super-panel-update', (_event: IpcSenderContext, value: unknown) => {
+    const operation = pendingSettingsUpdate.then(async (): Promise<IpcResult<SuperPanelSettingsStatus>> => {
+      const settings = parseSuperPanelSettings(value)
+      if (!settings) return fail('INVALID_SUPER_PANEL_SETTINGS', 'Super Panel 设置无效。')
+      if (!deps.updateSuperPanelSettings) return fail('SUPER_PANEL_UNAVAILABLE', 'NativeHost 尚未连接，未保存设置。')
+      try { return { ok: true, data: await deps.updateSuperPanelSettings(settings) } }
+      catch (error) { return fail('SUPER_PANEL_UPDATE_FAILED', error instanceof Error ? error.message : '无法应用 Super Panel 设置。') }
+    })
+    pendingSettingsUpdate = operation.then(() => undefined, () => undefined)
+    return operation
+  })
+
+  managerIpc.handle('settings:get', (event: IpcSenderContext) => {
     if (!deps.isManagerMainFrame(event)) throw new Error('当前窗口无权读取完整设置。')
     return deps.getSettings?.() ?? dataStore.snapshot().settings
   })
-  ipcMain.handle('settings:get-theme', (event: IpcMainInvokeEvent): ThemePreference => {
+  managerIpc.handle('settings:get-theme', (event: IpcSenderContext): ThemePreference => {
     if (!deps.isManagerMainFrame(event)) throw new Error('当前窗口无权读取主题设置。')
     return (deps.getSettings?.() ?? dataStore.snapshot().settings).theme
   })
-  ipcMain.handle('settings:update', (event: IpcMainInvokeEvent, settings: unknown) => {
+  managerIpc.handle('settings:update', (event: IpcSenderContext, settings: unknown) => {
     if (!deps.isManagerMainFrame(event)) return fail<AppSettings>('UNAUTHORIZED', '当前窗口无权修改设置。')
 
     const operation = pendingSettingsUpdate.then(async (): Promise<IpcResult<AppSettings>> => {
@@ -118,10 +140,11 @@ export function registerSettingsIpcHandlers(deps: {
           try { await deps.updateNativeLauncherSettings(previousNativeSettings) }
           catch (rollbackError) { console.warn('[settings:update] Native Launcher settings rollback failed', rollbackError) }
         }
-        return fail('SAVE_SETTINGS_FAILED', error instanceof Error ? error.message : '无法保存设置。')
+        return fail('SAVE_SETTINGS_FAILED', settings.sharedAI !== undefined ? '无法保存平台 AI 配置，请重试。' : error instanceof Error ? error.message : '无法保存设置。')
       }
 
       if (settings.sharedAI !== undefined || settings.translation !== undefined) deps.cancelTranslations()
+      if (settings.theme !== undefined) deps.onThemePreferenceChanged?.()
       return { ok: true, data: deps.getSettings?.() ?? next?.settings ?? dataStore.snapshot().settings }
     })
 

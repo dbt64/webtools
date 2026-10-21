@@ -36,8 +36,10 @@ public sealed class NativeIconCache
     {
         if (string.IsNullOrWhiteSpace(reference)) return null;
         var isPackaged = reference.StartsWith("appx:", StringComparison.OrdinalIgnoreCase);
+        var isProjected = reference.StartsWith("data:image/png;base64,", StringComparison.Ordinal);
         var theme = isPackaged ? _themeProvider() : "";
-        var cacheKey = isPackaged ? $"{reference}|theme:{theme}" : reference;
+        var cacheKey = isProjected ? "feature:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(reference)))
+            : isPackaged ? $"{reference}|theme:{theme}" : reference;
         lock (_items)
         {
             if (_items.TryGetValue(cacheKey, out var cached))
@@ -56,6 +58,7 @@ public sealed class NativeIconCache
                 _diagnostic?.Invoke(result.Outcome);
                 bitmap = result.Bitmap;
             }
+            else if (reference.StartsWith("data:image/png;base64,", StringComparison.Ordinal)) bitmap = await Task.Run(() => ReadProjectedIcon(reference));
             else bitmap = await Task.Run(() => Extract(reference));
         }
         catch { return null; }
@@ -72,6 +75,23 @@ public sealed class NativeIconCache
             }
         }
         return bitmap;
+    }
+
+    private static BitmapSource? ReadProjectedIcon(string reference)
+    {
+        if (reference.Length > 5500) return null;
+        var bytes = Convert.FromBase64String(reference[22..]);
+        if (bytes.Length is < 24 or > 4096) return null;
+        // Read PNG dimensions before WPF decode. Projected assets are 24 px;
+        // reject arbitrary large image dimensions even in a corrupted cache.
+        if (!bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 })) return null;
+        var width = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(16, 4));
+        var height = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(20, 4));
+        if (width is < 1 or > 64 || height is < 1 or > 64) return null;
+        using var stream = new MemoryStream(bytes, writable: false);
+        var image = new BitmapImage();
+        image.BeginInit(); image.CacheOption = BitmapCacheOption.OnLoad; image.StreamSource = stream; image.EndInit(); image.Freeze();
+        return image;
     }
 
     private static BitmapSource? Extract(string path)

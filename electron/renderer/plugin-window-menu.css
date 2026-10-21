@@ -1,0 +1,12 @@
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+body { color: var(--webtools-color-text, #1b2633); font: 13px "Segoe UI", "Microsoft YaHei UI", sans-serif; user-select: none; }
+#plugin-window-menu { width: 100%; min-height: 100%; padding: 5px; border: 1px solid var(--webtools-color-border, #e5eaf0); border-radius: 8px; background: var(--webtools-color-surface, #fff); box-shadow: 0 8px 28px #0003; -webkit-app-region: no-drag; }
+#plugin-window-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 34px; padding: 0 9px; border: 0; border-radius: 5px; background: transparent; color: var(--webtools-color-text, #1b2633); text-align: left; font: inherit; cursor: pointer; }
+#plugin-window-menu button:hover { background: var(--webtools-color-surface-raised, #f7f9fb); }
+#plugin-window-menu button[hidden] { display: none; }
+#plugin-window-menu .danger-action { color: #c62828; }
+#plugin-window-menu hr { border: 0; border-top: 1px solid var(--webtools-color-border, #e5eaf0); margin: 4px 2px; }
+#plugin-window-menu p { margin: 5px 9px 3px; color: #b42318; font-size: 12px; }
+#plugin-window-menu p[hidden] { display: none; }
+#plugin-window-menu kbd { color: var(--webtools-color-muted, #5f6f80); font: inherit; font-size: 11px; }

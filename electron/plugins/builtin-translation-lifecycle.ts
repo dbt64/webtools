@@ -32,6 +32,7 @@ export class BuiltinTranslationLifecycle {
   private generationValue = 0
   private initialized = false
   private transitionPrior: BuiltinTranslationRuntimeState | null = null
+  private readonly featureStateListeners = new Set<() => void>()
 
   constructor(store: BuiltinPluginStatePort, cancelTranslation: () => void) {
     this.store = store
@@ -42,6 +43,17 @@ export class BuiltinTranslationLifecycle {
   isEnabled(): boolean { return this.state.status === 'ready' && this.state.enabled }
   isGenerationCurrent(generation: number): boolean { return this.isEnabled() && this.generationValue === generation }
   snapshot(): BuiltinTranslationRuntimeState { return structuredClone(this.state) }
+  subscribeFeatureStateChanged(listener: () => void): () => void {
+    if (typeof listener !== 'function') return () => undefined
+    this.featureStateListeners.add(listener)
+    return () => { this.featureStateListeners.delete(listener) }
+  }
+
+  private notifyFeatureStateChanged(): void {
+    for (const listener of [...this.featureStateListeners]) {
+      try { listener() } catch (error) { console.error('[plugins] Built-in Feature state listener failed.', error) }
+    }
+  }
 
   async initialize(): Promise<BuiltinTranslationRuntimeState> {
     if (this.initialized) return this.snapshot()
@@ -73,6 +85,7 @@ export class BuiltinTranslationLifecycle {
         ? { status: 'ready', enabled: true, generation }
         : { status: 'disabled', enabled: false, generation }
       this.transitionPrior = null
+      this.notifyFeatureStateChanged()
       return this.snapshot()
     } catch (error) {
       if (this.generationValue !== generation) throw this.error('SESSION_EXPIRED')
@@ -83,6 +96,7 @@ export class BuiltinTranslationLifecycle {
       }
       this.state = { status: 'faulted', enabled: false, errorCode: safeErrorCode(error), retryEnabled: enabled, generation }
       this.transitionPrior = null
+      this.notifyFeatureStateChanged()
       throw this.error(safeErrorCode(error))
     }
   }
@@ -99,6 +113,7 @@ export class BuiltinTranslationLifecycle {
       if (saved.status !== 'ready' || !saved.enabled) throw this.error('STATE_RECOVERY_FAILED')
       this.state = { status: 'ready', enabled: true, generation }
       this.transitionPrior = null
+      this.notifyFeatureStateChanged()
       return this.snapshot()
     } catch (error) {
       if (this.generationValue !== generation) throw this.error('SESSION_EXPIRED')
@@ -121,12 +136,19 @@ export class BuiltinTranslationLifecycle {
     this.transitionPrior = null
   }
 
-  /** Manager shutdown is terminal for work, but persisted enable choice is untouched. */
+  /** Close the built-in surface and invalidate work without disabling Translation. */
+  closeWindow(): void {
+    this.invalidateSession()
+    this.cancelTranslation()
+  }
+
+  /** Host shutdown is terminal; closing a window uses closeWindow instead. */
   close(): void {
     this.generationValue += 1
     this.state = { status: 'disabled', enabled: false, generation: this.generationValue }
     this.transitionPrior = null
     this.cancelTranslation()
+    this.featureStateListeners.clear()
   }
 
   private error(code: string): Error & { code: string } {

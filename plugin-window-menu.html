@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/electron/renderer/plugin-window-menu.css" />
+    <title>Plugin Window Menu</title>
+  </head>
+  <body>
+    <nav id="plugin-window-menu" aria-label="插件窗口操作">
+      <button data-action="detach">分离为独立窗口 <kbd>Ctrl+D</kbd></button>
+      <button data-action="about">关于插件应用</button>
+      <button data-action="settings">插件应用设置</button>
+      <hr />
+      <button data-action="exit-background">退出到后台</button>
+      <button class="danger-action" data-action="end-run">结束运行 <kbd class="detached-only" hidden>Esc</kbd></button>
+      <p id="plugin-window-status" role="status" aria-live="polite" hidden></p>
+    </nav>
+    <script type="module" src="/electron/renderer/plugin-window-menu.ts"></script>
+  </body>
+</html>

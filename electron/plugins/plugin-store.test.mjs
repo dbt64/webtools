@@ -60,8 +60,27 @@ test('managed filesystem rejects escape and junctions without deleting their tar
   const { root, fs } = await setup(t); const outside = join(root, 'outside'); const { mkdir } = await import('node:fs/promises'); await mkdir(outside); await writeFile(join(outside, 'keep'), 'KEEP')
   await assert.rejects(() => fs.path('..', 'outside'))
   await symlink(outside, join(root, 'plugins', 'staging', 'evil'), 'junction')
-  await assert.rejects(async () => fs.remove(await fs.path('staging', 'evil')))
+  await assert.rejects(() => fs.remove(join(root, 'plugins', 'staging', 'evil')))
   assert.equal(await readFile(join(outside, 'keep'), 'utf8'), 'KEEP')
+})
+test('managed filesystem removes large trees without repeating full root path scans', async t => {
+  const { fs } = await setup(t)
+  const target = await fs.path('runtime', 'remove-large-tree')
+  await fs.mkdir('runtime/remove-large-tree')
+  const { mkdir } = await import('node:fs/promises')
+  for (let directory = 0; directory < 4; directory++) {
+    const nested = join(target, `nested-${directory}`)
+    await mkdir(nested)
+    for (let file = 0; file < 32; file++) await writeFile(join(nested, `file-${file}.js`), 'fixture')
+  }
+
+  const assertSafe = fs.assertSafe.bind(fs)
+  let fullPathChecks = 0
+  fs.assertSafe = async path => { fullPathChecks++; return assertSafe(path) }
+  await fs.remove(target)
+
+  assert.equal(fullPathChecks, 1, 'the full managed-root ancestry is checked once for the removal target')
+  await assert.rejects(() => readFile(join(target, 'nested-0', 'file-0.js')))
 })
 test('registry atomically persists validated records, treats corrupt content as recovery-needed', async t => {
   const { registry, fs } = await setup(t)

@@ -50,36 +50,14 @@ function setup() {
 const event = { sender: {}, senderFrame: {} }
 const validTranslation = { requestId: '123e4567-e89b-12d3-a456-426614174000', text: 'hello', sourceLanguage: 'auto', targetLanguage: 'zh-CN' }
 
-test('disabled Translation IPC rejects provider and Google work while Shared AI connection tests remain available', async () => {
-  const testEnv = setup()
-  const { handlers, calls } = testEnv
-
-  assert.equal((await handlers['translate:run'](event, validTranslation)).error.code, 'TRANSLATION_DISABLED')
-  assert.equal((await handlers['translate:open-google'](event, { text: 'hello', targetLanguage: 'zh-CN' })).error.code, 'TRANSLATION_DISABLED')
-  assert.deepEqual(calls, { myMemory: 0, ai: 0, google: 0, connectionTest: 0 })
-  assert.equal((await handlers['ai:test-connection'](event)).ok, true)
-  assert.equal(calls.connectionTest, 1)
-  testEnv.dispose()
+test('Legacy Manager translation endpoints are removed while Shared AI administration remains', async () => {
+ const env = setup()
+ for (const key of ['translate:run','translate:cancel','translate:provider-info','translate:open-google']) assert.equal(env.handlers[key], undefined)
+ assert.equal((await env.handlers['ai:test-connection'](event, 'openai')).ok, true)
+ assert.equal(env.calls.connectionTest, 1); env.dispose()
 })
-
-test('enabled Translation IPC preserves current provider and manual Google behavior', async () => {
-  const testEnv = setup()
-  testEnv.enable()
-  const { handlers, calls } = testEnv
-
-  assert.equal((await handlers['translate:run'](event, validTranslation)).ok, true)
-  assert.equal((await handlers['translate:open-google'](event, { text: 'hello', targetLanguage: 'zh-CN' })).ok, true)
-  assert.deepEqual(calls, { myMemory: 1, ai: 0, google: 1, connectionTest: 0 })
-  testEnv.dispose()
-})
-
-test('Translation IPC keeps the Manager main-frame sender boundary', async () => {
-  const testEnv = setup()
-  testEnv.manager(false)
-  const { handlers, calls } = testEnv
-
-  assert.equal((await handlers['translate:run'](event, validTranslation)).error.code, 'UNAUTHORIZED')
-  assert.equal((await handlers['translate:open-google'](event, { text: 'hello', targetLanguage: 'zh-CN' })).error.code, 'UNAUTHORIZED')
-  assert.equal(calls.myMemory + calls.google, 0)
-  testEnv.dispose()
+test('Shared AI administration retains the Manager main-frame sender boundary', async () => {
+ const env = setup(); env.manager(false)
+ for(const handler of Object.values(env.handlers)) assert.equal((await handler(event, 'openai', 'not-a-real-key')).error.code, 'UNAUTHORIZED')
+ assert.equal(env.calls.connectionTest, 0); env.dispose()
 })

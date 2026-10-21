@@ -6,9 +6,26 @@
     <meta name="theme-color" content="#10151c" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>WebTools</title>
+    <style>
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #0b0c0e; }
+      .startup-shell { display: grid; width: 100%; height: 100%; grid-template-rows: 42px 1fr; color: #f4f4f5; font: 13px 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', sans-serif; }
+      .startup-titlebar { display: flex; align-items: center; gap: 9px; padding: 0 14px; border-bottom: 1px solid #303237; background: #111214; }
+      .startup-titlebar img { width: 25px; height: 25px; border-radius: 7px; }
+      .startup-titlebar strong { font-size: 12px; font-weight: 600; }
+      .startup-content { display: grid; place-content: center; justify-items: center; gap: 13px; color: #a1a1aa; }
+      .startup-spinner { width: 30px; height: 30px; border: 2px solid #303237; border-top-color: #91baff; border-radius: 50%; animation: startup-spin 800ms linear infinite; }
+      .startup-content p { margin: 0; }
+      @keyframes startup-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .startup-spinner { animation-duration: 2200ms; } }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <main class="startup-shell" role="status" aria-live="polite">
+        <header class="startup-titlebar"><img src="/favicon.svg" alt="" /><strong>WebTools</strong></header>
+        <section class="startup-content"><span class="startup-spinner" aria-hidden="true"></span><p>正在打开 Manager…</p></section>
+      </main>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

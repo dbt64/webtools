@@ -1,0 +1,38 @@
+{
+  "manifestVersion": 3,
+  "id": "org.webtools.selected-text-actions",
+  "name": "Selected Text Actions",
+  "description": "显式点击后搜索选中文字，或打开选中的 HTTP(S) 链接。",
+  "author": { "name": "WebTools" },
+  "version": "1.0.0",
+  "api": { "apiMajor": 1, "minHostVersion": "0.1.0" },
+  "type": "plugin",
+  "requestedCapabilities": ["external.open"],
+  "runtime": { "kind": "node" },
+  "compatibility": { "platforms": ["win32"], "architectures": ["x64"] },
+  "features": [
+    {
+      "id": "search-selection",
+      "title": "搜索选中文字",
+      "commands": ["Search selection"],
+      "entry": { "kind": "node-command", "module": "resources/search.cjs" },
+      "presentation": { "type": "command" },
+      "acceptedContexts": [{ "type": "text", "sources": ["selected-text"] }],
+      "requiredCapabilities": ["external.open"],
+      "icon": { "kind": "host", "key": "globe" }
+    },
+    {
+      "id": "open-selected-link",
+      "title": "打开选中链接",
+      "commands": ["Open selected link"],
+      "entry": { "kind": "node-command", "module": "resources/open-link.cjs" },
+      "presentation": { "type": "command" },
+      "acceptedContexts": [{ "type": "text", "sources": ["selected-text"], "textMatch": "http-url" }],
+      "requiredCapabilities": ["external.open"],
+      "icon": { "kind": "host", "key": "globe" }
+    }
+  ],
+  "runtimeFiles": [],
+  "dependencies": [],
+  "package": { "format": "wtplugin", "packageVersion": 1 }
+}

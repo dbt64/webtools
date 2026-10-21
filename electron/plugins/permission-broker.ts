@@ -1,11 +1,11 @@
-import type { PluginAction, PluginCapability, PluginJson, PluginVersionChange } from '../../src/shared/plugin-contracts.ts'
+import type { PluginAction, PluginCapability, InstalledPluginCapability, PluginJson, PluginVersionChange } from '../../src/shared/plugin-contracts.ts'
 import type { AIMessage } from '../services/openai-compatible-adapter.ts'
 import { boundedString, record } from './manifest.ts'
 import { fail } from './errors.ts'
 
 export interface PluginConsent {
-  kind: 'install' | 'replace' | 'downgrade' | 'grant' | 'uninstall' | 'delete-data' | 'external' | 'clipboard' | 'ai'
-  pluginId: string; name: string; version: string; capabilities?: PluginCapability[]; preview?: string; versionChange?: PluginVersionChange
+  kind: 'install' | 'replace' | 'downgrade' | 'grant' | 'uninstall' | 'delete-data' | 'reset-config' | 'external' | 'clipboard' | 'ai'
+  pluginId: string; name: string; version: string; capabilities?: InstalledPluginCapability[]; preview?: string; versionChange?: PluginVersionChange; manifestVersion?: 1 | 2 | 3; runtimeKind?: 'web' | 'node'
 }
 export interface PluginProviderInfo { providerName: string; model: string; identity?: string }
 export interface PluginHostEffects {
@@ -36,7 +36,7 @@ export class PermissionBroker {
   readonly host: PluginHostEffects
   private readonly now: () => number
   constructor(host: PluginHostEffects, now: () => number = Date.now) { this.host = host; this.now = now }
-  enforce(requested: PluginCapability[], granted: PluginCapability[], capability: PluginCapability, available: boolean): void {
+  enforce(requested: readonly PluginCapability[], granted: readonly InstalledPluginCapability[], capability: PluginCapability, available: boolean): void {
     if (!available) fail('PLUGIN_DISABLED')
     if (!requested.includes(capability) || !granted.includes(capability)) fail('PERMISSION_DENIED')
   }

@@ -541,17 +541,17 @@ Basic v2 虽接受 API key，但该 key 将请求关联到用户自己的 Cloud 
 1. 添加 source/target、Auto Detect、Swap、Clear、Translate、Copy、Loading、Cancel、Error、Provider indicator。
 2. 调用同一个 window.desktop.translate() IPC，不按 provider 在 Vue 中分支。
 3. 加 Ctrl+Enter；保留 Ctrl+A/C 默认输入操作。
-4. Launcher prefill 原样填入并 focus source textarea，光标在文本末尾；不自动调用 translate。
+4. Launcher prefill 原样填入并 focus source textarea，光标在文本末尾。**已被 2026-10-18 provider-tabs 设计覆盖：** 当 `WebTools 翻译` 是当前页签且原文非空时，按现有 500 ms debounce 自动调用一次；网站页签保持网站自己的填入流程。
 5. 每次请求生成 UI generation + requestId；开始、编辑 source、source/target 改变、provider change、clear、新 prefill、unmount 都清空旧结果/错误/复制态并取消旧请求。
 6. 仅当前 requestId 且 generation 匹配时写 result/error/loading；旧 Promise 结束不能覆盖新 result，也不能清除新 loading。
 7. 对 missing provider/key、timeout、quota、invalid model 展示安全可操作文案。
 8. 保留“在 Google Translate 网页中打开”；使用同一 source/target 状态且不触发 Cloud/AI provider。
 
 **Dependencies**：Task 6、Task 7。
-**Security**：textarea 原文只在用户按 Translate 时送 Main；Google 网站由显式 click 才外发；Launcher prefill 不请求网络。
+**Security**：WebTools 原文按已选 API/AI 服务进行一次自动翻译，仍由 Main 侧服务与 SecretStore 执行；Google 等网站页签仍由其网站翻译流程接收文本，不通过 API 静默回退。此处早期“prefill 不请求网络”的约束已由 2026-10-18 设计明确取代。
 **Verification**：state tests 覆盖 A→B 次序逆转、输入变化、target/provider 更新、cancel/unmount；npm run typecheck、npm run build；UI 人工测试。
 **Risks**：条件渲染会销毁 TranslateView；取消 IPC 与 finally 状态管理必须按 requestId 绑定。
-**Acceptance**：所有源/目标/Provider 变更使旧 request 失效；精准 prefill 不自动翻译；键盘/复制/清空正常。
+**Acceptance**：所有源/目标/Provider 变更使旧 request 失效；WebTools 页签对同一打开代次的非空 prefill 自动翻译一次且不轮询；键盘/复制/清空正常。
 
 ### Task 9 — Deterministic provider, settings and compatibility test coverage
 
@@ -658,7 +658,7 @@ Task 2 与 Task 3 可以在接口冻结后分别工作，但都不需要为了�
 
 - [ ] Source / Auto Detect / Target / Swap / Clear / Copy / Translate / Cancel / Error / provider indicator。
 - [ ] Ctrl+Enter 翻译，Ctrl+A/C 正常。
-- [ ] Launcher prefill exact query、聚焦 source、不自动调用 API。
+- [ ] Launcher prefill 精确保留并聚焦 source；在 WebTools 页签上自动翻译一次，不轮询或重复请求；网站页签仍走网站自己的流程。
 - [ ] 原文、source/target、Provider 变化后旧 request abort/invalidate。
 - [ ] A→B，B→A 响应顺序下最终 UI 保持 B；旧 finally 不改变 B loading。
 - [ ] unmount/Manager destroy abort 当前请求并释放 request registry。

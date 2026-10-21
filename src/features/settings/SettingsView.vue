@@ -1,39 +1,18 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Check, FolderSearch, Keyboard, KeyRound, Languages } from '@lucide/vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Check, FolderSearch, Keyboard, Puzzle, Settings2, Search, Mouse, Sparkles, Palette, Info } from '@lucide/vue'
 import { createDefaultAppData, type AppSettings, type LauncherDisplayMode, type ThemePreference } from '@/shared/domain'
-import { cloneSharedAISettings, QWEN_REGIONS, type AIProviderId, type QwenRegion, type SharedAISettings } from '@/shared/ai-config'
-import type { TranslationEngineId } from '@/shared/translation-contracts'
-import type { AIProviderDescriptor, AIProviderStatus } from '@/shared/ipc'
 import { applyTheme } from '@/shared/theme'
 import SearchEngineEditor from './SearchEngineEditor.vue'
+import SuperPanelSettings from './SuperPanelSettings.vue'
+import SharedAISettings from './SharedAISettings.vue'
+
+const props = defineProps<{ superPanelFocusRequestId?: string; aiFocusRequestId?: string }>()
+const emit = defineEmits<{ openPluginManagement: [] }>()
 
 const settings = ref<AppSettings>(createDefaultAppData().settings)
 const saved = ref(false)
 const errorMessage = ref('')
-const aiDraft = ref<SharedAISettings>(cloneSharedAISettings(settings.value.sharedAI))
-const aiProviders = ref<AIProviderDescriptor[]>([])
-const aiProviderStatuses = ref<Partial<Record<AIProviderId, AIProviderStatus>>>({})
-const aiProviderStatusError = ref('')
-const apiKeysDraft = ref<Partial<Record<AIProviderId, string>>>({})
-const apiKey = computed({
-  get: () => apiKeysDraft.value[selectedProvider.value] ?? '',
-  set: (value: string) => { apiKeysDraft.value = { ...apiKeysDraft.value, [selectedProvider.value]: value } },
-})
-const testing = ref(false)
-const testMessage = ref('')
-const savingAI = ref(false)
-const translationProviderInfo = ref<{ providerName: string; model?: string; configured: boolean }>()
-const savingTranslation = ref(false)
-const qwenRegionLabels: Record<QwenRegion, string> = {
-  'cn-beijing': '中国（北京）', 'ap-southeast-1': '新加坡', 'eu-central-1': '德国（法兰克福）',
-  'ap-northeast-1': '日本（东京）', 'cn-hongkong': '中国香港', 'us-east-1': '美国（弗吉尼亚）',
-}
-const translationEngineOptions = [
-  { id: 'mymemory', label: 'MyMemory 免费翻译', description: '无需 API Key；适合短文本翻译。' },
-  { id: 'ai', label: 'WebTools AI', description: '使用 AI 设置中的默认提供方和模型。' },
-  { id: 'qwen-mt', label: 'Qwen-MT', description: '使用 AI 区域中的 Qwen Key、地区和工作空间。' },
-] as const
 const recordingShortcut = ref(false)
 const savingShortcut = ref(false)
 const pendingShortcut = ref<string | null>(null)
@@ -43,15 +22,8 @@ const savingLauncherMode = ref(false)
 const everythingStatus = ref<{ executablePath?: string; running: boolean; version?: string }>()
 const checkingEverything = ref(false)
 let isMounted = false
+let everythingGeneration = 0
 
-const selectedProvider = computed(() => aiDraft.value.defaultProviderId)
-const selectedProviderDescriptor = computed(() => aiProviders.value.find((provider) => provider.id === selectedProvider.value))
-const selectedProviderStatus = computed(() => aiProviderStatuses.value[selectedProvider.value])
-const selectedProviderConfig = computed(() => {
-  const saved = aiDraft.value.providers[selectedProvider.value]
-  return { ...saved, model: saved?.model || selectedProviderDescriptor.value?.defaultModel || '' }
-})
-const translationEngineLabel = computed(() => ({ mymemory: 'MyMemory 免费翻译', ai: 'WebTools AI', 'qwen-mt': 'Qwen-MT' })[settings.value.translation.engine])
 const shortcutPresets = [
   { value: 'Alt+Space', label: 'Alt + Space' },
   { value: 'Control+Space', label: 'Ctrl + Space' },
@@ -74,7 +46,13 @@ function formatShortcut(value: string): string {
   return value.split('+').map((part) => modifierLabels[part] ?? part).join(' + ')
 }
 
-function markSaved(): void { saved.value = true; window.setTimeout(() => { saved.value = false }, 1800) }
+let savedTimer: number | undefined
+function markSaved(): void {
+  if (!isMounted) return
+  saved.value = true
+  if (savedTimer !== undefined) window.clearTimeout(savedTimer)
+  savedTimer = window.setTimeout(() => { saved.value = false }, 1800)
+}
 
 function stageShortcut(shortcut: string): void {
   pendingShortcut.value = shortcut === settings.value.quickSearchShortcut ? null : shortcut
@@ -99,6 +77,7 @@ async function applyPendingShortcut(): Promise<void> {
   shortcutMessage.value = ''
   try {
     const result = await window.desktop.updateSettings({ quickSearchShortcut: pendingShortcut.value })
+    if (!isMounted) return
     if (!result.ok) {
       shortcutMessage.value = '无法应用此快捷键，可能与 Windows 或其他应用冲突。当前快捷键保持不变。'
       return
@@ -133,18 +112,25 @@ function handleShortcutKeydown(event: KeyboardEvent): void {
 }
 
 async function toggleStartup(): Promise<void> {
-  const result = await window.desktop.updateSettings({ launchOnStartup: !settings.value.launchOnStartup })
-  if (!result.ok) errorMessage.value = result.error.message
-  else { settings.value = result.data; errorMessage.value = ''; markSaved() }
+  if (savingStartup.value) return
+  savingStartup.value = true
+  try {
+    const result = await window.desktop.updateSettings({ launchOnStartup: !settings.value.launchOnStartup })
+    if (!isMounted) return
+    if (!result.ok) errorMessage.value = '无法更新开机启动，请检查 NativeHost 连接后重试。'
+    else { settings.value = result.data; errorMessage.value = ''; markSaved() }
+  } catch { if (isMounted) errorMessage.value = '无法更新开机启动，请重试。' }
+  finally { if (isMounted) savingStartup.value = false }
 }
 
-function handleEnginesSaved(value: AppSettings): void { settings.value = value; markSaved() }
+function handleEnginesSaved(value: AppSettings): void { if (isMounted) { settings.value = value; markSaved() } }
 
 async function saveTheme(theme: ThemePreference): Promise<void> {
   if (savingTheme.value || theme === settings.value.theme) return
   savingTheme.value = true
   try {
     const result = await window.desktop.updateSettings({ theme })
+    if (!isMounted) return
     if (!result.ok) { errorMessage.value = result.error.message; return }
     settings.value = result.data
     applyTheme(result.data.theme)
@@ -162,6 +148,7 @@ async function saveLauncherMode(launcherDisplayMode: LauncherDisplayMode): Promi
   savingLauncherMode.value = true
   try {
     const result = await window.desktop.updateSettings({ launcherDisplayMode })
+    if (!isMounted) return
     if (!result.ok) { errorMessage.value = result.error.message; return }
     settings.value = result.data
     errorMessage.value = ''
@@ -174,168 +161,151 @@ async function saveLauncherMode(launcherDisplayMode: LauncherDisplayMode): Promi
 }
 
 async function refreshEverything(): Promise<void> {
+  const request = ++everythingGeneration
   checkingEverything.value = true
-  const status = await window.desktop.detectEverything()
-  if (!isMounted) return
-  everythingStatus.value = status
-  checkingEverything.value = false
+  try {
+    const status = await window.desktop.detectEverything()
+    if (!isMounted || request !== everythingGeneration) return
+    everythingStatus.value = status
+  } catch { if (isMounted && request === everythingGeneration) errorMessage.value = '无法检测 Everything，请检查安装和运行状态。' }
+  finally { if (isMounted && request === everythingGeneration) checkingEverything.value = false }
 }
 
 async function toggleEverything(): Promise<void> {
-  const result = await window.desktop.updateSettings({ everythingEnabled: !settings.value.everythingEnabled })
-  if (!result.ok) errorMessage.value = result.error.message
-  else { settings.value = result.data; errorMessage.value = ''; markSaved(); if (settings.value.everythingEnabled) void refreshEverything() }
+  try {
+    const result = await window.desktop.updateSettings({ everythingEnabled: !settings.value.everythingEnabled })
+    if (!isMounted) return
+    if (!result.ok) errorMessage.value = result.error.message
+    else { settings.value = result.data; errorMessage.value = ''; markSaved(); if (settings.value.everythingEnabled) void refreshEverything() }
+  } catch { if (isMounted) errorMessage.value = '无法保存文件搜索设置，请重试。' }
 }
 
 async function browseEverything(): Promise<void> {
-  const path = await window.desktop.chooseEverythingPath()
-  if (!path) return
-  const result = await window.desktop.updateSettings({ everythingEsPath: path })
-  if (!result.ok) { errorMessage.value = result.error.message; return }
-  settings.value = result.data
-  errorMessage.value = ''
-  markSaved()
-  await refreshEverything()
+  try {
+    const path = await window.desktop.chooseEverythingPath()
+    if (!isMounted || !path) return
+    const result = await window.desktop.updateSettings({ everythingEsPath: path })
+    if (!isMounted) return
+    if (!result.ok) { errorMessage.value = result.error.message; return }
+    settings.value = result.data
+    errorMessage.value = ''
+    markSaved()
+    await refreshEverything()
+  } catch { if (isMounted) errorMessage.value = '无法保存 ES 路径，请重试。' }
 }
 
 async function autoDetectEverything(): Promise<void> {
   await refreshEverything()
-  if (everythingStatus.value?.executablePath && !settings.value.everythingEsPath) {
-    const result = await window.desktop.updateSettings({ everythingEsPath: everythingStatus.value.executablePath })
-    if (result.ok) settings.value = result.data
-    else errorMessage.value = result.error.message
+  if (isMounted && everythingStatus.value?.executablePath && !settings.value.everythingEsPath) {
+    try {
+      const result = await window.desktop.updateSettings({ everythingEsPath: everythingStatus.value.executablePath })
+      if (!isMounted) return
+      if (result.ok) { settings.value = result.data; markSaved() }
+      else errorMessage.value = result.error.message
+    } catch { if (isMounted) errorMessage.value = '无法保存检测到的 ES 路径，请重试。' }
   }
 }
 
-function updateSelectedProviderConfig(patch: { model?: string; baseUrl?: string; region?: QwenRegion; workspaceId?: string }): void {
-  const providerId = selectedProvider.value
-  const previous = aiDraft.value.providers[providerId] ?? { model: selectedProviderDescriptor.value?.defaultModel ?? '' }
-  aiDraft.value = { ...aiDraft.value, providers: { ...aiDraft.value.providers, [providerId]: { ...previous, ...patch } } }
-}
+const categories = [
+  { id: 'general', label: '通用', icon: Settings2, description: '启动行为与平台管理入口。' },
+  { id: 'launcher', label: 'Launcher', icon: Search, description: '搜索框布局、快捷键与本机搜索服务。' },
+  { id: 'super-panel', label: 'Super Panel', icon: Mouse, description: '由 NativeHost 管理的鼠标触发与上下文操作。' },
+  { id: 'ai', label: 'AI', icon: Sparkles, description: 'WebTools 共用的提供方、模型与安全凭据。' },
+  { id: 'appearance', label: '外观', icon: Palette, description: '选择窗口颜色主题。' },
+  { id: 'advanced', label: '高级', icon: Info, description: '版本信息与现有开发工具入口。' },
+] as const
+type SettingsSection = typeof categories[number]['id']
+const activeCategory = ref<SettingsSection>(props.superPanelFocusRequestId ? 'super-panel' : props.aiFocusRequestId ? 'ai' : 'general')
+const activeDescription = computed(() => categories.find(category => category.id === activeCategory.value)?.description)
+const categoryContent = ref<HTMLElement | null>(null)
+const aiEditor = ref<InstanceType<typeof SharedAISettings> | null>(null)
+const superPanelEditor = ref<InstanceType<typeof SuperPanelSettings> | null>(null)
+const pendingCategory = ref<SettingsSection | null>(null)
+const loading = ref(true)
+const loaded = ref(false)
+const savingStartup = ref(false)
+const version = ref('')
+const navigationBusy = computed(() => savingShortcut.value || savingTheme.value || savingLauncherMode.value || savingStartup.value || Boolean(aiEditor.value?.busy) || Boolean(superPanelEditor.value?.busy))
+let loadGeneration = 0
 
-async function refreshAIProviderStatuses(): Promise<void> {
-  const statuses = await Promise.all(aiProviders.value.map(async (provider) => {
-    const result = await window.desktop.getAIProviderStatus(provider.id)
-    return result.ok ? { id: provider.id, status: result.data } : { id: provider.id, error: result.error.message }
-  }))
-  if (!isMounted) return
-  aiProviderStatuses.value = Object.fromEntries(statuses.flatMap((item) => 'status' in item ? [[item.id, item.status] as const] : []))
-  aiProviderStatusError.value = statuses.find((item) => 'error' in item)?.error ?? ''
+function selectCategory(category: SettingsSection): void {
+  if (activeCategory.value === category) return
+  if (navigationBusy.value) {
+    errorMessage.value = '请等待当前保存或测试操作完成后切换分类。'
+    return
+  }
+  if (pendingShortcut.value || recordingShortcut.value || aiEditor.value?.hasPendingChanges || superPanelEditor.value?.hasPendingChanges) {
+    pendingCategory.value = category
+    return
+  }
+  switchCategory(category)
 }
-
-async function changeAIProvider(providerId: AIProviderId): Promise<void> {
-  if (providerId === aiDraft.value.defaultProviderId || savingAI.value) return
-  await persistAISettings(providerId, false)
+function switchCategory(category: SettingsSection): void {
+  pendingCategory.value = null
+  cancelPendingShortcut()
+  errorMessage.value = ''
+  saved.value = false
+  activeCategory.value = category
+  if (category === 'launcher' && loaded.value) void refreshEverything()
 }
+function confirmCategorySwitch(): void {
+  if (pendingCategory.value && !navigationBusy.value) switchCategory(pendingCategory.value)
+}
+async function focusCategory(category: SettingsSection): Promise<void> {
+  selectCategory(category)
+  await nextTick()
+  if (isMounted) categoryContent.value?.focus({ preventScroll: true })
+}
+watch(() => props.superPanelFocusRequestId, value => { if (value) void focusCategory('super-panel') })
+watch(() => props.aiFocusRequestId, value => { if (value) void focusCategory('ai') })
 
-async function persistAISettings(defaultProviderId = aiDraft.value.defaultProviderId, saveKey = true): Promise<boolean> {
-  savingAI.value = true
+async function loadSettings(): Promise<void> {
+  const generation = ++loadGeneration
+  loading.value = true
   errorMessage.value = ''
   try {
-    const credentialProviderId = aiDraft.value.defaultProviderId
-    const nextSharedAI = cloneSharedAISettings({ ...aiDraft.value, defaultProviderId })
-    const result = await window.desktop.updateSettings({ sharedAI: nextSharedAI })
-    if (!result.ok) { errorMessage.value = result.error.message; return false }
-    settings.value = result.data
-    aiDraft.value = cloneSharedAISettings(result.data.sharedAI)
-    if (saveKey && apiKey.value.trim()) {
-      const keyResult = await window.desktop.saveAIProviderKey(credentialProviderId, apiKey.value.trim())
-      if (!keyResult.ok) {
-        const providerName = aiProviders.value.find((provider) => provider.id === credentialProviderId)?.name ?? '当前提供方'
-        errorMessage.value = `AI 设置已保存，但 ${providerName} API Key 保存失败：${keyResult.error.message}`
-        return false
-      }
-      apiKey.value = ''
-    }
-    await refreshAIProviderStatuses()
-    if (settings.value.translation.engine === 'ai') {
-      const info = await window.desktop.getTranslationProviderInfo()
-      if (info.ok) translationProviderInfo.value = info.data
-    }
-    markSaved()
-    return true
-  } catch {
-    errorMessage.value = '保存 AI 设置失败，请重试。'
-    return false
-  } finally { savingAI.value = false }
+    const result = await window.desktop.getSettings()
+    if (!isMounted || generation !== loadGeneration) return
+    settings.value = result
+    loaded.value = true
+    if (activeCategory.value === 'launcher') void refreshEverything()
+  } catch { if (isMounted && generation === loadGeneration) errorMessage.value = '无法读取本机设置，请重试。' }
+  finally { if (isMounted && generation === loadGeneration) loading.value = false }
 }
-
-async function saveAISettings(): Promise<void> { await persistAISettings() }
-
-async function testConnection(): Promise<void> {
-  testing.value = true
-  testMessage.value = ''
-  try {
-    if (!await persistAISettings()) return
-    const testedProvider = selectedProvider.value
-    const testedSettings = JSON.stringify(aiDraft.value)
-    const result = await window.desktop.testAIConnection()
-    if (testedProvider !== selectedProvider.value || testedSettings !== JSON.stringify(aiDraft.value)) return
-    testMessage.value = result.ok ? `已连接 · ${result.data.providerName} · ${result.data.model}` : result.error.message
-  } catch { testMessage.value = '无法连接 AI 服务，请检查网络和设置。' }
-  finally { testing.value = false }
-}
-
-async function clearAIKey(): Promise<void> {
-  if (!window.confirm(`删除已保存的 ${selectedProviderDescriptor.value?.name ?? '当前'} API Key？`)) return
-  const result = await window.desktop.clearAIProviderKey(selectedProvider.value)
-  if (!result.ok) errorMessage.value = result.error.message
-  else { errorMessage.value = ''; testMessage.value = '已删除 API Key。'; await refreshAIProviderStatuses() }
-}
-
-async function chooseTranslationEngine(engine: TranslationEngineId): Promise<void> {
-  if (engine === settings.value.translation.engine || savingTranslation.value) return
-  savingTranslation.value = true
-  try {
-    const result = await window.desktop.updateSettings({ translation: { ...settings.value.translation, engine } })
-    if (!result.ok) { errorMessage.value = result.error.message; return }
-    settings.value = result.data
-    errorMessage.value = ''
-    const info = await window.desktop.getTranslationProviderInfo()
-    if (info.ok) translationProviderInfo.value = info.data
-    markSaved()
-  } catch { errorMessage.value = '无法保存翻译引擎设置，请重试。' }
-  finally { savingTranslation.value = false }
-}
-
-onMounted(async () => {
+onMounted(() => {
   isMounted = true
-  try {
-    const loadedSettings = await window.desktop.getSettings()
-    if (!isMounted) return
-    settings.value = loadedSettings
-    aiDraft.value = cloneSharedAISettings(settings.value.sharedAI)
-    const [providers, translationInfo] = await Promise.all([
-      window.desktop.getAIProviderDescriptors(),
-      window.desktop.getTranslationProviderInfo(),
-    ])
-    if (!isMounted) return
-    if (!providers.ok) throw new Error(providers.error.message)
-    aiProviders.value = providers.data
-    if (translationInfo.ok) translationProviderInfo.value = translationInfo.data
-    await refreshAIProviderStatuses()
-    if (!isMounted) return
-    await refreshEverything()
-  } catch {
-    if (isMounted) errorMessage.value = '无法读取本机设置。'
-  }
+  void loadSettings()
+  void window.desktop.getVersion().then(value => { if (isMounted) version.value = value }, () => {})
 })
-
-onBeforeUnmount(() => { isMounted = false })
+onBeforeUnmount(() => {
+  isMounted = false
+  ++loadGeneration
+  ++everythingGeneration
+  if (savedTimer !== undefined) window.clearTimeout(savedTimer)
+})
 </script>
 
 <template>
-  <section class="content-page settings-page">
-    <div class="page-heading"><div><p class="eyebrow">偏好与连接</p><h1>设置</h1><p class="page-description">调整 WebTools 的搜索方式与服务连接。</p></div></div>
-    <SearchEngineEditor :settings="settings" @saved="handleEnginesSaved" />
-    <div class="settings-group appearance-settings">
-      <div class="settings-group-heading"><span class="settings-group-icon" aria-hidden="true">◐</span><div><strong>外观主题</strong><p>选择 WebTools 窗口使用的颜色主题</p></div></div>
-      <div class="preference-options theme-options" role="group" aria-label="外观主题">
-        <button v-for="option in [{ value: 'light', label: '浅色' }, { value: 'dark', label: '深色' }, { value: 'system', label: '跟随系统' }] as const" :key="option.value" class="preference-option" :class="{ selected: settings.theme === option.value }" :aria-pressed="settings.theme === option.value" :disabled="savingTheme" @click="saveTheme(option.value)">
-          <span class="preference-option-title">{{ option.label }}</span><Check v-if="settings.theme === option.value" :size="14" />
-        </button>
-      </div>
-    </div>
+  <section class="content-page settings-page platform-settings-page">
+    <div class="page-heading"><div><p class="eyebrow">平台偏好</p><h1>设置</h1><p class="page-description">管理 WebTools 平台；单个插件的配置由插件详情管理。</p></div></div>
+    <nav class="settings-categories" aria-label="设置分类">
+      <button v-for="category in categories" :key="category.id" type="button" :class="{ selected: activeCategory === category.id }" :aria-current="activeCategory === category.id ? 'page' : undefined" :disabled="navigationBusy" @click="selectCategory(category.id)"><component :is="category.icon" aria-hidden="true" /><span>{{ category.label }}</span></button>
+    </nav>
+    <p class="settings-category-description">{{ activeDescription }}</p>
+    <div v-if="pendingCategory" class="settings-group" role="alert"><p class="settings-note">当前分类有未保存的更改，是否放弃并切换？</p><div class="hotkey-pending-actions"><button type="button" class="secondary-button" @click="pendingCategory = null">继续编辑</button><button type="button" class="secondary-button" :disabled="navigationBusy" @click="confirmCategorySwitch">放弃并切换</button></div></div>
+    <p v-if="loading" class="settings-note" role="status">正在读取设置…</p>
+    <div v-if="loaded" ref="categoryContent" class="settings-category-content" tabindex="-1">
+      <template v-if="activeCategory === 'general'">
+        <div class="settings-group">
+          <div class="settings-group-heading"><span class="settings-group-icon"><Settings2 :size="17" /></span><div><strong>启动行为</strong><p>启动与全局输入由 NativeHost 负责。</p></div></div>
+          <div class="shortcut-row"><div><strong>登录 Windows 时启动</strong><small>启动到托盘，不自动打开 Manager</small></div><button type="button" class="toggle-switch" :class="{ enabled: settings.launchOnStartup }" role="switch" aria-label="登录 Windows 时启动" :aria-checked="settings.launchOnStartup" :disabled="savingStartup" @click="toggleStartup"><span /></button></div>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-heading"><span class="settings-group-icon"><Puzzle :size="17" /></span><div><strong>插件管理</strong><p>管理已安装的插件、权限与信息。</p></div></div>
+          <button type="button" class="secondary-button" @click="emit('openPluginManagement')">管理插件</button>
+        </div>
+      </template>
+      <template v-else-if="activeCategory === 'launcher'">
     <div class="settings-group launcher-mode-settings">
       <div class="settings-group-heading"><span class="settings-group-icon" aria-hidden="true">▤</span><div><strong>搜索框显示模式</strong><p>设置快捷键唤出搜索框时的初始布局</p></div></div>
       <div class="preference-options launcher-mode-options" role="group" aria-label="搜索框显示模式">
@@ -380,43 +350,42 @@ onBeforeUnmount(() => { isMounted = false })
       <div class="hotkey-binding-status" aria-live="polite"><span>当前生效</span><kbd>{{ formatShortcut(settings.quickSearchShortcut) }}</kbd><span v-if="pendingShortcut" class="hotkey-pending-label">待应用：{{ displayedShortcut }}</span></div>
       <div v-if="pendingShortcut" class="hotkey-pending-actions"><button type="button" class="primary-button" :disabled="savingShortcut" @click="applyPendingShortcut">{{ savingShortcut ? '应用中…' : '应用' }}</button><button type="button" class="secondary-button" :disabled="savingShortcut" @click="cancelPendingShortcut">取消</button></div>
       <p v-if="shortcutMessage" class="inline-error hotkey-error" role="alert">{{ shortcutMessage }}</p>
-      <div class="shortcut-row"><div><strong>登录 Windows 时启动</strong><small>启动到托盘，随时可用全局快捷键</small></div><button class="toggle-switch" :class="{ enabled: settings.launchOnStartup }" role="switch" :aria-checked="settings.launchOnStartup" @click="toggleStartup"><span /></button></div>
     </div>
+    <SearchEngineEditor :settings="settings" @saved="handleEnginesSaved" />
     <div class="settings-group everything-settings">
       <div class="settings-group-heading"><span class="settings-group-icon"><FolderSearch :size="17" /></span><div><strong>Everything 文件搜索</strong><p>使用 file:关键词 在本机 Everything 索引中搜索</p></div></div>
       <div class="shortcut-row"><div><strong>启用文件搜索</strong><small>需要单独安装并运行 Everything；WebTools 不会捆绑它</small></div><button class="toggle-switch" :class="{ enabled: settings.everythingEnabled }" role="switch" :aria-checked="settings.everythingEnabled" @click="toggleEverything"><span /></button></div>
       <div class="everything-path-row"><div><strong>ES 命令行工具</strong><small>{{ everythingStatus?.running ? `Everything 正在运行${everythingStatus.version ? ` · ES ${everythingStatus.version}` : ''}` : everythingStatus?.executablePath ? '已找到 ES，但 Everything 尚未运行' : '尚未找到 es.exe' }}</small><code v-if="settings.everythingEsPath">{{ settings.everythingEsPath }}</code></div><div><button class="secondary-button" :disabled="checkingEverything" @click="autoDetectEverything">{{ checkingEverything ? '检测中…' : '自动检测' }}</button><button class="secondary-button" @click="browseEverything">浏览</button></div></div>
       <p class="settings-note">在搜索框输入 <kbd>file:</kbd> 再输入关键词，例如 <kbd>file:meeting notes</kbd>。文件搜索结果只显示文件名和所在文件夹名称。</p>
     </div>
-    <div class="settings-group ai-settings">
-      <div class="settings-group-heading"><span class="settings-group-icon"><KeyRound :size="17" /></span><div><strong>WebTools AI</strong><p>AI 配置由 WebTools 共用；当前翻译模块是它的消费者。</p></div></div>
-      <label class="field-label">默认 AI 提供方<select :value="selectedProvider" :disabled="savingAI" @change="changeAIProvider(($event.target as HTMLSelectElement).value as AIProviderId)"><option v-for="provider in aiProviders" :key="provider.id" :value="provider.id">{{ provider.name }}</option></select></label>
-      <label class="field-label">模型名称<input :value="selectedProviderConfig.model" :placeholder="selectedProviderDescriptor?.modelHint" @input="updateSelectedProviderConfig({ model: ($event.target as HTMLInputElement).value })" /></label>
-      <label v-if="selectedProvider === 'custom'" class="field-label">OpenAI 兼容服务地址<input :value="selectedProviderConfig.baseUrl ?? ''" placeholder="https://example.com/v1" @input="updateSelectedProviderConfig({ baseUrl: ($event.target as HTMLInputElement).value })" /></label>
-      <template v-if="selectedProvider === 'qwen'">
-        <label class="field-label">Qwen 服务地区<select :value="selectedProviderConfig.region ?? ''" @change="updateSelectedProviderConfig({ region: ($event.target as HTMLSelectElement).value as QwenRegion })"><option value="" disabled>请选择地区</option><option v-for="region in QWEN_REGIONS" :key="region" :value="region">{{ qwenRegionLabels[region] }}</option></select></label>
-        <label class="field-label">工作空间 ID<input :value="selectedProviderConfig.workspaceId ?? ''" placeholder="DashScope 工作空间 ID" @input="updateSelectedProviderConfig({ workspaceId: ($event.target as HTMLInputElement).value })" /></label>
       </template>
-      <label class="field-label">{{ selectedProviderDescriptor?.name ?? 'AI' }} API Key<input v-model="apiKey" type="password" autocomplete="new-password" :placeholder="selectedProviderStatus?.hasApiKey ? '已安全保存；输入新值可替换' : '输入 API Key'" /></label>
-      <p class="secret-note">各提供方的 Key 独立保存于 Windows 安全存储，不会写入普通设置文件。切换提供方不会删除其他 Key。连接测试会发送一条简短测试请求。</p>
-      <p v-if="aiProviderStatusError" class="inline-error">{{ aiProviderStatusError }}</p>
-      <p v-if="selectedProviderDescriptor" class="settings-note">{{ selectedProviderDescriptor.name }} 官方文档：<code>{{ selectedProviderDescriptor.documentationUrl }}</code><span v-if="selectedProviderStatus"> · {{ selectedProviderStatus.configured ? '配置完整' : '仍需补充模型、地区、地址或 Key' }}</span></p>
-      <div class="ai-settings-actions"><button class="primary-button" :disabled="savingAI" @click="saveAISettings">{{ savingAI ? '保存中…' : '保存 AI 设置' }}</button><button class="secondary-button" :disabled="testing || savingAI" @click="testConnection">{{ testing ? '正在连接…' : '测试连接' }}</button><button v-if="selectedProviderStatus?.hasApiKey" class="text-button remove-key" @click="clearAIKey">移除当前 Key</button></div>
-      <p v-if="testMessage" class="settings-result">{{ testMessage }}</p>
-    </div>
-    <div class="settings-group translation-settings">
-      <div class="settings-group-heading"><span class="settings-group-icon"><Languages :size="17" /></span><div><strong>翻译引擎</strong><p>选择翻译实际使用的服务；切换不会自动发送文本。</p></div></div>
-      <div class="preference-options translation-engine-options" role="group" aria-label="翻译引擎">
-        <button v-for="engine in translationEngineOptions" :key="engine.id" class="preference-option preference-option-described" :class="{ selected: settings.translation.engine === engine.id }" :aria-pressed="settings.translation.engine === engine.id" :disabled="savingTranslation" @click="chooseTranslationEngine(engine.id)">
-          <span><span class="preference-option-title">{{ engine.label }}</span><small>{{ engine.description }}</small></span><Check v-if="settings.translation.engine === engine.id" :size="14" />
+      <SuperPanelSettings v-else-if="activeCategory === 'super-panel'" ref="superPanelEditor" :focus-request-id="props.superPanelFocusRequestId" />
+      <SharedAISettings v-else-if="activeCategory === 'ai'" ref="aiEditor" @saved="handleEnginesSaved" />
+      <template v-else-if="activeCategory === 'appearance'">
+    <div class="settings-group appearance-settings">
+      <div class="settings-group-heading"><span class="settings-group-icon" aria-hidden="true">◐</span><div><strong>外观主题</strong><p>选择 WebTools 窗口使用的颜色主题</p></div></div>
+      <div class="preference-options theme-options" role="group" aria-label="外观主题">
+        <button v-for="option in [{ value: 'light', label: '浅色' }, { value: 'dark', label: '深色' }, { value: 'system', label: '跟随系统' }] as const" :key="option.value" class="preference-option" :class="{ selected: settings.theme === option.value }" :aria-pressed="settings.theme === option.value" :disabled="savingTheme" @click="saveTheme(option.value)">
+          <span class="preference-option-title">{{ option.label }}</span><Check v-if="settings.theme === option.value" :size="14" />
         </button>
       </div>
-      <p v-if="translationProviderInfo" class="settings-note">当前：{{ translationProviderInfo.providerName }}<template v-if="translationProviderInfo.model"> · {{ translationProviderInfo.model }}</template> · {{ translationProviderInfo.configured ? '已配置' : '尚未配置' }}</p>
-      <p class="settings-note">MyMemory 无需 Key；公共免费额度为每日 5,000 字符，单次最多 500 UTF-8 字节。选择 MyMemory 后，停止输入约 450 毫秒会自动发送原文；仅切换翻译引擎不会发送文本。需要更长文本时可配置 AI Key 并切换至 WebTools AI。</p>
-      <p class="settings-note">Google Translate 网页仍是单独的手动打开入口，不会作为 API 自动回退。</p>
-      <p class="settings-note">当前默认翻译引擎：{{ translationEngineLabel }}</p>
     </div>
-    <p v-if="saved" class="save-indicator"><Check :size="14" /> 已保存</p><p v-if="errorMessage" class="inline-error">{{ errorMessage }}</p>
+      </template>
+      <template v-else-if="activeCategory === 'advanced'">
+        <div class="settings-group">
+          <div class="settings-group-heading"><span class="settings-group-icon"><Info :size="17" /></span><div><strong>版本信息</strong><p>WebTools {{ version || '版本信息暂不可用' }}</p></div></div>
+          <p class="settings-note">NativeHost 提供原生搜索与输入；Electron Host 按需承载 Manager 和插件功能。</p>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-heading"><span class="settings-group-icon"><Puzzle :size="17" /></span><div><strong>插件开发与运行诊断</strong><p>在插件管理中展开已有开发者工具，查看当前开发连接与运行状态。</p></div></div>
+          <button type="button" class="secondary-button" @click="emit('openPluginManagement')">打开插件管理</button>
+          <p class="settings-note">诊断继续使用现有开发工具；此处不读取凭据或自动启动插件。</p>
+        </div>
+      </template>
+    </div>
+    <p v-if="saved" class="save-indicator" role="status"><Check :size="14" /> 已保存</p>
+    <p v-if="errorMessage" class="inline-error" role="alert">{{ errorMessage }}</p>
+    <button v-if="!loaded && !loading" type="button" class="secondary-button" @click="loadSettings">重新读取设置</button>
   </section>
 </template>
 
@@ -454,4 +423,13 @@ onBeforeUnmount(() => { isMounted = false })
 .hotkey-pending-actions .primary-button, .hotkey-pending-actions .secondary-button { min-width: 82px; }
 .hotkey-error { margin: -10px 0 0; }
 @media (max-width: 680px) { .theme-options, .launcher-mode-options { grid-template-columns: 1fr; } }
+.settings-categories { display: flex; flex-wrap: wrap; gap: calc(var(--manager-unit) * .4); margin-bottom: var(--manager-unit); }
+.settings-categories button { display: inline-flex; align-items: center; gap: calc(var(--manager-unit) * .5); padding: calc(var(--manager-unit) * .55) calc(var(--manager-unit) * .75); border: 1px solid transparent; border-radius: calc(var(--manager-unit) * .5); background: transparent; color: var(--muted); font: inherit; font-size: var(--manager-font-body); cursor: pointer; }
+.settings-categories button svg { width: var(--manager-unit); height: var(--manager-unit); }
+.settings-categories button:hover { background: var(--hover); color: var(--text); }
+.settings-categories button.selected { color: var(--accent); background: var(--accent-soft); }
+.settings-categories button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settings-category-description { margin: 0 0 var(--manager-unit); color: var(--muted); font-size: var(--manager-font-body); }
+.settings-category-content { min-width: 0; }
+.settings-category-content:focus { outline: none; }
 </style>

@@ -3,7 +3,8 @@ import type { PluginRef } from '../../src/shared/plugin-catalog-contracts.ts'
 import { record, validPluginId } from '../plugins/manifest.ts'
 import { fail, safePluginError } from '../plugins/errors.ts'
 import type { PluginCatalog } from '../plugins/plugin-catalog.ts'
-import type { IpcSenderContext } from './window-security.ts'
+import { registerManagerInvokeHandlers, type IpcSenderContext, type ManagerInvokeRegistry } from './window-security.ts'
+import { isFeatureId } from '../../src/shared/feature-contracts.ts'
 
 interface Dependencies {
   getCatalog(): PluginCatalog | null
@@ -13,9 +14,11 @@ interface Dependencies {
 }
 type Handler = (event: IpcSenderContext, ...args: unknown[]) => Promise<IpcResult<unknown>>
 function reference(value: unknown): PluginRef {
-  const ref = record(value, ['kind', 'id'])
+  const ref = record(value, ['kind', 'id'], ['featureId'])
+  if (ref.featureId !== undefined && (ref.kind !== 'web' || !isFeatureId(ref.featureId))) fail('INVALID_INPUT')
   if (ref.kind === 'builtin' && ref.id === 'webtools.translation') return { kind: 'builtin', id: ref.id }
   if (ref.kind === 'declarative' && validPluginId(ref.id)) return { kind: 'declarative', id: ref.id }
+  if (ref.kind === 'web' && validPluginId(ref.id)) return { kind: 'web', id: ref.id, ...(typeof ref.featureId === 'string' ? { featureId: ref.featureId } : {}) }
   return fail('INVALID_INPUT')
 }
 export function createPluginCatalogHandlers(deps: Dependencies): Record<string, Handler> {
@@ -45,8 +48,7 @@ export function createPluginCatalogHandlers(deps: Dependencies): Record<string, 
     }, true),
   }
 }
-export function registerPluginCatalogIpcHandlers(ipc: { handle(channel: string, handler: Handler): void; removeHandler(channel: string): void }, deps: Dependencies): () => void {
+export function registerPluginCatalogIpcHandlers(ipc: ManagerInvokeRegistry, deps: Dependencies): () => void {
   const handlers = createPluginCatalogHandlers(deps)
-  for (const [channel, handler] of Object.entries(handlers)) ipc.handle(channel, handler)
-  return () => { for (const channel of Object.keys(handlers)) ipc.removeHandler(channel) }
+  return registerManagerInvokeHandlers(ipc, deps.isManagerMainFrame, handlers)
 }

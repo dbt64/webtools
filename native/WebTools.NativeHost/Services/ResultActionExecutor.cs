@@ -18,6 +18,7 @@ public sealed class ResultActionExecutor(AppCatalogService catalog, EverythingCl
             OpenWebsiteAction website => ForUrl(website.Url),
             OpenFileAction file => ForFile(everything.ResolvePath(file.Token)),
             OpenTranslationAction => throw new NotSupportedException("翻译需要 Phase 4D 的 Manager 通信，当前独立 Native Host 尚不能打开该模块。"),
+            OpenPluginFeatureAction => throw new InvalidOperationException("Feature actions must be routed through the ManagerController."),
             _ => throw new InvalidOperationException("未知搜索操作。"),
         };
         // ShellExecute may hand a URL or document to an existing process and return null on success.

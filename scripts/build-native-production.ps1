@@ -2,6 +2,11 @@
     [string]$NodeExe,
     [string]$DotnetExe = "dotnet",
     [string]$OutputDirectory,
+    [switch]$PreviewOnly,
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,100}$')]
+    [string]$PreviewName,
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')]
+    [string]$PreviewUxRevision,
     [ValidateSet("stable", "beta")]
     [string]$Channel = "stable"
 )
@@ -9,6 +14,10 @@
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+if ($PreviewOnly -and -not $PreviewName) { throw "PreviewOnly requires an explicit PreviewName." }
+if ($PreviewName -and -not $PreviewOnly) { throw "PreviewName is only valid with PreviewOnly." }
+if ($PreviewUxRevision -and -not $PreviewOnly) { throw "PreviewUxRevision is only valid with PreviewOnly." }
+$effectivePreviewUxRevision = if ($PreviewUxRevision) { $PreviewUxRevision } else { 'phase6f3-super-panel-final' }
 $packageManifest = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "package.json") | ConvertFrom-Json
 $productVersion = [string]$packageManifest.version
 $versionPattern = '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$'
@@ -30,21 +39,27 @@ if ($OutputDirectory) {
         throw "Release build output must stay within the repository-owned release work directory."
     }
 } else {
-    $releaseRoot = Join-Path $repoRoot "release\native-production-$stamp"
+    $outputPrefix = if ($PreviewOnly -and $PreviewName -eq 'WebTools-Phase6F3-Selection-Diagnostic-Preview') {
+        'phase6f3-selection-diagnostic-preview'
+    } elseif ($PreviewOnly) { "native-preview" } else { "native-production" }
+    $releaseRoot = Join-Path $repoRoot "release\$outputPrefix-$stamp"
 }
 $stageRoot = Join-Path $releaseRoot "stage"
-$hostStage = Join-Path $stageRoot "host"
+$applicationStage = Join-Path $stageRoot "application"
+$hostStage = $applicationStage
 $managerBuild = Join-Path $releaseRoot "manager-build"
-$managerStage = Join-Path $stageRoot "manager"
+$managerStage = Join-Path $applicationStage "Manager"
 $updaterStage = Join-Path $stageRoot "updater"
 $updateHelperExe = Join-Path $updaterStage "WebTools.UpdateHelper.exe"
-$installerName = if ($Channel -eq "stable") { "WebTools-Setup-$productVersion.exe" } else { "WebTools-Setup-$productVersion-$Channel.exe" }
+$installerName = if ($PreviewOnly) { "$PreviewName-Setup-$productVersion.exe" }
+    elseif ($Channel -eq "stable") { "WebTools-Setup-$productVersion.exe" }
+    else { "WebTools-Setup-$productVersion-$Channel.exe" }
 $installer = Join-Path $releaseRoot $installerName
 $smokeInstall = Join-Path $releaseRoot "smoke-install\WebTools Phase 4F 中文 空格"
 $testUninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WebToolsNativePhase4FTest"
 
 if (Test-Path -LiteralPath $releaseRoot) { throw "Refusing to reuse existing candidate directory: $releaseRoot" }
-if (Test-Path -LiteralPath $testUninstallKey) { throw "A stale Phase 4F smoke-install registry entry exists: $testUninstallKey" }
+if (-not $PreviewOnly -and (Test-Path -LiteralPath $testUninstallKey)) { throw "A stale Phase 4F smoke-install registry entry exists: $testUninstallKey" }
 
 if (-not $NodeExe) {
     $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
@@ -103,7 +118,10 @@ function Invoke-Nsis {
     if (-not $process) { throw "Could not start process: $FilePath" }
     $standardOutput = $process.StandardOutput.ReadToEndAsync()
     $standardError = $process.StandardError.ReadToEndAsync()
-    if (-not $process.WaitForExit(300000)) {
+    # The retained Round 2 solid-LZMA compile took over five minutes.
+    # Give only the compiler more time; installer execution retains its existing deadline.
+    $timeoutMilliseconds = if ([IO.Path]::GetFileName($FilePath).Equals('makensis.exe', [StringComparison]::OrdinalIgnoreCase)) { 900000 } else { 300000 }
+    if (-not $process.WaitForExit($timeoutMilliseconds)) {
         $process.Kill()
         throw "Process timed out: $FilePath $($ArgumentList -join ' ')"
     }
@@ -113,9 +131,12 @@ function Invoke-Nsis {
     }
 }
 
+if (-not $PreviewOnly) {
 Invoke-Checked $pnpmExe @("run", "typecheck")
 Invoke-Checked $pnpmExe @("test")
+}
 Invoke-Checked $pnpmExe @("run", "build")
+if (-not $PreviewOnly) {
 Invoke-Checked $DotnetExe @(
     "run", "--project", "native\WebTools.NativeHost.Checks\WebTools.NativeHost.Checks.csproj",
     "--configuration", "Release"
@@ -124,6 +145,7 @@ Invoke-Checked $DotnetExe @(
     "run", "--project", "native\WebTools.UpdateHelper.Checks\WebTools.UpdateHelper.Checks.csproj",
     "--configuration", "Release"
 )
+}
 
 Invoke-Checked $DotnetExe @(
     "publish", "native\WebTools.NativeHost\WebTools.NativeHost.csproj",
@@ -170,7 +192,23 @@ if ($managerVersion.FileVersion -notin $managerVersionForms -or $managerVersion.
     throw "Manager version metadata does not match product version $productVersion."
 }
 Copy-Item -Path (Join-Path $unpackedManager "*") -Destination $managerStage -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $repoRoot "resources\app.ico") -Destination (Join-Path $stageRoot "app.ico")
+Copy-Item -LiteralPath (Join-Path $repoRoot "resources\app.ico") -Destination (Join-Path $applicationStage "app.ico")
+
+if ($PreviewOnly) {
+    $previewHead = ((& git -C $repoRoot rev-parse HEAD) | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $previewHead -notmatch '^[a-fA-F0-9]{40}$') { throw "Could not identify preview source HEAD." }
+    $previewStatus = (& git -C $repoRoot status --porcelain) | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "Could not identify preview source status." }
+    $previewMetadata = [ordered]@{
+        productVersion = $productVersion
+        previewName = $PreviewName
+        gitHead = $previewHead
+        dirty = -not [string]::IsNullOrWhiteSpace($previewStatus)
+        buildTimestamp = [DateTime]::UtcNow.ToString('o')
+        superPanelUxRevision = $effectivePreviewUxRevision
+    } | ConvertTo-Json
+    [IO.File]::WriteAllText((Join-Path $applicationStage 'preview-build.json'), $previewMetadata + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+}
 
 $makensisCache = Join-Path $env:LOCALAPPDATA "electron-builder\Cache\nsis-3.0.4.1"
 $makensis = Get-ChildItem -LiteralPath $makensisCache -Recurse -Filter "makensis.exe" -ErrorAction SilentlyContinue |
@@ -183,12 +221,14 @@ $installerScriptText = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "n
 
 Push-Location $releaseRoot
 try {
-    Invoke-Nsis $makensis @(
+    $nsisArguments = @(
         "-DWEBTOOLS_PRODUCT_VERSION=$productVersion",
         "-DWEBTOOLS_FILE_VERSION=$windowsFileVersion",
-        "-DWEBTOOLS_CHANNEL=$Channel",
-        "native-production.nsi"
+        "-DWEBTOOLS_CHANNEL=$Channel"
     )
+    if ($PreviewOnly) { $nsisArguments += "-DWEBTOOLS_PREVIEW_NAME=$PreviewName" }
+    $nsisArguments += "native-production.nsi"
+    Invoke-Nsis $makensis $nsisArguments
 }
 finally { Pop-Location }
 
@@ -207,6 +247,7 @@ if ($installerVersion.ProductVersion -ne $productVersion) { throw "Installer ver
 
 # Exercise the complete previous-uninstall/new-install chain in a private registry
 # namespace. Fresh smoke installation alone cannot detect unwaited uninstallers.
+if (-not $PreviewOnly) {
 Invoke-Checked $NodeExe @(
     (Join-Path $repoRoot "scripts\verify-cover-install.mjs"), $updateHelperExe
 )
@@ -244,9 +285,20 @@ while (((Test-Path -LiteralPath $smokeInstall) -or (Test-Path -LiteralPath $test
 if ((Test-Path -LiteralPath $smokeInstall) -or (Test-Path -LiteralPath $testUninstallKey)) {
     throw "The isolated smoke installation did not clean up through its own uninstaller."
 }
+}
 
-Write-Output "Production candidate installer: $installer"
+if ($PreviewOnly) {
+    # Both artifacts consume this exact tree. No second Native publish/copy source is allowed.
+    $previewZip = Join-Path $releaseRoot ($PreviewName + '.zip')
+    Compress-Archive -Path (Join-Path $applicationStage '*') -DestinationPath $previewZip -CompressionLevel Optimal
+    Write-Output "Portable preview ZIP: $previewZip"
+    Write-Output "Canonical unpacked entry: $(Join-Path $applicationStage 'WebTools.NativeHost.exe')"
+    Write-Output "Build/packaging only: automated checks and installation smoke NOT RUN."
+}
+
+$installerLabel = if ($PreviewOnly) { "Local preview installer" } else { "Production candidate installer" }
+Write-Output "$($installerLabel): $installer"
 Write-Output "Product version: $productVersion ($Channel)"
 Write-Output "NativeHost staged path: $(Join-Path $hostStage 'WebTools.NativeHost.exe')"
 Write-Output "Manager staged path: $(Join-Path $managerStage 'WebTools.exe')"
-Write-Output "Unicode/space install and self-uninstall: PASS ($smokeInstall)"
+if (-not $PreviewOnly) { Write-Output "Unicode/space install and self-uninstall: PASS ($smokeInstall)" }

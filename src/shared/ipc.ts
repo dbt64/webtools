@@ -3,7 +3,8 @@ import type { AIProviderId } from './ai-config.ts'
 import type { TranslationProviderInfo, TranslationRequest, TranslationResult } from './translation-contracts.ts'
 import type { PluginApi } from './plugin-contracts.ts'
 import type { PluginCatalogApi } from './plugin-catalog-contracts.ts'
-import type { BuiltinTranslationHandoffProjection, ResolveTranslationHandoffRequest } from './builtin-translation-contracts.ts'
+import type { PluginDevelopmentApi } from './plugin-development-contracts.ts'
+import type { SuperPanelSettings, SuperPanelSettingsStatus } from './super-panel-settings.ts'
 
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -29,15 +30,21 @@ export interface AIProviderStatus {
 }
 
 export interface DesktopApi {
+  superPanel: {
+    get(): Promise<IpcResult<SuperPanelSettingsStatus>>
+    update(settings: SuperPanelSettings): Promise<IpcResult<SuperPanelSettingsStatus>>
+    onChanged(handler: (status: SuperPanelSettingsStatus) => void): () => void
+  }
   pluginCatalog: PluginCatalogApi
   plugins: PluginApi
-  builtinTranslationHandoff: {
-    get(): Promise<IpcResult<BuiltinTranslationHandoffProjection>>
-    resolve(request: ResolveTranslationHandoffRequest): Promise<IpcResult<BuiltinTranslationHandoffProjection>>
-  }
+  pluginDevelopment: PluginDevelopmentApi
+
   managerReady(): void
+  managerWindow: {
+    perform(action: ManagerWindowAction): Promise<IpcResult<{ maximized: boolean }>>
+  }
   onNativeManagerIntent(handler: (intent: NativeManagerIntent) => void): () => void
-  acknowledgeNativeManagerIntent(requestId: string): void
+  acknowledgeNativeManagerIntent(requestId: string, outcome?: 'accepted' | 'rejected'): void
   getVersion(): Promise<string>
   openWebsite(id: string): Promise<IpcResult<void>>
   getSettings(): Promise<AppSettings>
@@ -51,11 +58,7 @@ export interface DesktopApi {
   saveAIProviderKey(providerId: AIProviderId, apiKey: string): Promise<IpcResult<void>>
   clearAIProviderKey(providerId: AIProviderId): Promise<IpcResult<void>>
   getQwenRegions(): Promise<IpcResult<Array<{ id: string; label: string }>>>
-  getTranslationProviderInfo(): Promise<IpcResult<TranslationProviderInfo>>
-  translate(request: TranslationRequest): Promise<IpcResult<TranslationResult>>
-  cancelTranslation(requestId: string): Promise<IpcResult<{ cancelled: boolean }>>
-  testAIConnection(): Promise<IpcResult<{ providerName: string; model: string }>>
-  openGoogleTranslate(input: { text: string; targetLanguage: string }): Promise<IpcResult<void>>
+  testAIConnection(providerId?: AIProviderId): Promise<IpcResult<{ providerName: string; model: string }>>
   listWebsites(folderId?: string): Promise<WebsiteEntry[]>
   saveWebsite(input: WebsiteSaveInput): Promise<IpcResult<WebsiteEntry>>
   deleteWebsite(id: string): Promise<IpcResult<void>>
@@ -67,31 +70,52 @@ export interface DesktopApi {
   openEverythingResult(id: string): Promise<IpcResult<void>>
   detectEverything(): Promise<{ executablePath?: string; running: boolean; version?: string }>
   chooseEverythingPath(): Promise<string | null>
+  webRuntime: {
+    setBounds(bounds: { x: number; y: number; width: number; height: number }): void
+    close(generation: number): void
+    onState(handler: (state: { state: string; featureId?: string; pluginId?: string; pluginName?: string; errorCode?: string; generation: number }) => void): () => void
+  }
 }
+
+export type ManagerWindowAction = 'minimize' | 'toggle-maximize' | 'close'
 
 export type NativeManagerIntent =
   | { requestId: string; kind: 'open-plugin'; ref: import('./plugin-catalog-contracts.ts').PluginRef }
-  | { requestId: string; kind: 'open-page'; section: 'favorites' | 'entries' | 'settings' }
-  | { requestId: string; kind: 'translation-handoff' }
+  | { requestId: string; kind: 'select-plugin'; ref: import('./plugin-catalog-contracts.ts').PluginRef; section?: 'about' | 'settings' }
+  | { requestId: string; kind: 'open-feature'; ref: import('./feature-contracts.ts').FeatureRef }
+  | { requestId: string; kind: 'open-page'; section: 'favorites' | 'entries' | 'settings'; settingsSection?: 'super-panel' }
 
 export const IPC_CHANNELS = {
+  superPanelGet: 'settings:super-panel-get',
+  superPanelUpdate: 'settings:super-panel-update',
+  superPanelChanged: 'settings:super-panel-changed',
+  pluginDevelopmentGet: 'plugin-development:get',
+  pluginDevelopmentSetEnabled: 'plugin-development:set-enabled',
+  pluginDevelopmentConnect: 'plugin-development:connect-project',
+  pluginDevelopmentDisconnect: 'plugin-development:disconnect',
+  pluginDevelopmentOpen: 'plugin-development:open-feature',
+  pluginDevelopmentCopy: 'plugin-development:copy-diagnostics',
+  pluginDevelopmentChanged: 'plugin-development:changed',
   pluginCatalogList: 'plugin-catalog:list',
   pluginCatalogOpen: 'plugin-catalog:open',
   pluginCatalogSetEnabled: 'plugin-catalog:set-enabled',
   pluginCatalogRecoverBuiltin: 'plugin-catalog:recover-builtin-translation',
-  builtinTranslationHandoffGet: 'builtin-translation-handoff:get',
-  builtinTranslationHandoffResolve: 'builtin-translation-handoff:resolve',
   pluginList: 'plugins:list',
   pluginInstall: 'plugins:install-from-dialog',
   pluginSetEnabled: 'plugins:set-enabled',
+  pluginStopRuntime: 'plugins:stop-runtime',
   pluginSetGrants: 'plugins:set-grants',
   pluginGetPages: 'plugins:get-pages',
+  pluginConfigurationGet: 'plugins:configuration-get',
+  pluginConfigurationUpdate: 'plugins:configuration-update',
+  pluginConfigurationReset: 'plugins:configuration-reset',
   pluginInvoke: 'plugins:invoke',
   pluginAIReviewPrepare: 'plugins:ai-review-prepare',
   pluginAIReviewConfirm: 'plugins:ai-review-confirm',
   pluginAIReviewCancel: 'plugins:ai-review-cancel',
   pluginUninstall: 'plugins:uninstall',
   managerReady: 'window:manager-ready',
+  managerWindowAction: 'window:manager-action',
   nativeManagerIntent: 'native-manager:intent',
   acknowledgeNativeManagerIntent: 'native-manager:acknowledge-intent',
   getVersion: 'app:get-version',
@@ -107,11 +131,7 @@ export const IPC_CHANNELS = {
   saveAIProviderKey: 'ai:save-provider-key',
   clearAIProviderKey: 'ai:clear-provider-key',
   getQwenRegions: 'ai:qwen-regions',
-  getTranslationProviderInfo: 'translate:provider-info',
-  translate: 'translate:run',
-  cancelTranslation: 'translate:cancel',
   testAIConnection: 'ai:test-connection',
-  openGoogleTranslate: 'translate:open-google',
   listWebsites: 'websites:list',
   saveWebsite: 'websites:save',
   deleteWebsite: 'websites:delete',
@@ -123,4 +143,7 @@ export const IPC_CHANNELS = {
   openEverythingResult: 'everything:open',
   detectEverything: 'everything:detect',
   chooseEverythingPath: 'everything:choose-path',
+  webRuntimeSetBounds: 'web-runtime:set-bounds',
+  webRuntimeClose: 'web-runtime:close',
+  webRuntimeState: 'web-runtime:state',
 } as const

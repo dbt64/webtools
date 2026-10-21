@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PluginManager } from './plugin-manager.ts'
-import { manifest, packageBytes } from './fixtures.mjs'
+import { manifest, packageBytes, runtimeV3Manifest, runtimeV3Package, webManifest, webPackage } from './fixtures.mjs'
 async function setup(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'webtools-plugin-manager-')); t.after(() => rm(root, { recursive: true, force: true }))
   const effects = []; const prompts = []
@@ -15,6 +15,46 @@ const caps = ['manager.page', 'plugin.config.read', 'plugin.config.write', 'plug
 function allManifest(extra = {}) { return manifest({ requestedCapabilities: caps, settings: [{ key: 'label', label: 'Label', type: 'text', minLength: 0, maxLength: 32, default: 'hello' }], actions: [{ id: 'get', type: 'plugin.config.read', key: 'label' }, { id: 'set', type: 'plugin.config.write', key: 'label' }, { id: 'read', type: 'plugin.storage.read', key: 'saved' }, { id: 'write', type: 'plugin.storage.write', key: 'saved' }, { id: 'open', type: 'external.open', url: 'https://example.org/' }, { id: 'copy', type: 'clipboard.write' }, { id: 'ai', type: 'sharedAI.complete' }], ...extra }) }
 async function enabled(env, value = allManifest()) { const result = await env.manager.install(packageBytes(value), env.session); await env.manager.setEnabled(value.id, true, env.session); return (await env.manager.list())[0] }
 function request(p, actionId, input = null) { return { pluginId: p.id, version: p.version, hash: p.hash, actionId, input } }
+test('installed disable clears its temporary target synchronously before revoking authority', async t => {
+  const events = []
+  const env = await setup(t, { clearTemporaryWindowTarget: id => events.push(['clear', id]), closeFeatureWindows: async id => events.push(['close', id]) })
+  const m = runtimeV3Manifest()
+  await env.manager.install(runtimeV3Package(m), env.session)
+  await env.manager.setEnabled(m.id, true, env.session)
+  const dispatch = await env.manager.authorizeWebFeature({ pluginId: m.id, featureId: 'hello' }, env.session, authority => {
+    authority.onRevoke(() => events.push(['revoke', m.id]))
+  })
+  await dispatch.completion
+  events.length = 0
+  const disabled = env.manager.setEnabled(m.id, false, env.session)
+  assert.deepEqual(events[0], ['clear', m.id])
+  assert.ok(events.findIndex(item => item[0] === 'revoke') > 0)
+  await disabled
+  assert.ok(events.findIndex(item => item[0] === 'close') > events.findIndex(item => item[0] === 'revoke'))
+  env.manager.close()
+})
+
+test('Manager can stop installed plugin windows and commands without disabling the plugin', async t => {
+  const closed = []
+  const env = await setup(t, { closeFeatureWindows: async id => closed.push(id) })
+  const m = runtimeV3Manifest()
+  await env.manager.install(runtimeV3Package(m), env.session)
+  await env.manager.setEnabled(m.id, true, env.session)
+  let pendingAuthority
+  const ticket = await env.manager.authorizeWebFeature({ pluginId: m.id, featureId: 'hello' }, env.session, async authority => { pendingAuthority = authority })
+  await ticket.completion
+  const stopped = env.manager.stopRuntime(m.id, env.session)
+  assert.equal(pendingAuthority.isCurrent(), false, 'an activation waiting for old-window teardown must not recreate a stopped runtime')
+  assert.deepEqual(await stopped, { stopped: true })
+  assert.deepEqual(closed, [m.id])
+  assert.equal((await env.manager.list()).find(item => item.id === m.id).enabled, true)
+  const next = await env.manager.authorizeWebFeature({ pluginId: m.id, featureId: 'hello' }, env.session, async authority => {
+    assert.equal(authority.isCurrent(), true); authority.revoke()
+  })
+  await next.completion
+  await assert.rejects(env.manager.stopRuntime(m.id, 'stale'))
+  env.manager.close()
+})
 test('first install is disabled/ungranted and repeated identical import is idempotent', async t => {
   const env = await setup(t); const bytes = packageBytes()
   const first = await env.manager.install(bytes, env.session); assert.equal(first.plugin.enabled, false); assert.deepEqual(first.plugin.granted, [])
@@ -50,6 +90,42 @@ test('rejected adversarial packages leave installed registry, grants, and privat
   assert.deepEqual(await readdir(join(env.root, 'plugins', 'data')), dataFilesBefore)
   assert.deepEqual(await readdir(join(env.root, 'plugins', 'staging')), [])
   await assert.rejects(() => readFile(join(env.root, 'plugins', 'data', 'org.example.attack.json')), { code: 'ENOENT' })
+})
+test('retired v2 requires repack; authorized v3 replacement preserves private data without inheriting v1 grants', async t => {
+  const env = await setup(t)
+  const current = await enabled(env, allManifest({ id: 'org.example.preserved-v2' }))
+  await env.manager.invoke(request(current, 'write', { value: { sentinel: 'preserve' } }), env.session)
+
+  const registryPath = join(env.root, 'plugins', 'registry.json')
+  const dataPath = join(env.root, 'plugins', 'data', `${current.id}.json`)
+  const packageDirectory = join(env.root, 'plugins', 'packages', current.id, current.version)
+  const registryBefore = await readFile(registryPath)
+  const dataBefore = await readFile(dataPath)
+  const packagesBefore = await readdir(packageDirectory)
+  const rowsBefore = await env.manager.list()
+  const promptCount = env.prompts.length
+
+  const invalidUpdate = webPackage(webManifest({
+    id: current.id,
+    webBundle: { files: [] },
+  }))
+  await assert.rejects(() => env.manager.install(invalidUpdate, env.session), error => error.code === 'INVALID_FIELD')
+
+  assert.deepEqual(await env.manager.list(), rowsBefore)
+  assert.deepEqual(await readFile(registryPath), registryBefore)
+  assert.deepEqual(await readFile(dataPath), dataBefore)
+  assert.deepEqual(await readdir(packageDirectory), packagesBefore)
+  assert.deepEqual(await readdir(join(env.root, 'plugins', 'staging')), [])
+  assert.equal(env.prompts.length, promptCount, 'validation/rejection occurs before install consent')
+  assert.deepEqual((await env.manager.invoke(request(current, 'read'), env.session)).value, { sentinel: 'preserve' })
+  await assert.rejects(() => env.manager.install(webPackage(webManifest({ id: current.id, version: '2.0.0' })), env.session), error => error.code === 'INCOMPATIBLE_PLUGIN')
+  assert.deepEqual(await env.manager.list(), rowsBefore, 'retired v2 is not registered')
+  assert.deepEqual(await readFile(dataPath), dataBefore)
+  const replacement = await env.manager.install(runtimeV3Package(runtimeV3Manifest({ id: current.id, version: '2.0.0' })), env.session)
+  assert.equal(replacement.plugin.manifestVersion, 3)
+  assert.deepEqual(replacement.plugin.granted, [])
+  assert.deepEqual(await readFile(dataPath), dataBefore)
+  await assert.rejects(() => env.manager.getPages(current.id, env.session))
 })
 test('conflicting hash and downgrade require separate consent; upgrade retains rollback and data', async t => {
   const env = await setup(t); let p = await enabled(env)
@@ -112,12 +188,13 @@ test('pending upgrade cannot reactivate after disable or revoke intent, includin
   for (const mode of ['disable', 'revoke']) {
     const env = await setup(t); const p = await enabled(env); let consent; let releaseFlush; let flushCalls = 0
     env.deps.confirm = () => new Promise(resolve => { consent = resolve })
-    const upgrading = env.manager.install(packageBytes(allManifest({ version: '2.0.0' })), env.session); await until(() => consent)
+    const upgrading = env.manager.install(packageBytes(allManifest({ version: '2.0.0' })), env.session); upgrading.catch(() => {}); await until(() => consent)
     const flush = env.manager.store.flush.bind(env.manager.store)
-    env.manager.store.flush = async () => { if (++flushCalls === 2) await new Promise(resolve => { releaseFlush = resolve }); await flush() }
+    env.manager.store.flush = async () => { if (++flushCalls === 1) await new Promise(resolve => { releaseFlush = resolve }); await flush() }
     const stopping = mode === 'disable' ? env.manager.setEnabled(p.id, false, env.session) : env.manager.setGrants(p.id, ['manager.page'], env.session)
-    consent(true); await upgrading; await until(() => releaseFlush)
+    consent(true); await assert.rejects(upgrading, error => error.code === 'INTENT_SUPERSEDED'); await until(() => releaseFlush)
     const upgraded = (await env.manager.list())[0]
+    assert.equal(upgraded.version, '1.0.0', 'superseded replacement must retain the previous package')
     await assert.rejects(() => env.manager.invoke(request(upgraded, 'get'), env.session))
     assert.notEqual(upgraded.status, 'active')
     // Restoration is queued too; it must not reopen access after the stop commits.
@@ -191,10 +268,10 @@ test('compatible upgrade defaults, new capabilities require grants, and incompat
 test('disabling immediately blocks new calls even when another mutation waits for consent', async t => {
   const env = await setup(t); const p = await enabled(env); let release
   env.deps.confirm = () => new Promise(resolve => { release = resolve })
-  const install = env.manager.install(packageBytes(allManifest({ version: '2.0.0' })), env.session); await until(() => release)
+  const install = env.manager.install(packageBytes(allManifest({ version: '2.0.0' })), env.session); install.catch(() => {}); await until(() => release)
   const disable = env.manager.setEnabled(p.id, false, env.session)
   await assert.rejects(() => env.manager.invoke(request(p, 'get'), env.session))
-  release(true); await install; await disable
+  release(true); await assert.rejects(install, error => error.code === 'INTENT_SUPERSEDED'); await disable
   assert.equal((await env.manager.list())[0].enabled, false)
 })
 test('late configuration writes cannot bypass upgraded schema compatibility', async t => {
@@ -230,6 +307,61 @@ test('declarative pages project safe config values and declaration-bound action 
   assert.deepEqual(page.config, { label: 'saved value' })
   assert.ok(page.actions.some(action => action.id === 'set' && action.key === 'label'))
   assert.equal(JSON.stringify(page).includes(env.root), false)
+})
+
+test('Feature invocation revalidates current v1 page authority and dispatches only the validated route', async t => {
+  const env = await setup(t)
+  const plugin = await enabled(env, manifest({ id: 'org.example.feature-invoke', entry: { pageId: 'home', label: 'Current Home' } }))
+  const ref = { pluginId: plugin.id, featureId: 'legacy-manager-page' }
+  let dispatched
+  const ticket = await env.manager.authorizeAndDispatchFeature(ref, env.session, feature => {
+    dispatched = feature
+    return Promise.resolve()
+  })
+  await ticket.completion
+  assert.equal(dispatched.sourceKind, 'declarative')
+  assert.equal(dispatched.ref.pluginId, plugin.id)
+  assert.equal(dispatched.resolvedEntry.pageId, 'home')
+  assert.equal(dispatched.resolvedEntry.kind, 'declarative-compatibility')
+  await assert.rejects(() => env.manager.authorizeAndDispatchFeature({ ...ref, featureId: 'translate-text' }, env.session, () => Promise.resolve()), error => error.code === 'INVALID_INPUT')
+})
+
+test('stale Feature refs reject after disable, grant revoke, uninstall, or package integrity failure', async t => {
+  for (const mutation of ['disable', 'revoke', 'uninstall', 'integrity']) {
+    const env = await setup(t)
+    const plugin = await enabled(env, manifest({ id: `org.example.stale${mutation}` }))
+    const ref = { pluginId: plugin.id, featureId: 'legacy-manager-page' }
+    if (mutation === 'disable') await env.manager.setEnabled(plugin.id, false, env.session)
+    if (mutation === 'revoke') await env.manager.setGrants(plugin.id, [], env.session)
+    if (mutation === 'uninstall') await env.manager.uninstall(plugin.id, env.session)
+    if (mutation === 'integrity') await writeFile(join(env.root, 'plugins', 'packages', plugin.id, plugin.version, `${plugin.hash}.wtplugin`), 'tampered')
+    let dispatchCount = 0
+    await assert.rejects(() => env.manager.authorizeAndDispatchFeature(ref, env.session, () => { dispatchCount++; return Promise.resolve() }))
+    assert.equal(dispatchCount, 0, `${mutation} must not invoke a stale route`)
+  }
+})
+
+test('a permission change during integrity revalidation blocks dispatch before the serialized boundary releases', async t => {
+  const env = await setup(t)
+  const plugin = await enabled(env, manifest({ id: 'org.example.feature-race' }))
+  const originalRead = env.manager.fs.read.bind(env.manager.fs)
+  let reachedRead
+  let releaseRead
+  const readReached = new Promise(resolve => { reachedRead = resolve })
+  const readGate = new Promise(resolve => { releaseRead = resolve })
+  let pause = true
+  env.manager.fs.read = async (...args) => {
+    if (pause && args[0].startsWith(`packages/${plugin.id}/`)) { pause = false; reachedRead(); await readGate }
+    return originalRead(...args)
+  }
+  let dispatchCount = 0
+  const invocation = env.manager.authorizeAndDispatchFeature({ pluginId: plugin.id, featureId: 'legacy-manager-page' }, env.session, () => { dispatchCount++; return Promise.resolve() })
+  await readReached
+  const revoke = env.manager.setGrants(plugin.id, [], env.session)
+  releaseRead()
+  await assert.rejects(invocation)
+  await revoke
+  assert.equal(dispatchCount, 0)
 })
 
 test('AI review returns the complete exact request and only confirms once through Main', async t => {

@@ -4,11 +4,12 @@ import { createDefaultAppData, DEFAULT_SEARCH_ENGINES, type AppData, type AppSet
 import { sanitizeAppSearchMemory } from '../../src/shared/app-search-memory.ts'
 import { normalizeSharedAISettings } from '../../src/shared/ai-config.ts'
 import { normalizeTranslationSettings } from '../../src/shared/translation-contracts.ts'
+import { normalizeTranslation2WorkspaceSettings } from '../../src/shared/translation2-contracts.ts'
 import { normalizeWebsiteOrderByCollection } from './website-order.ts'
 
 type LegacyV2AppData = Omit<AppData, 'settings' | 'appSearchMemory' | 'websiteOrderByCollection'> & { appSearchMemory?: unknown; websiteOrderByCollection?: unknown } & {
-  settings: Omit<AppSettings, 'theme' | 'launcherDisplayMode' | 'sharedAI' | 'translation'>
-    & Partial<Pick<AppSettings, 'theme' | 'launcherDisplayMode' | 'sharedAI' | 'translation'>>
+  settings: Omit<AppSettings, 'theme' | 'launcherDisplayMode' | 'sharedAI' | 'translation' | 'translation2'>
+    & Partial<Pick<AppSettings, 'theme' | 'launcherDisplayMode' | 'sharedAI' | 'translation' | 'translation2'>>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
@@ -49,6 +50,7 @@ function normalizeV2(input: LegacyV2AppData): AppData {
       launcherDisplayMode: input.settings.launcherDisplayMode ?? 'compact',
       sharedAI: normalizeSharedAISettings(input.settings.sharedAI, input.settings.aiBaseUrl, input.settings.aiModel),
       translation: normalizeTranslationSettings(input.settings.translation),
+      translation2: normalizeTranslation2WorkspaceSettings(input.settings.translation2),
     },
   }
 }

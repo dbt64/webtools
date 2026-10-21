@@ -1,6 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { SharedAIService } from './shared-ai-service.ts'
+import { completeSharedAIForWeb } from '../plugins/web-host-capabilities.ts'
+test('Web adapter receives provider output usage internally while keeping provider identity out of its result', async () => {
+  const adapter = { complete: async request => { assert.equal(request.maxOutputTokens, 1024); request.onOutputTokens(1025); return 'short' } }
+  const service = new SharedAIService({ dataStore: { snapshot: () => ({ settings: { sharedAI: { defaultProviderId: 'openai', providers: { openai: { model: 'test' } } } } }) },
+    credentials: { get: async () => 'synthetic-test-only' }, openAICompatibleAdapter: adapter, anthropicAdapter: adapter })
+  assert.deepEqual(await completeSharedAIForWeb(service, 'safe', new AbortController().signal), { text: 'short', outputTokens: 1025 })
+})
 
 function setup(sharedAI, credentials = { get: async (provider) => `${provider}-secret` }) {
   const calls = []

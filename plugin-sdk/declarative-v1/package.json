@@ -1,8 +1,8 @@
 {
   "name": "@webtools/plugin-sdk",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Local authoring SDK and validator for WebTools declarative plugins",
+  "version": "1.8.0",
+  "license": "MIT",
+  "description": "Public SDK and authoring tools for WebTools Manifest v1 and v3 plugins",
   "type": "module",
   "packageManager": "pnpm@9.15.9",
   "engines": { "node": ">=20.19" },
@@ -10,9 +10,15 @@
   "types": "types.d.ts",
   "exports": {
     ".": { "types": "./types.d.ts", "import": "./index.mjs" },
+    "./web": { "types": "./web/index.d.ts", "import": "./web/index.mjs" },
+    "./theme.css": "./web/theme.css",
+    "./node": { "types": "./node.d.mts", "import": "./node.mjs", "require": "./node.cjs" },
+    "./manifest": { "types": "./runtime-v3/manifest-v3.d.mts", "import": "./runtime-v3/manifest-v3.mjs" },
+    "./runtime-target.json": "./runtime-target.json",
+    "./manifest.schema.v3.json": "./manifest.schema.v3.json",
     "./manifest.schema.json": "./manifest.schema.json",
     "./package.json": "./package.json"
   },
-  "files": ["bin", "src", "runtime", "types.d.ts", "manifest.schema.json", "index.mjs", "README.md"],
+  "files": ["bin", "src", "runtime", "runtime-v3", "web", "types.d.ts", "node.mjs", "node.cjs", "node.d.mts", "runtime-target.json", "manifest.schema.json", "manifest.schema.v3.json", "index.mjs", "README.md"],
   "dependencies": { "yauzl": "3.4.0" }
 }

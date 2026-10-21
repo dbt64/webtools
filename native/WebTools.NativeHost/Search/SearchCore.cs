@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using WebTools.NativeHost.Data;
@@ -13,17 +14,31 @@ public sealed class SearchCore
     private const int MaximumPinyinAliasRunes = 128;
     private readonly IndexedEntry[] _apps;
     private readonly IndexedEntry[] _websites;
+    private readonly IndexedEntry[] _pluginFeatures;
     private readonly Dictionary<string, AppSearchMemoryRecord> _remembered = new(StringComparer.Ordinal);
 
-    public SearchCore(IEnumerable<SearchEntry> apps, IEnumerable<SearchEntry> websites, IEnumerable<AppSearchMemoryRecord>? remembered = null)
+    public SearchCore(
+        IEnumerable<SearchEntry> apps,
+        IEnumerable<SearchEntry> websites,
+        IEnumerable<AppSearchMemoryRecord>? remembered = null,
+        IEnumerable<SearchEntry>? pluginFeatures = null)
     {
         _apps = apps.Select((entry, index) => new IndexedEntry(entry, index)).ToArray();
         _websites = websites.Select((entry, index) => new IndexedEntry(entry, _apps.Length + index)).ToArray();
+        _pluginFeatures = (pluginFeatures ?? []).Where(entry => entry.Kind == ResultKind.PluginFeature && entry.FeatureRef is not null)
+            .Select((entry, index) => new IndexedEntry(entry, index)).ToArray();
         foreach (var item in (remembered ?? []).Where(IsValidMemoryEntry).OrderByDescending(item => item.LastUsedAt).Take(100))
             _remembered[item.Query] = item;
     }
 
     public int IndexedCount => _apps.Length + _websites.Length;
+    public int IndexedFeatureCount => _pluginFeatures.Length;
+
+    public IReadOnlyList<SearchResult> GetEmptyQueryPluginFeatures() => _pluginFeatures
+        .OrderBy(item => item.Entry.FeatureRef is { PluginId: "webtools.translation", FeatureId: "translate-text" } ? 0 : 1)
+        .Take(6)
+        .Select(item => FeatureResult(item.Entry, int.MaxValue, MatchKind.Name))
+        .ToArray();
 
     public IReadOnlyList<SearchResult> Search(SearchCommand command, string? rememberedAppId = null)
     {
@@ -67,7 +82,20 @@ public sealed class SearchCore
                 item.match!.Value.Rank, item.match.Value.Kind, action, entry.IconReference);
         }).ToList();
 
-        if (command.Mode == SearchMode.Local && IsTranslationCandidate(command.Raw))
+        if (command.Mode == SearchMode.Local)
+        {
+            var featureMatches = _pluginFeatures
+                .Select(indexed => (indexed, match: Score(indexed, normalized, tokens)))
+                .Where(item => item.match is not null)
+                .OrderBy(item => item.match!.Value.Rank)
+                .ThenBy(item => item.indexed.Entry.Name, Comparer<string>.Create((a, b) => ChineseCompare.Compare(a, b, CompareOptions.None)))
+                .ThenBy(item => item.indexed.Order)
+                .Take(6);
+            results.AddRange(featureMatches.Select(item => FeatureResult(item.indexed.Entry, item.match!.Value.Rank, item.match.Value.Kind)));
+        }
+
+        var translationFeatureShown = results.Any(result => result.Action is OpenPluginFeatureAction { Ref.PluginId: "webtools.translation", Ref.FeatureId: "translate-text" });
+        if (command.Mode == SearchMode.Local && IsTranslationCandidate(command.Raw) && !translationFeatureShown)
             results.Add(TranslationResult(command.Raw));
         if (command.Mode == SearchMode.Local && !string.IsNullOrWhiteSpace(command.Query))
             results.Add(SearchFilesResult(command.Raw));
@@ -106,6 +134,11 @@ public sealed class SearchCore
 
     private static SearchResult TranslationResult(string raw) => new("translation", ResultKind.Translation, "翻译", $"翻译“{raw.Trim()}”",
         int.MaxValue, MatchKind.Name, new OpenTranslationAction(raw));
+
+    private static SearchResult FeatureResult(SearchEntry entry, int rank, MatchKind match) => new(
+        entry.Id, ResultKind.PluginFeature, entry.Name, entry.Subtitle, rank, match,
+        new OpenPluginFeatureAction(entry.FeatureRef ?? throw new InvalidDataException("Feature search entry has no FeatureRef.")),
+        IconReference: entry.IconReference, IconToken: entry.IconToken, Group: ResultGroup.PluginFeatures);
 
     private static SearchResult SearchFilesResult(string query) => new("search-files", ResultKind.SearchFiles, "搜索文件", $"搜索文件“{query.Trim()}”",
         int.MaxValue, MatchKind.Name, new SearchFilesAction(query));

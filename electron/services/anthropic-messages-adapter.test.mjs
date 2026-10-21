@@ -1,6 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { AnthropicMessagesAdapter } from './anthropic-messages-adapter.ts'
+test('internal output-token observer receives Anthropic output usage without altering existing text results', async () => {
+  let observed
+  const adapter = new AnthropicMessagesAdapter(async () => new Response(JSON.stringify({ content: [{ type: 'text', text: 'short' }], usage: { output_tokens: 1025 } })))
+  assert.equal(await adapter.complete({ endpoint: new URL('https://example.test'), apiKey: 'isolated', model: 'test', messages: [{ role: 'user', content: 'safe' }],
+    signal: new AbortController().signal, maxOutputTokens: 1024, onOutputTokens: tokens => { observed = tokens } }), 'short')
+  assert.equal(observed, 1025)
+})
 
 test('uses Anthropic Messages headers and maps system instructions to the top-level field', async () => {
   let captured

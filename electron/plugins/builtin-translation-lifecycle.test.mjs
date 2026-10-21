@@ -10,6 +10,17 @@ function createLifecycle(store, cancelTranslation = () => {}) {
 
 const ready = enabled => ({ status: 'ready', enabled, source: 'stored' })
 
+test('closing the Translation window cancels work and invalidates results while preserving enabled state', async () => {
+  let cancelled = 0
+  const lifecycle = createLifecycle({ load: async () => ready(true) }, () => { cancelled++ })
+  await lifecycle.initialize()
+  const generation = lifecycle.generation
+  lifecycle.closeWindow()
+  assert.equal(cancelled, 1)
+  assert.equal(lifecycle.isGenerationCurrent(generation), false)
+  assert.equal(lifecycle.isEnabled(), true)
+})
+
 test('disable closes Main admission and cancels Translation only before persistent IO settles', async () => {
   let finishWrite
   let cancelled = 0
@@ -120,4 +131,30 @@ test('Manager session invalidation rejects an old toggle and does not change cur
   await assert.rejects(operation, { code: 'SESSION_EXPIRED' })
   assert.equal(lifecycle.isEnabled(), true)
   assert.equal(lifecycle.snapshot().status, 'ready')
+})
+
+test('stable Translation state changes notify derived Feature readers after commit or fail-closed completion', async () => {
+  let fail = false
+  const store = {
+    load: async () => ready(true),
+    setEnabled: async (_id, enabled) => {
+      if (fail) throw Object.assign(new Error('write failed'), { code: 'STATE_WRITE_FAILED' })
+      return ready(enabled)
+    },
+    recoverToDefault: async () => ready(true),
+  }
+  const lifecycle = createLifecycle(store)
+  const notifications = []
+  const dispose = lifecycle.subscribeFeatureStateChanged(() => notifications.push(lifecycle.isEnabled()))
+  await lifecycle.initialize()
+  assert.deepEqual(notifications, [])
+  await lifecycle.setEnabled(false)
+  assert.deepEqual(notifications, [false])
+  fail = true
+  await assert.rejects(lifecycle.setEnabled(true), { code: 'STATE_WRITE_FAILED' })
+  assert.deepEqual(notifications, [false, false])
+  dispose()
+  fail = false
+  await lifecycle.setEnabled(true)
+  assert.deepEqual(notifications, [false, false])
 })

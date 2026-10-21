@@ -12,9 +12,11 @@ export interface AICompletionRequest {
   messages: AIMessage[]
   signal: AbortSignal
   maxOutputTokens?: number
+  /** Main-only observer; never serialized or exposed to a Plugin. */
+  onOutputTokens?: (tokens: number | null) => void
 }
 
-import { assertNoRedirect, getAIProviderHttpError, normalizeAITransportError, parseAIResponseJson } from './ai-provider-errors.ts'
+import { assertNoRedirect, getAIProviderHttpError, normalizeAITransportError, parseAIResponseJson, extractOutputTokens } from './ai-provider-errors.ts'
 
 interface ChatCompletionResponse {
   choices?: Array<{ message?: { content?: unknown } }>
@@ -68,6 +70,7 @@ export class OpenAICompatibleAdapter {
     const payload = await parseAIResponseJson(response)
     const text = extractOpenAICompatibleText(payload)
     if (!text) throw new Error('AI 服务没有返回文本内容。')
+    request.onOutputTokens?.(extractOutputTokens(payload, 'completion_tokens'))
     return text
   }
 }

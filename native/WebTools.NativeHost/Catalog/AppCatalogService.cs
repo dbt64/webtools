@@ -32,6 +32,7 @@ public sealed class AppCatalogService
     private IReadOnlyDictionary<string, CatalogApp> _byId = new Dictionary<string, CatalogApp>();
 
     public IReadOnlyList<CatalogApp> Apps => _apps;
+    public int Revision { get; private set; }
     public bool Ready { get; private set; }
     public StartAppDiscoveryStatus StartAppDiscovery => _source.StartAppDiscovery;
 
@@ -39,18 +40,54 @@ public sealed class AppCatalogService
     {
         if (apps is null || apps.Count > 6000 || apps.Any(app => !IsValidSnapshotApp(app)) || apps.Select(app => app.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() != apps.Count)
             throw new InvalidDataException("Application catalog snapshot is invalid.");
-        _apps = apps.ToArray();
+        var next = apps.ToArray();
+        if (!SameCatalog(_apps, next)) Revision++;
+        _apps = next;
         _byId = _apps.ToDictionary(app => app.Id, StringComparer.OrdinalIgnoreCase);
         Ready = true;
     }
 
-    public async Task RefreshAsync(CancellationToken cancellationToken = default)
+    public async Task<bool> RefreshQuickAsync(CancellationToken cancellationToken = default)
+    {
+        var records = await Task.Run(() => _source.ListFast(cancellationToken), cancellationToken);
+        // Put fresh indexed sources first so the bounded merge cannot truncate newly installed apps
+        // behind a full cached catalog. Keep deep-only shortcut records until the next full refresh.
+        var merged = Merge(records.Concat(_apps.Select(ToRecord)));
+        return Replace(merged);
+    }
+
+    public async Task<bool> RefreshAsync(CancellationToken cancellationToken = default)
     {
         var records = await Task.Run(() => _source.List(cancellationToken), cancellationToken);
         var merged = Merge(records);
-        _apps = merged;
-        _byId = merged.ToDictionary(app => app.Id);
+        return Replace(merged);
+    }
+
+    private bool Replace(IReadOnlyList<CatalogApp> next)
+    {
+        var changed = !SameCatalog(_apps, next);
+        if (changed)
+        {
+            _apps = next;
+            _byId = next.ToDictionary(app => app.Id, StringComparer.OrdinalIgnoreCase);
+            Revision++;
+        }
         Ready = true;
+        return changed;
+    }
+
+    private static AppRecord ToRecord(CatalogApp app) => new(app.Name, app.Aliases, app.Source, app.Target);
+
+    private static bool SameCatalog(IReadOnlyList<CatalogApp> left, IReadOnlyList<CatalogApp> right)
+    {
+        if (left.Count != right.Count) return false;
+        for (var index = 0; index < left.Count; index++)
+        {
+            var a = left[index]; var b = right[index];
+            if (a.Id != b.Id || a.Name != b.Name || a.Source != b.Source || a.IconReference != b.IconReference
+                || !a.Aliases.SequenceEqual(b.Aliases, StringComparer.Ordinal) || a.Target != b.Target) return false;
+        }
+        return true;
     }
 
     public CatalogApp? Find(string id) => _byId.GetValueOrDefault(id);
@@ -64,26 +101,44 @@ public sealed class AppCatalogService
             var id = GetMergeId(record, sourceRecords);
             if (merged.TryGetValue(id, out var existing))
             {
+                var target = existing.Target;
+                var iconReference = existing.IconReference;
+                if (!GetId(target).Equals(id, StringComparison.OrdinalIgnoreCase)
+                    && GetId(record.Target).Equals(id, StringComparison.OrdinalIgnoreCase))
+                {
+                    target = record.Target;
+                    iconReference = GetIconReference(target);
+                }
+                var preferNewName = DisplayNamePriority(record.Source) > DisplayNamePriority(existing.Source);
                 merged[id] = existing with
                 {
-                    Aliases = existing.Aliases.Concat([record.Name]).Concat(record.Aliases).Distinct(StringComparer.Ordinal).ToArray(),
+                    Name = preferNewName ? record.Name : existing.Name,
+                    Aliases = existing.Aliases.Concat([existing.Name, record.Name]).Concat(record.Aliases)
+                        .Where(alias => !string.IsNullOrWhiteSpace(alias))
+                        .Distinct(StringComparer.Ordinal).OrderBy(alias => alias, StringComparer.Ordinal).ToArray(),
+                    Source = preferNewName ? record.Source : existing.Source,
+                    Target = target,
+                    IconReference = iconReference,
                 };
                 continue;
             }
-            var icon = record.Target switch
-            {
-                ShortcutTarget shortcut => shortcut.ShortcutPath,
-                ExecutableTarget executable => executable.Path,
-                PackagedTarget packaged => "appx:" + packaged.AppId,
-                AppFolderTarget appFolder => !string.IsNullOrWhiteSpace(appFolder.TargetPath) && File.Exists(appFolder.TargetPath) ? appFolder.TargetPath : null,
-                SystemTarget system => SystemIconPath(system.App),
-                _ => null,
-            };
-            merged.Add(id, new CatalogApp(id, record.Name, record.Aliases.Distinct(StringComparer.Ordinal).ToArray(), record.Source, record.Target, icon));
+            var icon = GetIconReference(record.Target);
+            merged.Add(id, new CatalogApp(id, record.Name,
+                record.Aliases.Distinct(StringComparer.Ordinal).OrderBy(alias => alias, StringComparer.Ordinal).ToArray(),
+                record.Source, record.Target, icon));
         }
         var compare = System.Globalization.CultureInfo.GetCultureInfo("zh-CN").CompareInfo;
-        return merged.Values.OrderBy(record => record.Name, Comparer<string>.Create((a, b) => compare.Compare(a, b))).ToArray();
+        return merged.Values
+            .OrderBy(record => record.Name, Comparer<string>.Create((a, b) => compare.Compare(a, b)))
+            .ThenBy(record => record.Id, StringComparer.Ordinal)
+            .ToArray();
     }
+
+    private static int DisplayNamePriority(string source) => source switch
+    {
+        "start-apps" or "packaged" => 2,
+        _ => 1,
+    };
 
     private static string PathKey(string path, string args, string cwd)
     {
@@ -92,6 +147,16 @@ public sealed class AppCatalogService
         // Matches Electron's JSON.stringify([args,cwd]) for ordinary Windows path text.
         return $"path:{normalizedPath}:{System.Text.Json.JsonSerializer.Serialize(new[] { args, cwd.ToLowerInvariant() }, new System.Text.Json.JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping })}";
     }
+
+    private static string? GetIconReference(AppLaunchTarget target) => target switch
+    {
+        ShortcutTarget shortcut => shortcut.ShortcutPath,
+        ExecutableTarget executable => executable.Path,
+        PackagedTarget packaged => "appx:" + packaged.AppId,
+        AppFolderTarget appFolder => !string.IsNullOrWhiteSpace(appFolder.TargetPath) && File.Exists(appFolder.TargetPath) ? appFolder.TargetPath : null,
+        SystemTarget system => SystemIconPath(system.App),
+        _ => null,
+    };
 
     public static string GetId(AppLaunchTarget target)
     {

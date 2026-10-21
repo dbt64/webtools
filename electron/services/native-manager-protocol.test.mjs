@@ -3,6 +3,12 @@ import test from 'node:test'
 
 const protocol = await import('./native-manager-protocol.ts').catch(() => null)
 
+test('Quick Result wire decoding rejects escaped duplicate fields before JSON.parse loses them', () => {
+  const raw = '{"protocolVersion":1,"requestId":"wire","type":"feature-result-cancel-v1","payload":{"requestId":"a","\\u0072equestId":"b","ref":{}}}'
+  const bytes = Buffer.from(raw); const frame = Buffer.alloc(bytes.length + 4); frame.writeUInt32LE(bytes.length); bytes.copy(frame, 4)
+  assert.throws(() => new protocol.ProtocolFrameDecoder().push(frame), /duplicate/)
+})
+
 test('native manager protocol frames messages across partial reads and rejects oversized frames', () => {
   assert.ok(protocol, 'native manager protocol module is available')
   if (!protocol) return

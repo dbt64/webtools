@@ -1,4 +1,4 @@
-import type { PluginCapability, PluginVersionChangeKind } from '../../src/shared/plugin-contracts.ts'
+import type { InstalledPluginCapability as PluginCapability, PluginVersionChangeKind } from '../../src/shared/plugin-contracts.ts'
 import type { PluginConsent } from './permission-broker.ts'
 
 const capabilityNames: Record<PluginCapability, string> = {
@@ -7,9 +7,11 @@ const capabilityNames: Record<PluginCapability, string> = {
   'plugin.config.write': '保存插件设置',
   'plugin.storage.read': '读取插件私有数据',
   'plugin.storage.write': '保存插件私有数据',
-  'external.open': '打开插件声明的网址',
+  'external.open': '通过系统浏览器打开 HTTP(S) 链接',
   'clipboard.write': '写入剪贴板',
   'sharedAI.complete': '使用共享 AI',
+  'clipboard.read': '仅在原生操作后接收一次剪贴板文本',
+  'network.domains': '访问声明的网络域名（当前不支持）',
 }
 
 const changeNames: Record<PluginVersionChangeKind, string> = {
@@ -26,6 +28,10 @@ function capabilityList(values: PluginCapability[]): string {
 /** Human-readable details for the Main-owned native consent prompt. */
 export function formatPluginConsentDetail(request: PluginConsent): string {
   const lines = [`${request.name}（${request.pluginId}）`]
+  if (request.manifestVersion === 3 && request.runtimeKind === 'node') {
+    lines.push('本地代码信任：此插件会在当前 Windows 用户身份下运行 Node.js 代码，可使用 Node.js、npm 依赖、文件系统和子进程访问该用户本来可访问的资源。WebTools 不提供 OS 级隔离。')
+    lines.push('WebTools 边界：此信任不会授予 Manager 私有 IPC、Shared AI 原始凭据、SecretStore 或 NativeHost 特权接口。')
+  }
   const change = request.versionChange
   if (change) {
     lines.push(`当前版本：${change.currentVersion ?? '未安装'}`)
