@@ -75,6 +75,90 @@ export interface PluginManifestV2 {
   network: { mode: 'none'; domains: [] } | { mode: 'domains'; domains: Array<{ host: string; protocol: 'https' | 'wss' }> }
 }
 
+/** Manifest v3 is the production Web/Node package contract; Host install-time validation remains authoritative. */
+export type PluginCapabilityV3 = Exclude<PluginCapabilityV2, 'network.domains'> | 'manager.page' | 'clipboard.read'
+export type PluginRuntimeKindV3 = 'web' | 'node'
+export interface PluginRuntimeCompatibilityV3 {
+  platforms: Array<'win32' | 'darwin' | 'linux'>
+  architectures: Array<'x64' | 'arm64' | 'ia32'>
+  nodeAbi?: string
+}
+export type PluginRuntimeFileRoleV3 = 'web' | 'node-preload' | 'node-command' | 'dependency' | 'native-addon' | 'helper' | 'library' | 'resource'
+export type PluginRuntimeMediaTypeV3 = 'text/html' | 'text/javascript' | 'text/css' | 'application/json' | 'application/wasm' | 'image/png' | 'image/jpeg' | 'image/webp' | 'font/woff2' | 'application/octet-stream'
+export interface PluginRuntimeFileV3 { path: string; role: PluginRuntimeFileRoleV3; mediaType: PluginRuntimeMediaTypeV3; dependency?: string }
+export interface PluginDependencyV3 { name: string; version: string; files: string[] }
+export interface PluginManifestV3 {
+  manifestVersion: 3
+  id: string
+  name: string
+  description: string
+  author: { name: string; url?: string }
+  version: string
+  api: { apiMajor: 1; minHostVersion: string }
+  type: 'plugin'
+  requestedCapabilities: PluginCapabilityV3[]
+  configuration?: import('./runtime-v3/configuration.mjs').PluginConfiguration
+  runtime: { kind: PluginRuntimeKindV3; preload?: string }
+  compatibility: PluginRuntimeCompatibilityV3
+  features: Array<{
+    id: string; title: string; description?: string; commands?: string[]
+    icon?: { kind: 'host'; key: 'sparkles' | 'document' | 'globe' | 'translate' } | { kind: 'asset'; path: string }
+    acceptedContexts?: Array<import('./runtime-v3/manifest-v3.mjs').AcceptedContextV3>
+    entry: { kind: 'web-bundle'; document: string } | { kind: 'node-command'; module: string }
+    presentation?: import('./runtime-v3/manifest-v3.mjs').FeaturePresentationV3
+    requiredCapabilities?: PluginCapabilityV3[]
+  }>
+  runtimeFiles: PluginRuntimeFileV3[]
+  dependencies: PluginDependencyV3[]
+  package: { format: 'wtplugin'; packageVersion: 1; metadata?: Record<string, never> }
+}
+export type ManifestV3 = PluginManifestV3
+export interface PluginRuntimePaths {
+  readonly packageDirectory: string
+  readonly localDataDirectory: string
+}
+export declare function getPluginPaths(preloadDirectory: string): PluginRuntimePaths
+export type PluginDiagnosticCodeV3 =
+  | 'INVALID_PLUGIN_ID' | 'UNSUPPORTED_MANIFEST_VERSION' | 'INVALID_MANIFEST' | 'UNKNOWN_FIELD'
+  | 'INVALID_FIELD' | 'INCOMPATIBLE_HOST' | 'INCOMPATIBLE_PLUGIN' | 'INVALID_CAPABILITY'
+  | 'INVALID_PATH' | 'INVENTORY_MISMATCH' | 'UNSUPPORTED_FILE_TYPE' | 'PACKAGE_LIMIT_EXCEEDED'
+  | 'UNSAFE_ARCHIVE' | 'SOURCE_IO' | 'INVALID_PACKAGE' | 'OUTPUT_EXISTS' | 'OUTPUT_IO'
+  | 'DEPENDENCY_NOT_FOUND' | 'DEPENDENCY_INVALID' | 'UNSAFE_DEPENDENCY_LINK' | 'DEPENDENCY_COLLISION'
+  | 'NATIVE_ABI_MISMATCH' | 'NATIVE_ARCH_MISMATCH'
+  | 'BUILD_PROJECT_PATH' | 'BUILD_INPUT_MISSING' | 'BUILD_INPUT_INVALID' | 'BUILD_SYMLINK'
+  | 'BUILD_SPECIAL_FILE' | 'BUILD_OUTPUT_PATH' | 'BUILD_VITE_MISSING' | 'BUILD_TYPESCRIPT_MISSING'
+  | 'BUILD_PRELOAD_CONFIG' | 'BUILD_PRELOAD_FAILED' | 'BUILD_PRELOAD_MISSING' | 'BUILD_WEB_FAILED'
+  | 'BUILD_MANIFEST_VERSION' | 'BUILD_MANIFEST_INVALID' | 'BUILD_MEDIA_TYPE' | 'BUILD_OUTPUT_UNEXPECTED'
+  | 'BUILD_MISSING_PRELOAD' | 'BUILD_MISSING_ENTRY' | 'MISSING_PRELOAD' | 'MISSING_RUNTIME_ENTRY'
+  | 'DEV_SERVER_FAILED' | 'DEV_JSON_UNSUPPORTED' | 'DEV_WATCH_UNAVAILABLE' | 'CLI_USAGE'
+export type PluginDeveloperDiagnostic = {
+  readonly code: PluginDiagnosticCodeV3
+  readonly path?: string
+  readonly field?: string
+  readonly message: string
+  readonly likelyCause?: string
+  readonly suggestion: string
+}
+export interface PluginArchiveSummaryV3 {
+  valid: true; manifest: DeepReadonly<PluginManifestV3>; size: number; sha256: string; runtimeSupport: 'runtime-v3'
+}
+export interface PluginValidationResultV3 { valid: true; manifest: DeepReadonly<PluginManifestV3>; warnings: readonly { code: string; dependency?: string }[] }
+export interface PluginPackResultV3 extends PluginArchiveSummaryV3 { warnings: readonly { code: string; dependency?: string }[] }
+export declare class ManifestV3ValidationError extends Error { readonly code: string }
+export interface PluginPackageSourceOptions {
+  /** Runtime dependencies are resolved from this project root while packaged files are read from sourceDirectory. */
+  readonly projectRoot?: string
+  /** Compatibility profile of the intended WebTools host. The Host checks independently during installation. */
+  readonly host?: { readonly platform?: string; readonly architecture?: string; readonly nodeAbi?: string }
+}
+export declare const MANIFEST_VERSION_V3: 3
+export declare const LIMITS_V3: Readonly<Record<string, number>>
+export declare function parseManifestV3(source: Uint8Array, hostVersion: string, host?: { platform?: string; architecture?: string; nodeAbi?: string }): Readonly<{ manifest: PluginManifestV3 }>
+/** Advisory package preflight. Electron Main remains the final validation and install authority. */
+export declare function validatePluginArchiveV3(bytes: Uint8Array, hostVersion: string, host?: { platform?: string; architecture?: string; nodeAbi?: string }): Promise<PluginArchiveSummaryV3>
+export declare function validatePluginSourceV3(sourceDirectory: string, hostVersion: string, options?: PluginPackageSourceOptions): Promise<PluginValidationResultV3>
+export declare function packPluginV3(sourceDirectory: string, outputFile: string, hostVersion: string, options?: PluginPackageSourceOptions): Promise<PluginPackResultV3>
+
 export type PluginDiagnosticCodeV1 =
   | 'INVALID_INPUT' | 'INVALID_MANIFEST' | 'INCOMPATIBLE_PLUGIN' | 'INVALID_PACKAGE'
   | 'SOURCE_IO' | 'SENSITIVE_CONTENT' | 'OUTPUT_EXISTS' | 'OUTPUT_IO'

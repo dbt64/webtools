@@ -5,7 +5,7 @@ interface BridgeOptions {
   authenticate(event: unknown): 'current' | 'invalid' | 'unrelated'
   send(raw: string): void
   onReady(): void
-  onFatal(): void
+  onFatal(reason: string): void
   now?: () => number
   /** Internal fixed ping implementation seam; never a method router/capability. */
   dispatchPing?: (signal: AbortSignal) => null | Promise<null>
@@ -49,7 +49,7 @@ export class WebPluginBridge {
     if (this.closed || this.loaded) return
     this.loaded = true
     this.readyDeadline = this.now() + 10_000
-    this.readyTimer = setTimeout(() => this.fatal(), 10_000)
+    this.readyTimer = setTimeout(() => this.fatal('hello-timeout'), 10_000)
     this.tryReady()
   }
 
@@ -57,7 +57,7 @@ export class WebPluginBridge {
     if (this.closed) return
     const identity = this.authenticate(event)
     if (identity === 'unrelated') return
-    if (identity !== 'current') { this.fatal(); return }
+    if (identity !== 'current') { this.fatal(`sender-${identity}`); return }
     let value: unknown
     try { value = decodeRaw(raw) } catch { this.takeToken(); return } // No oversized ID recovery.
     const record = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
@@ -80,7 +80,7 @@ export class WebPluginBridge {
     const admittedRate = this.takeToken()
     if (record?.type === 'hello') {
       this.send({ type: 'ready', protocolMajor: BRIDGE_MAJOR, accepted: false, error: { code: message?.type === 'hello' && message.protocolMajor !== BRIDGE_MAJOR ? 'NOT_AVAILABLE' : 'INVALID_REQUEST', retryable: false } })
-      this.fatal(); return
+      this.fatal('unexpected-hello'); return
     }
     if (!message) {
       try { message = validateParsed(raw as string, value, 'client') }
@@ -92,7 +92,7 @@ export class WebPluginBridge {
       }
     }
     const id = record?.type === 'request' && validRequestId(record.requestId) ? record.requestId : undefined
-    if (id && this.pending.has(id)) { this.fatal(); return }
+    if (id && this.pending.has(id)) { this.fatal('duplicate-request-id'); return }
     if (!id) return
     if (!admittedRate) { this.reply(id, 'LIMIT_EXCEEDED'); return }
     if (!message) { this.reply(id, 'INVALID_REQUEST'); return }
@@ -146,7 +146,9 @@ export class WebPluginBridge {
 
   private tryReady(): void {
     if (this.closed || this.accepted || !this.loaded || !this.hello) return
-    if (this.now() >= this.readyDeadline || this.authenticate(this.hello) !== 'current') { this.fatal(); return }
+    if (this.now() >= this.readyDeadline) { this.fatal('hello-deadline-expired'); return }
+    const helloIdentity = this.authenticate(this.hello)
+    if (helloIdentity !== 'current') { this.fatal(`hello-sender-${helloIdentity}`); return }
     this.accepted = true
     clearTimeout(this.readyTimer)
     this.options.onReady() // Owner changes runtime state atomically before publishing ready.
@@ -165,7 +167,8 @@ export class WebPluginBridge {
     if (this.now() > entry.deadline) error = 'TIMEOUT'
     this.pending.delete(id); clearTimeout(entry.timer)
     if (error) entry.controller.abort()
-    if (this.authenticate(entry.event) !== 'current') { this.fatal(); return }
+    const requestIdentity = this.authenticate(entry.event)
+    if (requestIdentity !== 'current') { this.fatal(`request-sender-${requestIdentity}`); return }
     if (error) this.reply(id, error)
     else this.send({ type: 'response', protocolMajor: BRIDGE_MAJOR, requestId: id, ok: true, result })
   }
@@ -174,10 +177,10 @@ export class WebPluginBridge {
   }
   private send(message: HostMessage): void {
     if (this.closed) return
-    try { this.options.send(encodeMessage(message, 'host')) } catch { this.fatal() }
+    try { this.options.send(encodeMessage(message, 'host')) } catch { this.fatal('host-send-failed') }
   }
   private authenticate(event: unknown): 'current' | 'invalid' | 'unrelated' {
     try { return this.options.authenticate(event) } catch { return 'invalid' }
   }
-  private fatal(): void { if (this.closed) return; void this.revoke(); this.options.onFatal() }
+  private fatal(reason: string): void { if (this.closed) return; void this.revoke(); this.options.onFatal(reason) }
 }

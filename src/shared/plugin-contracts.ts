@@ -6,6 +6,12 @@ export const INSTALLED_PLUGIN_CAPABILITIES = [...PLUGIN_CAPABILITIES, 'clipboard
 export type InstalledPluginCapability = typeof INSTALLED_PLUGIN_CAPABILITIES[number]
 export type PluginJson = null | boolean | number | string | PluginJson[] | { [key: string]: PluginJson }
 export type PluginSettingValue = string | boolean | number
+export interface PluginConfigurationIdentity { pluginId: string; version: string; hash: string }
+export type PluginConfigurationDTO =
+  | { identity: PluginConfigurationIdentity; status: 'unavailable' }
+  | { identity: PluginConfigurationIdentity; status: 'ready' | 'incompatible'; schemaVersion: number; settings: PluginSetting[]; revision: string; values: Record<string, PluginSettingValue>; errorCode?: 'CONFIG_INCOMPATIBLE' }
+export interface PluginConfigurationUpdate extends PluginConfigurationIdentity { revision: string; values: Record<string, PluginSettingValue> }
+export interface PluginConfigurationReset extends PluginConfigurationIdentity { revision: string }
 interface SettingBase { key: string; label: string }
 export type PluginSetting =
   | (SettingBase & { type: 'text'; minLength: number; maxLength: number; default: string })
@@ -39,12 +45,22 @@ export interface PluginManifest {
   assets: Array<{ path: string; type: 'image/png' }>
 }
 export type PluginStatus = 'not-installed' | 'validating' | 'installed-disabled' | 'enabled' | 'active' | 'invoking' | 'stopping' | 'incompatible' | 'invalid' | 'needs-permission' | 'faulted'
+/** Safe, validated discovery metadata; no entry paths, raw manifest or runtime authority. */
+export interface PluginFeatureSummary {
+  id: string; title: string; description?: string; available: boolean
+  presentation?: import('./feature-contracts.ts').FeaturePresentation
+  invocationSurfaces?: readonly import('./feature-contracts.ts').FeatureInvocationSurface[]
+  acceptedContexts?: readonly import('./feature-contracts.ts').FeatureProjectionAcceptedContextV2[]
+}
 export interface PluginSummary {
   id: string; name: string; version: string; hash: string; enabled: boolean; status: PluginStatus
-  requested: InstalledPluginCapability[]; granted: InstalledPluginCapability[]; installedVersions: string[]; errorCode?: string; manifestVersion?: 1 | 2
+  requested: InstalledPluginCapability[]; granted: InstalledPluginCapability[]; installedVersions: string[]; errorCode?: string; manifestVersion?: 1 | 2 | 3
+  runtimeKind?: 'web' | 'node'
   description?: string; author?: { name: string; url?: string }; api?: { apiMajor: number; minHostVersion: string }
   source: 'local-unsigned'; iconDataUrl?: string
-  webFeatures?: Array<{ id: string; title: string; available: boolean }>
+  webFeatures?: PluginFeatureSummary[]
+  /** Presentation only: grants remain controlled by Host, independently of implementation support. */
+  unsupportedCapabilities?: InstalledPluginCapability[]
 }
 /** Sanitized presentation, not a raw manifest or package/secret/configuration path. */
 export interface PluginPageDTO {
@@ -72,8 +88,12 @@ export interface PluginApi {
   list(): Promise<import('./ipc').IpcResult<PluginSummary[]>>
   installFromUserDialog(): Promise<import('./ipc').IpcResult<PluginInstallResult>>
   setEnabled(pluginId: string, enabled: boolean): Promise<import('./ipc').IpcResult<PluginSummary>>
+  stopRuntime(pluginId: string): Promise<import('./ipc').IpcResult<{ stopped: true }>>
   setGrants(pluginId: string, grants: InstalledPluginCapability[]): Promise<import('./ipc').IpcResult<PluginSummary>>
   getPages(pluginId: string): Promise<import('./ipc').IpcResult<PluginPageDTO>>
+  getConfiguration(identity: PluginConfigurationIdentity): Promise<import('./ipc').IpcResult<PluginConfigurationDTO>>
+  updateConfiguration(request: PluginConfigurationUpdate): Promise<import('./ipc').IpcResult<PluginConfigurationDTO>>
+  resetConfiguration(request: PluginConfigurationReset): Promise<import('./ipc').IpcResult<PluginConfigurationDTO>>
   invoke(request: PluginInvokeRequest): Promise<import('./ipc').IpcResult<PluginActionResult>>
   prepareAIReview(request: PluginInvokeRequest): Promise<import('./ipc').IpcResult<PluginAIReviewDTO>>
   confirmAIReview(reviewId: string): Promise<import('./ipc').IpcResult<PluginActionResult>>

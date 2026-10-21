@@ -157,9 +157,9 @@ internal static class Phase6D4Checks
         }
         finally { try { Directory.Delete(root, recursive: true); } catch (IOException) { } }
 
-        var sixteen = Enumerable.Range(0, 16).Select(index => Row("org.example.boundary", $"feature-{index}", "Feature", "Plugin", [], "plugin", "declarative-compatibility")).ToArray();
-        Check(NativeFeatureProjectionStore.Parse(Element(Snapshot(sixteen))).Features.Count == 16, "Sixteen Features per plugin are accepted.");
-        ExpectInvalid(() => NativeFeatureProjectionStore.Parse(Element(Snapshot([.. sixteen, Row("org.example.boundary", "feature-extra", "Feature", "Plugin", [], "plugin", "declarative-compatibility")]))), "Seventeen Features per plugin are rejected.");
+        var sixtyFour = Enumerable.Range(0, 64).Select(index => Row("org.example.boundary", $"feature-{index}", "Feature", "Plugin", [], "plugin", "declarative-compatibility")).ToArray();
+        Check(NativeFeatureProjectionStore.Parse(Element(Snapshot(sixtyFour))).Features.Count == 64, "Sixty-four Features per plugin are accepted.");
+        ExpectInvalid(() => NativeFeatureProjectionStore.Parse(Element(Snapshot([.. sixtyFour, Row("org.example.boundary", "feature-64", "Feature", "Plugin", [], "plugin", "declarative-compatibility")]))), "Sixty-five Features per plugin are rejected.");
 
         var many = Enumerable.Range(0, 2000).Select(index => Row($"org.example.p{index / 16:D4}", $"f{index % 16:D2}", "Feature", "Plugin", [], "plugin", "declarative-compatibility")).ToArray();
         Check(NativeFeatureProjectionStore.Parse(Element(Snapshot(many))).Features.Count == 2000, "The 2,000-row global projection boundary is accepted.");

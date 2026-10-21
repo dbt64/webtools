@@ -11,8 +11,17 @@ import {
   type NativeManagerEnvelope,
 } from './native-manager-protocol.ts'
 import type { AppSettings, SearchEngine, ThemePreference, LauncherDisplayMode, WebsiteSearchEntry } from '../../src/shared/domain'
+import { QUICK_RESULT_CAPABILITY, parseFeatureResultControl } from '../../src/shared/feature-quick-result-contracts.ts'
 
 export interface NativeAppSearchMemoryRecord { query: string; appId: string; lastUsedAt: number }
+
+const supportedManagerCapabilities = [
+  'feature-projection-v2',
+  'electron-host-lifecycle-v1',
+  'launcher-feature-surfaces-v1',
+  'super-panel-context-v1',
+  'super-panel-settings-v2',
+] as const
 
 export interface NativeLauncherState {
   schemaVersion: number
@@ -80,6 +89,10 @@ type NativeManagerCommandHandler = (message: NativeManagerEnvelope) => void | ((
 
 export class NativeManagerClient {
   private static readonly featureProjectionV2Capability = 'feature-projection-v2'
+  private static readonly hostLifecycleCapability = 'electron-host-lifecycle-v1'
+  private static readonly launcherFeaturesCapability = 'launcher-feature-surfaces-v1'
+  private static readonly superPanelCapability = 'super-panel-context-v1'
+  private static readonly superPanelSettingsCapability = 'super-panel-settings-v2'
   private socket: Socket | null = null
   private readonly decoder = new ProtocolFrameDecoder()
   private readonly pending = new Map<string, PendingRequest>()
@@ -87,13 +100,40 @@ export class NativeManagerClient {
   private readonly disconnectHandlers = new Set<(error?: Error) => void>()
   private connected = false
   private featureProjectionV2Supported = false
+  private hostLifecycleSupported = false
+  private launcherFeaturesSupported = false
+  private superPanelSupported = false
+  private superPanelSettingsSupported = false
+  private quickResultSupported = false
+  private selectedTextMatchingSupported = false
   private closed = false
   private readonly pipeName: string
+  private developmentAuthenticationToken: string | null
 
-  constructor(pipeName: string) { this.pipeName = pipeName }
+  constructor(pipeName: string, developmentAuthenticationToken?: string, private readonly offerQuickResult = false, private readonly offerSelectedTextMatching = false) {
+    this.pipeName = pipeName
+    this.developmentAuthenticationToken = developmentAuthenticationToken ?? null
+  }
 
   get isConnected(): boolean { return this.connected && !this.closed }
   get supportsFeatureProjectionV2(): boolean { return this.isConnected && this.featureProjectionV2Supported }
+  get supportsHostLifecycle(): boolean { return this.isConnected && this.hostLifecycleSupported }
+  get supportsLauncherFeatures(): boolean { return this.isConnected && this.launcherFeaturesSupported }
+  get supportsSuperPanel(): boolean { return this.isConnected && this.superPanelSupported }
+  get supportsSuperPanelSettings(): boolean { return this.isConnected && this.superPanelSettingsSupported }
+  get supportsQuickResult(): boolean { return this.isConnected && this.quickResultSupported }
+  get supportsSelectedTextMatching(): boolean { return this.isConnected && this.selectedTextMatchingSupported }
+  async clearAcceptedQuickResultForSource(pluginId: string): Promise<void> {
+    if (!this.supportsQuickResult) return
+    // Idempotent capability reply exposes correlation metadata only. This does
+    // not restore an old invocation, read text or grant execution authority.
+    const response = await this.request<{ capability?: string; acceptedResult?: unknown }>('feature-quick-result-negotiate-v1', { capability: QUICK_RESULT_CAPABILITY }, 5000)
+    if (response?.capability !== QUICK_RESULT_CAPABILITY) throw new TypeError('Invalid Quick Result metadata reply.')
+    if (response.acceptedResult == null) return
+    const binding = parseFeatureResultControl(response.acceptedResult)
+    if (!binding) throw new TypeError('Invalid accepted Quick Result binding.')
+    if (binding.ref.pluginId === pluginId) await this.request('feature-result-clear-v1', binding, 5000)
+  }
 
   async connect(timeoutMs = 30_000): Promise<unknown> {
     if (this.connected) throw new Error('Native Manager pipe is already connected.')
@@ -112,12 +152,41 @@ export class NativeManagerClient {
       const hello = await this.request<{ state?: unknown; supportedFeatures?: unknown }>('hello', {
         processId: process.pid,
         managerVersion: process.env.npm_package_version ?? 'unknown',
-        capabilities: [NativeManagerClient.featureProjectionV2Capability],
+        capabilities: [NativeManagerClient.featureProjectionV2Capability, NativeManagerClient.hostLifecycleCapability, NativeManagerClient.launcherFeaturesCapability, NativeManagerClient.superPanelCapability, NativeManagerClient.superPanelSettingsCapability],
+        ...(this.developmentAuthenticationToken ? { developmentAuthenticationToken: this.developmentAuthenticationToken } : {}),
       }, timeoutMs)
-      this.featureProjectionV2Supported = Array.isArray(hello?.supportedFeatures)
-        && hello.supportedFeatures.length === 1
-        && hello.supportedFeatures[0] === NativeManagerClient.featureProjectionV2Capability
+      const advertised = hello?.supportedFeatures
+      const validCapabilities = Array.isArray(advertised)
+        && advertised.every((item): item is typeof supportedManagerCapabilities[number] =>
+          typeof item === 'string' && supportedManagerCapabilities.includes(item as typeof supportedManagerCapabilities[number]))
+        && new Set(advertised).size === advertised.length
+      const capabilities = validCapabilities ? advertised : []
+      this.featureProjectionV2Supported = capabilities.includes(NativeManagerClient.featureProjectionV2Capability)
+      this.hostLifecycleSupported = capabilities.includes(NativeManagerClient.hostLifecycleCapability)
+      this.launcherFeaturesSupported = capabilities.includes(NativeManagerClient.launcherFeaturesCapability)
+      this.superPanelSupported = capabilities.includes(NativeManagerClient.superPanelCapability)
+      this.superPanelSettingsSupported = capabilities.includes(NativeManagerClient.superPanelSettingsCapability)
       this.connected = true
+      this.selectedTextMatchingSupported = false
+      this.developmentAuthenticationToken = null
+      // Legacy NativeHost validates the hello capability list strictly. An authenticated
+      // post-hello opt-in lets old peers return UNKNOWN_MESSAGE without breaking startup.
+      if (this.offerQuickResult && this.supportsSuperPanel) {
+        try {
+          const extension = await this.request<{ capability?: unknown }>('feature-quick-result-negotiate-v1', { capability: QUICK_RESULT_CAPABILITY }, 3000)
+          this.quickResultSupported = extension?.capability === QUICK_RESULT_CAPABILITY
+        } catch (error) {
+          if (!(error instanceof NativeManagerRequestError) || !['UNKNOWN_MESSAGE', 'CAPABILITY_REQUIRED'].includes(error.code)) throw error
+        }
+      }
+      if (this.offerSelectedTextMatching && this.supportsSuperPanel) {
+        try {
+          const extension = await this.request<{ capability?: unknown }>('feature-text-match-negotiate-v1', { capability: 'selected-text-match-http-url-v1' }, 3000)
+          this.selectedTextMatchingSupported = extension?.capability === 'selected-text-match-http-url-v1'
+        } catch (error) {
+          if (!(error instanceof NativeManagerRequestError) || !['UNKNOWN_MESSAGE', 'CAPABILITY_REQUIRED'].includes(error.code)) throw error
+        }
+      }
       return hello?.state
     } catch (error) {
       this.handleDisconnect(asError(error))
@@ -227,7 +296,8 @@ export class NativeManagerClient {
       for (const callback of afterAcknowledgement) callback()
     } catch (error) {
       const requestError = error instanceof NativeManagerRequestError ? error : new NativeManagerRequestError('MANAGER_COMMAND_FAILED', asError(error).message)
-      await this.writeAcknowledgement(message, false, undefined, requestError)
+      try { await this.writeAcknowledgement(message, false, undefined, requestError) }
+      catch { /* writeAcknowledgement has already disconnected the failed pipe. */ }
     }
   }
 
@@ -246,7 +316,13 @@ export class NativeManagerClient {
         ...(error ? { error: { code: error.code, message: error.message.slice(0, MAX_PROTOCOL_MESSAGE_BYTES / 4) } } : {}),
       },
     }
-    try { socket.write(encodeProtocolFrame(ack)) } catch (writeError) { this.handleDisconnect(asError(writeError)) }
+    try {
+      const frame = encodeProtocolFrame(ack)
+      await new Promise<void>((resolve, reject) => socket.write(frame, error => error ? reject(error) : resolve()))
+    } catch (writeError) {
+      this.handleDisconnect(asError(writeError))
+      throw writeError
+    }
   }
 
   private handleDisconnect(error?: Error): void {

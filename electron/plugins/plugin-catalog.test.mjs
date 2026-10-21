@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PluginCatalog } from './plugin-catalog.ts'
 import { PluginManager } from './plugin-manager.ts'
-import { manifest, packageBytes, webManifest, webPackage } from './fixtures.mjs'
+import { manifest, packageBytes, runtimeV3Manifest, runtimeV3Package } from './fixtures.mjs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -34,12 +34,12 @@ function setup() {
   const catalog = new PluginCatalog('0.1.0', () => core, builtin)
   return { catalog, core, builtin, calls, rows: value => { rows = value }, rotate: () => { session = 'new' } }
 }
-test('installed v2 appears as a Web package and opens only through live Main authority; frozen Native projections stay unchanged', async t => {
+test('installed v3 appears as a Web package and opens only through live Main authority; frozen Native projections stay unchanged', async t => {
   const root = await mkdtemp(join(tmpdir(), 'webtools-catalog-web-')); t.after(() => rm(root, { recursive: true, force: true }))
   const core = new PluginManager({ userData: root, hostVersion: '0.1.0', confirm: async () => true, externalOpen: async () => {}, clipboardWrite: () => {},
     ai: { complete: async () => ({ text: 'test' }), getDefaultProviderInfo: async () => ({ providerName: 'test', model: 'test' }) } })
   await core.initialize(); t.after(() => core.close())
-  const m = webManifest(); await core.install(webPackage(m), core.session); await core.setEnabled(m.id, true, core.session)
+  const m = runtimeV3Manifest(); await core.install(runtimeV3Package(m), core.session); await core.setEnabled(m.id, true, core.session)
   let opened
   const catalog = new PluginCatalog('0.1.0', () => core, builtinLifecycle(), async authority => { opened = authority })
   const entry = (await catalog.list(catalog.session)).entries.find(e => e.id === m.id)
@@ -72,6 +72,17 @@ test('bundled Translation can be disabled and re-enabled without affecting a sam
   assert.equal((await catalog.open({ kind: 'declarative', id: summary.id }, catalog.session)).kind, 'declarative')
   const enabled = await catalog.setEnabled({ kind: 'builtin', id: summary.id }, true, catalog.session)
   assert.equal(enabled.state.status, 'ready')
+})
+test('bundled Translation dispatches to its dedicated window when the Host supplies that surface', async () => {
+  let opened = 0
+  const catalog = new PluginCatalog('0.1.0', () => null, builtinLifecycle(), undefined, undefined, async () => { opened += 1 })
+
+  const result = await catalog.open({ kind: 'builtin', id: 'webtools.translation' }, catalog.session)
+
+  assert.equal(opened, 1)
+  assert.deepEqual(result, {
+    kind: 'builtin', id: 'webtools.translation', key: 'translation', generation: 0, presentation: 'window',
+  })
 })
 test('invalid built-in state is unavailable and only explicit confirmed recovery restores the page', async () => {
   const unavailable = { status: 'unavailable', enabled: false, errorCode: 'STATE_INVALID', generation: 0 }

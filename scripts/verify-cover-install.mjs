@@ -32,11 +32,11 @@ async function findCompiler(directory) {
 const compiler = await findCompiler(join(process.env.LOCALAPPDATA, 'electron-builder', 'Cache', 'nsis-3.0.4.1'))
 assert.ok(compiler, 'Existing NSIS compiler is required.')
 const stage = join(fixture, 'stage')
-await mkdir(join(stage, 'host'), { recursive: true })
-await mkdir(join(stage, 'manager', 'resources'), { recursive: true })
+await mkdir(join(stage, 'application'), { recursive: true })
+await mkdir(join(stage, 'application', 'Manager', 'resources'), { recursive: true })
 await mkdir(join(stage, 'updater'), { recursive: true })
 await copyFile(resolve(helperPath), join(stage, 'updater', 'WebTools.UpdateHelper.exe'))
-await copyFile('resources/app.ico', join(stage, 'app.ico'))
+await copyFile('resources/app.ico', join(stage, 'application', 'app.ico'))
 const source = await readFile('scripts/native-production.nsi', 'utf8')
 const productManifest = JSON.parse(await readFile('package.json', 'utf8'))
 const productVersion = parseProductVersion(productManifest.version)
@@ -60,15 +60,15 @@ await mkdir(join(fixture, 'desktop'))
 let runningManager
 try {
   for (const generation of ['old', 'new']) {
-    await writeFile(join(stage, 'host', 'WebTools.NativeHost.exe'), generation)
-    await writeFile(join(stage, 'manager', 'WebTools.exe'), generation)
-    await writeFile(join(stage, 'manager', 'resources', 'app.asar'), generation)
+    await writeFile(join(stage, 'application', 'WebTools.NativeHost.exe'), generation)
+    await writeFile(join(stage, 'application', 'Manager', 'WebTools.exe'), generation)
+    await writeFile(join(stage, 'application', 'Manager', 'resources', 'app.asar'), generation)
     if (generation === 'old' && interactive) {
       const checks = resolve('native/WebTools.UpdateHelper.Checks/bin/Release/net10.0-windows')
       for (const entry of await readdir(checks, { withFileTypes: true })) {
-        if (entry.isFile()) await copyFile(join(checks, entry.name), join(stage, 'manager', entry.name))
+        if (entry.isFile()) await copyFile(join(checks, entry.name), join(stage, 'application', 'Manager', entry.name))
       }
-      await copyFile(join(checks, 'WebTools.UpdateHelper.Checks.exe'), join(stage, 'manager', 'WebTools.exe'))
+      await copyFile(join(checks, 'WebTools.UpdateHelper.Checks.exe'), join(stage, 'application', 'Manager', 'WebTools.exe'))
     }
     let nsi = sandboxSource.replace('OutFile "WebTools-Setup-${WEBTOOLS_PRODUCT_VERSION}.exe"', `OutFile "${generation}-setup.exe"`)
     if (generation === 'old') {

@@ -4,6 +4,15 @@ import { parseFeatureInvocationRequest, parseFeatureInvocationResult } from './f
 
 const requestId = '6528d127-0182-4a60-9e4b-8c89070c50f0'
 const ref = { pluginId: 'org.example.private-notes', featureId: 'legacy-manager-page' }
+test('panel dismissal is an optional completed-only Host disposition with an exact true value', () => {
+  const value = { requestId, status: 'completed', reasonCode: 'completed', dismissPanel: true }
+  assert.deepEqual(parseFeatureInvocationResult(value), value)
+  for (const bad of [{ ...value, dismissPanel: false }, { ...value, dismissPanel: 'true' },
+    { ...value, status: 'accepted', reasonCode: 'accepted' }, { ...value, status: 'cancelled', reasonCode: 'cancelled' },
+    { ...value, status: 'failed', reasonCode: 'command-failed' }, { ...value, text: 'must not leak selection' }]) {
+    assert.equal(parseFeatureInvocationResult(bad), null)
+  }
+})
 test('typed Launcher context preserves exact text and rejects generic payload, clipboard source, excess and malformed timestamp', () => {
   const context = { type: 'text', source: 'launcher-input', text: ' 中文 exact 😀 ', capturedAtUnixMs: 123456 }
   const value = { requestId, ref, source: 'launcher', context }
@@ -15,12 +24,13 @@ test('typed Launcher context preserves exact text and rejects generic payload, c
   assert.ok(parseFeatureInvocationRequest({ ...value, context: { ...context, text: 'x'.repeat(300) } }))
 })
 
-test('Feature invocation request accepts only a bounded closed launcher request', () => {
+test('Feature invocation request accepts bounded closed launcher and Super Panel requests', () => {
   assert.deepEqual(parseFeatureInvocationRequest({ requestId, ref, source: 'launcher' }), { requestId, ref, source: 'launcher' })
+  assert.deepEqual(parseFeatureInvocationRequest({ requestId, ref, source: 'super-panel' }), { requestId, ref, source: 'super-panel' })
   for (const value of [
     null,
     { requestId: 'not-a-uuid', ref, source: 'launcher' },
-    { requestId, ref, source: 'super-panel' },
+    { requestId, ref, source: 'unsupported' },
     { requestId, ref: { ...ref, pageId: 'home' }, source: 'launcher' },
     { requestId, ref, source: 'launcher', pageId: 'home' },
     { requestId, ref: { pluginId: 'webtools.translation', featureId: 'translate-text', path: 'C:\\secret' }, source: 'launcher' },

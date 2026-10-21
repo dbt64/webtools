@@ -19,6 +19,7 @@ internal static class Phase6D5Checks
     {
         RunStep("packaged identity", VerifyPackagedIdentityMatrix);
         RunStep("development launch chain", VerifyDevelopmentLaunchChainMatrix);
+        RunStep("development pipe handshake nonce", () => VerifyDevelopmentPipeHandshakeRequiresLaunchNonceAsync().GetAwaiter().GetResult());
         RunStep("development Electron executable resolution", VerifyDevelopmentElectronExecutableResolution);
         RunStep("OS-observed pipe PID and hello consistency", () => VerifyOsObservedPipePidAndHelloConsistencyAsync().GetAwaiter().GetResult());
         RunStep("pre-authentication update rejection", () => VerifyPreAuthenticationUpdatesAreRejectedAsync().GetAwaiter().GetResult());
@@ -111,11 +112,13 @@ internal static class Phase6D5Checks
 
     private static void VerifyDevelopmentLaunchChainMatrix()
     {
+        const string developmentToken = "73a4df09cb605e982a16fd37bc094e521071d36a4ab85f092c6e31d8a05b47ce";
         var api = new FakeProcessIdentityApi { JobMembers = [7002] };
         var service = new ManagerPeerIdentityService(api);
         var root = api.Add(7001, 7001, NodeExecutable);
         api.Add(7002, 7002, ElectronExecutable);
-        var identity = service.CaptureLaunchIdentity(7001, 7001, NodeExecutable, ElectronExecutable, developmentMode: true, generation: 7);
+        var identity = service.CaptureLaunchIdentity(7001, 7001, NodeExecutable, ElectronExecutable, developmentMode: true, generation: 7,
+            developmentAuthenticationToken: developmentToken);
         service.SetCurrent(identity);
         try
         {
@@ -132,7 +135,8 @@ internal static class Phase6D5Checks
             Check(!service.TryAuthenticate(7004, out _, out _), "An unrelated Node process is rejected even if a test Job reports membership because its image is not Electron.");
 
             api.JobAssignmentFailure = true;
-            CheckThrows(() => service.CaptureLaunchIdentity(7001, 7001, NodeExecutable, ElectronExecutable, developmentMode: true, generation: 8),
+            CheckThrows(() => service.CaptureLaunchIdentity(7001, 7001, NodeExecutable, ElectronExecutable, developmentMode: true, generation: 8,
+                    developmentAuthenticationToken: developmentToken),
                 "Development launch-chain setup failure is not weakened to PID-only authentication.");
             api.JobAssignmentFailure = false;
 
@@ -144,6 +148,99 @@ internal static class Phase6D5Checks
             root.Alive = false;
             Check(!service.TryAuthenticate(7002, out _, out _), "An exited development launch root invalidates its Electron child session.");
             root.Alive = true;
+        }
+        finally
+        {
+            service.ClearCurrent(identity);
+            identity.Dispose();
+        }
+    }
+
+    private static async Task VerifyDevelopmentPipeHandshakeRequiresLaunchNonceAsync()
+    {
+        const string launchNonce = "bafed0da239f880a9be5530870d7c44b998b0f0d108e52509ef315b1bd390dad";
+        var api = new FakeProcessIdentityApi { JobMembers = [8002] };
+        api.Add(8001, 8001, NodeExecutable);
+        api.Add(8002, 8002, ElectronExecutable);
+        var service = new ManagerPeerIdentityService(api);
+        var identity = service.CaptureLaunchIdentity(8001, 8001, NodeExecutable, ElectronExecutable, developmentMode: true, generation: 9,
+            developmentAuthenticationToken: launchNonce);
+        service.SetCurrent(identity);
+        try
+        {
+            api.ClientPid = 8002;
+            Check(service.TryAuthenticate(8002, out var peer, out _), "The Electron process in the retained development Job passes OS identity validation before the hello handshake.");
+            using (peer!)
+            {
+                bool IsAuthorized(string? token) => service.IsHandshakeAuthorized(peer!, token);
+                Check(!IsAuthorized(null), "An Electron renderer or child that only inherited Job membership is rejected without the launch nonce.");
+                Check(!IsAuthorized("wrong-token"), "A forged development pipe token is rejected.");
+                Check(IsAuthorized(launchNonce), "The NativeHost-launched Electron Main with the launch nonce is accepted.");
+            }
+
+            var root = TemporaryRoot();
+            var pipeName = $"WebTools.NativeHost.Manager.Phase6E7.DevNonce.{Guid.NewGuid():N}";
+            using var cancellation = new CancellationTokenSource();
+            var state = new LauncherStateStore(Path.Combine(root, "launcher-state.json"));
+            var server = new NativeManagerPipeServer(
+                pipeName,
+                state,
+                _ => Task.FromResult(state.Snapshot),
+                _ => Task.FromResult(state.Snapshot),
+                (_, _) => Task.FromResult(state.Snapshot),
+                new DiagnosticsService(Stopwatch.GetTimestamp()),
+                pipeClientProcessIdProvider: api,
+                peerAuthenticator: service);
+            var managerConnected = 0;
+            var managerConnectedSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            server.ManagerConnected += () =>
+            {
+                Interlocked.Increment(ref managerConnected);
+                managerConnectedSignal.TrySetResult(true);
+            };
+            var serverTask = server.RunAsync(cancellation.Token);
+            try
+            {
+                using (var client = await ConnectAsync(pipeName).ConfigureAwait(false))
+                {
+                    var rejected = await SendAsync(client, "hello", new { processId = 8002 }).ConfigureAwait(false);
+                    Check(rejected is { } reply && !reply.Payload.GetProperty("ok").GetBoolean()
+                        && reply.Payload.GetProperty("error").GetProperty("code").GetString() == "MANAGER_PEER_AUTHENTICATION_FAILED",
+                        "A development Electron child that lacks the Main launch nonce cannot complete the real Named Pipe handshake.");
+                }
+                Check(managerConnected == 0, "A nonce-less development child never becomes an authenticated Manager session.");
+
+                using (var client = await ConnectAsync(pipeName).ConfigureAwait(false))
+                {
+                    var rejected = await SendAsync(client, "hello", new { processId = 8002, developmentAuthenticationToken = "wrong-token" }).ConfigureAwait(false);
+                    Check(rejected is { } reply && !reply.Payload.GetProperty("ok").GetBoolean(), "A forged development nonce is rejected by the real Named Pipe handshake.");
+                }
+                Check(managerConnected == 0, "A forged nonce cannot activate Manager pipe callbacks.");
+
+                using (var client = await ConnectAsync(pipeName).ConfigureAwait(false))
+                {
+                    var accepted = await SendAsync(client, "hello", new { processId = 8002, developmentAuthenticationToken = launchNonce }).ConfigureAwait(false);
+                    Check(accepted is { } reply && reply.Payload.GetProperty("ok").GetBoolean(), "The NativeHost-launched Electron Main completes the real Named Pipe handshake with its nonce.");
+                }
+                await managerConnectedSignal.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                Check(Volatile.Read(ref managerConnected) == 1, "Only the nonce-authenticated Electron Main becomes the current Manager session.");
+            }
+            finally
+            {
+                cancellation.Cancel();
+                try { await serverTask.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                await server.DisposeAsync().ConfigureAwait(false);
+                TryDelete(root);
+            }
+
+            api.ClientPid = 8002;
+            Check(service.TryAuthenticate(8002, out var stalePeer, out _), "The retained Job identity is inspectable before current generation revocation.");
+            service.ClearCurrent(identity);
+            using (stalePeer!)
+            {
+                Check(!service.IsHandshakeAuthorized(stalePeer!, launchNonce), "The nonce cannot authenticate a peer after its Manager launch generation is revoked.");
+            }
         }
         finally
         {
@@ -434,6 +531,9 @@ internal static class Phase6D5Checks
 
         public bool IsCurrent(IAuthenticatedManagerPipePeer peer) => peer is TestAuthenticatedPeer { IsDisposed: false } testPeer
             && testPeer.ClientProcessId == expectedPid;
+
+        public bool IsHandshakeAuthorized(IAuthenticatedManagerPipePeer peer, string? developmentAuthenticationToken) => IsCurrent(peer)
+            && developmentAuthenticationToken is null;
 
         public bool TryAcquireCurrentOperation(IAuthenticatedManagerPipePeer peer, out IDisposable? lease)
         {

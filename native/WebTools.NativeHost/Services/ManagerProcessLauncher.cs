@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
 
 namespace WebTools.NativeHost.Services;
 
@@ -23,7 +24,7 @@ public sealed class ManagerProcessLauncher
     public bool DevelopmentMode { get; }
     internal ManagerPeerIdentityService PeerIdentityService => _peerIdentityService;
 
-    internal async Task<ManagerProcessLaunch> StartAsync(string pipeName, long generation)
+    internal async Task<ManagerProcessLaunch> StartAsync(string pipeName, long generation, bool hostOnly = false)
     {
         var developmentRoot = _allowDevelopmentLaunch
             ? FindDevelopmentRoot(Environment.GetEnvironmentVariable("WEBTOOLS_MANAGER_DEV_ROOT"))
@@ -31,10 +32,18 @@ public sealed class ManagerProcessLauncher
         var expectedClientImagePath = developmentRoot is not null
             ? ResolveDevelopmentElectronExecutable(developmentRoot)
             : ResolvePackagedManagerExecutable();
+        var developmentAuthenticationToken = developmentRoot is null
+            ? null
+            : Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
         var start = developmentRoot is not null
-            ? CreateDevelopmentStartInfo(developmentRoot, pipeName, expectedClientImagePath)
+            ? CreateDevelopmentStartInfo(developmentRoot, pipeName, expectedClientImagePath, developmentAuthenticationToken!)
             : CreatePackagedStartInfo(expectedClientImagePath, pipeName, _testProfileRoot);
         var expectedLaunchRootImagePath = ResolveStartExecutablePath(start);
+        // Feature activation can start the same Electron Host without opening Manager UI.
+        // Explicitly overwrite the inherited value on every launch.
+        start.Environment["WEBTOOLS_ELECTRON_HOST_ONLY"] = hostOnly ? "1" : "0";
+        start.Environment.Remove("WEBTOOLS_ELECTRON_KEEP_WARM");
+        start.Environment["WEBTOOLS_NATIVE_HOST_PID"] = Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture);
         var process = Process.Start(start) ?? throw new InvalidOperationException("Windows could not start the WebTools Manager process.");
         ManagerLaunchIdentity? identity = null;
         try
@@ -47,7 +56,8 @@ public sealed class ManagerProcessLauncher
                 expectedLaunchRootImagePath,
                 expectedClientImagePath,
                 developmentRoot is not null,
-                generation);
+                generation,
+                developmentAuthenticationToken);
             await _peerIdentityService.SetCurrentAsync(identity).ConfigureAwait(false);
             return new ManagerProcessLaunch(process, identity);
         }
@@ -125,7 +135,7 @@ public sealed class ManagerProcessLauncher
         return Path.GetFullPath(found);
     }
 
-    private static ProcessStartInfo CreateDevelopmentStartInfo(string root, string pipeName, string expectedElectronExecutable)
+    private static ProcessStartInfo CreateDevelopmentStartInfo(string root, string pipeName, string expectedElectronExecutable, string developmentAuthenticationToken)
     {
         var nodeExecutable = Environment.GetEnvironmentVariable("WEBTOOLS_NODE_EXECUTABLE");
         var start = new ProcessStartInfo(string.IsNullOrWhiteSpace(nodeExecutable) ? "node.exe" : nodeExecutable)
@@ -139,6 +149,7 @@ public sealed class ManagerProcessLauncher
         start.ArgumentList.Add("dev");
         start.Environment["WEBTOOLS_MANAGER_ONLY"] = "1";
         start.Environment["WEBTOOLS_NATIVE_PIPE"] = pipeName;
+        start.Environment["WEBTOOLS_NATIVE_PIPE_TOKEN"] = developmentAuthenticationToken;
         start.Environment["ELECTRON_EXEC_PATH"] = expectedElectronExecutable;
         return start;
     }
@@ -149,7 +160,9 @@ public sealed class ManagerProcessLauncher
         {
             UseShellExecute = false,
             CreateNoWindow = true,
-            WindowStyle = ProcessWindowStyle.Hidden,
+            // Electron creates hidden surfaces itself. SW_HIDE in STARTUPINFO
+            // suppresses the first ShowWindow even when BrowserWindow.show() runs.
+            WindowStyle = ProcessWindowStyle.Normal,
         };
         start.ArgumentList.Add("--manager-only");
         start.Environment["WEBTOOLS_MANAGER_ONLY"] = "1";
@@ -159,6 +172,17 @@ public sealed class ManagerProcessLauncher
         {
             start.ArgumentList.Add("--phase4g-manager-test");
             start.Environment["WEBTOOLS_MANAGER_TEST_PROFILE"] = testProfileRoot;
+            if (Environment.GetEnvironmentVariable("WEBTOOLS_PLUGIN_RUNTIME_ACCEPTANCE") == "1")
+            {
+                var acceptanceProfile = Environment.GetEnvironmentVariable("WEBTOOLS_PLUGIN_RUNTIME_TEST_PROFILE");
+                if (string.IsNullOrWhiteSpace(acceptanceProfile)
+                    || !string.Equals(Path.GetFullPath(acceptanceProfile), Path.GetFullPath(testProfileRoot), StringComparison.OrdinalIgnoreCase)
+                    || Environment.GetEnvironmentVariable("WEBTOOLS_PLUGIN_RUNTIME_STANDALONE") == "1")
+                    throw new InvalidOperationException("Plugin Runtime acceptance requires the same isolated Manager profile and native-managed mode.");
+                start.ArgumentList.Add("--plugin-runtime-acceptance");
+                start.Environment["WEBTOOLS_PLUGIN_RUNTIME_ACCEPTANCE"] = "1";
+                start.Environment.Remove("WEBTOOLS_PLUGIN_RUNTIME_STANDALONE");
+            }
             if (int.TryParse(Environment.GetEnvironmentVariable("WEBTOOLS_MANAGER_TEST_DEBUG_PORT"), out var port) && port is >= 1024 and <= 65535)
             {
                 start.ArgumentList.Add($"--remote-debugging-port={port}");

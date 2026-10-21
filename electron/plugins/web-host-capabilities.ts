@@ -4,15 +4,18 @@ import type { CapabilityV2 } from '../../plugin-sdk/declarative-v1/runtime/manif
 import type { PluginConsent } from './permission-broker.ts'
 import type { PluginStore } from './plugin-store.ts'
 import { isWebFeatureAuthority, type WebFeatureAuthority } from './web-feature-authority.ts'
+import { isValidatedPluginPackageSnapshotV3 } from './validated-plugin-package-snapshot.ts'
 import type { SharedAIService } from '../services/shared-ai-service.ts'
+import { validateInvocationContext, acceptsInvocationContext, type InvocationContext } from '../../plugin-sdk/declarative-v1/web/invocation-context.mjs'
 
-export interface InvocationTextContext { readonly type: 'text'; readonly source: 'launcher-input' | 'clipboard'; readonly text: string; readonly ageMs: number }
+export type InvocationTextContext = InvocationContext & { readonly ageMs: number }
 export interface WebCapabilityEffects {
   confirm(request: PluginConsent, signal?: AbortSignal): Promise<boolean>
   hasForegroundGesture(): boolean
   isAIConfigured(): Promise<boolean>
   completeAI(prompt: string, signal: AbortSignal): Promise<{ text: string; outputTokens?: number | null }>
   clipboardWrite(text: string): void
+  externalOpen?(url: string): Promise<void>
 }
 interface Dependencies {
   authority: WebFeatureAuthority; store: PluginStore; effects: WebCapabilityEffects
@@ -40,7 +43,7 @@ export class WebHostCapabilities {
   private readonly now: () => number
   private readonly controller = new AbortController()
   private readonly rates = new Map<string, number[]>()
-  private context: Readonly<{ type: 'text'; source: 'launcher-input' | 'clipboard'; text: string }> | null = null
+  private context: InvocationContext | null = null
   private contextCreatedAt = 0
   private contextDelivered = false
   private contextExpired = false
@@ -51,24 +54,32 @@ export class WebHostCapabilities {
     if (!isWebFeatureAuthority(deps.authority) || !deps.authority.isCurrent()) fail('UNAUTHORIZED')
     this.deps = { authority: deps.authority, store: deps.store, effects: deps.effects, isRuntimeCurrent: deps.isRuntimeCurrent }
     this.now = deps.now ?? (() => performance.now())
-    const input = deps.context
-    const feature = deps.authority.snapshot.manifest.features.find(f => f.id === deps.authority.featureId)!
-    if (input && feature.acceptedContexts.some(c => c.type === input.type && c.sources.includes(input.source))) {
-      if (input.source === 'clipboard' && !deps.authority.isCurrent('clipboard.read')) fail('PERMISSION_DENIED')
-      if (input.type !== 'text' || !Number.isFinite(input.ageMs) || input.ageMs < 0 || input.ageMs >= 30000) fail('CONTEXT_EXPIRED')
-      if (typeof input.text !== 'string' || input.source === 'launcher-input' && input.text.length > 300
-        || measureUtf8(input.text) > (input.source === 'clipboard' ? 32768 : 16384)) fail('LIMIT_EXCEEDED')
-      this.context = Object.freeze({ type: input.type, source: input.source, text: input.text })
-      this.contextCreatedAt = this.now() - input.ageMs; this.armContextExpiry(30000)
-    }
+    this.setContext(deps.context)
     this.removeRevoke = deps.authority.onRevoke(() => this.dispose())
+  }
+  setContext(input?: InvocationTextContext): void {
+    this.context = null; this.contextDelivered = false; this.contextExpired = false; clearTimeout(this.contextTimer)
+    const feature = this.deps.authority.snapshot.manifest.features.find(f => f.id === this.deps.authority.featureId)!
+    if (input) {
+      const { ageMs, ...payload } = input
+      const context = validateInvocationContext(payload)
+      if (!context || !acceptsInvocationContext(feature.acceptedContexts, context)) return
+      if (input.source === 'clipboard' && !this.deps.authority.isCurrent('clipboard.read')) fail('PERMISSION_DENIED')
+      if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs >= 30000) fail('CONTEXT_EXPIRED')
+      this.context = context
+      this.contextCreatedAt = this.now() - ageMs; this.armContextExpiry(30000)
+    }
   }
   dispose(): void {
     this.controller.abort(); this.context = null; clearTimeout(this.contextTimer); this.rates.clear(); this.removeRevoke()
   }
   private armContextExpiry(ttl: number): void {
     clearTimeout(this.contextTimer)
-    this.contextTimer = setTimeout(() => { this.context = null; this.contextExpired = true; this.deps.authority.revoke() }, Math.max(0, this.contextCreatedAt + ttl - this.now()))
+    this.contextTimer = setTimeout(() => {
+      this.context = null
+      this.contextExpired = true
+      this.deps.authority.revoke()
+    }, Math.max(0, this.contextCreatedAt + ttl - this.now()))
     this.contextTimer.unref?.()
   }
   private check(signal: AbortSignal, capability?: CapabilityV2): void {
@@ -87,7 +98,8 @@ export class WebHostCapabilities {
     const manifest = this.deps.authority.snapshot.manifest
     const preview = text.length > 4096 ? `${text.slice(0, 4096)}\n…（预览已缩略，共 ${measureUtf8(text)} UTF-8 字节）` : text
     const accepted = await abortable(this.deps.effects.confirm({ kind, pluginId: manifest.id, name: manifest.name,
-      version: manifest.version, manifestVersion: 2, preview }, signal), signal)
+      version: manifest.version, manifestVersion: manifest.manifestVersion,
+      ...(manifest.manifestVersion === 3 ? { runtimeKind: manifest.runtime.kind } : {}), preview }, signal), signal)
     this.check(signal, capability)
     if (!accepted) fail('USER_CANCELLED')
   }
@@ -102,7 +114,7 @@ export class WebHostCapabilities {
             this.context = null; this.contextExpired = true; clearTimeout(this.contextTimer); this.deps.authority.revoke(); fail('CONTEXT_EXPIRED')
           }
           if (!this.context) return null
-          const result = { ...this.context }
+          const result = this.context.type === 'text' ? { ...this.context } : { ...this.context, items: this.context.items.map(item => ({ ...item })) }
           this.contextDelivered = true; this.armContextExpiry(600000)
           if (result.source === 'clipboard') { this.context = null; clearTimeout(this.contextTimer) }
           return result
@@ -116,6 +128,19 @@ export class WebHostCapabilities {
           if (request.method === 'storage.get') result = await abortable(this.deps.store.readData(id, request.payload.key), signal)
           else if (request.method === 'storage.set') await abortable(this.deps.store.writeData(id, request.payload.key, request.payload.value, mayCommit), signal)
           else await abortable(this.deps.store.deleteData(id, request.payload.key, mayCommit), signal)
+          this.check(signal, cap); validateCapabilityResult(request.method, result); return result
+        }
+        case 'config.get': case 'config.set': {
+          const cap = request.method === 'config.get' ? 'plugin.config.read' : 'plugin.config.write'
+          this.check(signal, cap); this.rate('config', 60)
+          const snapshot = this.deps.authority.snapshot
+          if (!isValidatedPluginPackageSnapshotV3(snapshot)) return fail('CONFIGURATION_NOT_DECLARED')
+          const manifest = snapshot.manifest
+          if (!manifest.configuration) return fail('CONFIGURATION_NOT_DECLARED')
+          const mayCommit = () => !signal.aborted && this.deps.isRuntimeCurrent() && this.deps.authority.isCurrent(cap)
+          let result: JsonValue = null
+          if (request.method === 'config.get') result = await abortable(this.deps.store.configuration.get(manifest), signal)
+          else await abortable(this.deps.store.configuration.set(manifest, request.payload.key, request.payload.value, mayCommit), signal)
           this.check(signal, cap); validateCapabilityResult(request.method, result); return result
         }
         case 'ai.complete': {
@@ -134,6 +159,14 @@ export class WebHostCapabilities {
             const result = { text: response.text }; validateCapabilityResult(request.method, result); return result
           } finally { this.aiBusy = false }
         }
+        case 'external.open':
+          this.check(signal, 'external.open')
+          if (!this.deps.effects.externalOpen) return fail('NOT_AVAILABLE')
+          if (!this.deps.effects.hasForegroundGesture()) return fail('USER_CANCELLED')
+          this.check(signal, 'external.open')
+          await this.deps.effects.externalOpen(request.payload.url)
+          this.check(signal, 'external.open')
+          return null
         case 'clipboard.write':
           this.check(signal, 'clipboard.write'); this.rate('clipboard', 5)
           await this.consent('clipboard', request.payload.text, signal, 'clipboard.write')
@@ -144,6 +177,7 @@ export class WebHostCapabilities {
       if (error instanceof BridgeWireError) throw error
       this.check(signal)
       const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+      if (code === 'CONFIGURATION_NOT_DECLARED' || code === 'CONFIGURATION_KEY_NOT_FOUND' || code === 'CONFIG_INCOMPATIBLE') return fail(code)
       return fail(code === 'STORAGE_LIMIT' ? 'LIMIT_EXCEEDED' : code === 'INVALID_INPUT' ? 'INVALID_REQUEST' : 'INTERNAL_ERROR')
     }
   }

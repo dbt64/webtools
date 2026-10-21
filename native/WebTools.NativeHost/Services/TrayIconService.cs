@@ -12,7 +12,7 @@ internal sealed class TrayIconService : IDisposable
     private readonly Icon? _ownedIcon;
     private string? _effectiveTheme;
 
-    public TrayIconService(Action openManager, Action openEntries, Action openSettings, Action openTranslation, Action showLauncher, Action onExit)
+    public TrayIconService(Action openManager, Action openEntries, Action openSettings, Action openTranslation, Action showLauncher, Action onExit, Action? showSuperPanel = null, Action? superPanelSettings = null)
     {
         _menuFont = new Font("Segoe UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
         _menu = new Forms.ContextMenuStrip
@@ -26,6 +26,8 @@ internal sealed class TrayIconService : IDisposable
         _menu.Items.Add(CreateMenuItem("Websites", openEntries));
         _menu.Items.Add(CreateMenuItem("Translation", openTranslation));
         _menu.Items.Add(CreateMenuItem("Settings", openSettings));
+        if (showSuperPanel is not null) _menu.Items.Add(CreateMenuItem("Super Panel", showSuperPanel));
+        if (superPanelSettings is not null) _menu.Items.Add(CreateMenuItem("Super Panel 设置", superPanelSettings));
         _menu.Items.Add(new Forms.ToolStripSeparator { Margin = new Forms.Padding(7, 3, 7, 3) });
         _menu.Items.Add(CreateMenuItem("Exit", onExit));
         EnsureMenuWidth(_menu);
@@ -64,6 +66,9 @@ internal sealed class TrayIconService : IDisposable
         }
         _menu.Invalidate(true);
     }
+
+    internal void ShowSuperPanelTriggerError(string message) => _icon.ShowBalloonTip(8000, "Super Panel 触发器未就绪", message, Forms.ToolTipIcon.Warning);
+    internal void ShowSuperPanelCaptureFailure(string message) => _icon.ShowBalloonTip(5000, "未获取到选中文字", message, Forms.ToolTipIcon.Info);
 
     public void Dispose()
     {

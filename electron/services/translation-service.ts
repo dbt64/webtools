@@ -1,4 +1,5 @@
 import type { AIProviderId, SharedAISettings } from '../../src/shared/ai-config.ts'
+import type { Translation2MachineAdapterId } from '../../src/shared/translation2-contracts.ts'
 import { isTranslationLanguage, type TranslationProviderInfo, type TranslationRequest, type TranslationResult, type TranslationSettings } from '../../src/shared/translation-contracts.ts'
 import { resolveAIProviderEndpoint } from './ai-provider-registry.ts'
 import type { AIProviderCredentialStore } from './ai-credentials.ts'
@@ -18,8 +19,22 @@ interface TranslationDataStore {
 
 interface SharedAITranslationPort {
   complete(messages: Parameters<SharedAIService['complete']>[0], signal: AbortSignal, maxOutputTokens?: number): Promise<SharedAICompletion>
+  completeWithProvider(providerId: AIProviderId, messages: Parameters<SharedAIService['complete']>[0], signal: AbortSignal, maxOutputTokens: number): Promise<SharedAICompletion>
   getDefaultProviderInfo(): ReturnType<SharedAIService['getDefaultProviderInfo']>
 }
+
+interface ImportedTranslationPort {
+  execute(instanceId: string, input: {
+    text: string
+    sourceLanguage: TranslationRequest['sourceLanguage']
+    targetLanguage: TranslationRequest['targetLanguage']
+    signal: AbortSignal
+  }): Promise<string>
+}
+
+export type Translation2ExecutionTarget =
+  | { kind: 'machine'; adapterId: Translation2MachineAdapterId; instanceId: string }
+  | { kind: 'ai'; providerId: AIProviderId }
 
 export interface TranslationAdmissionPort {
   captureGeneration(): number | null
@@ -49,6 +64,7 @@ export class TranslationService {
   private readonly qwenMtAdapter: Pick<QwenMtAdapter, 'translate'>
   private readonly timeoutMs: number
   private readonly admission: TranslationAdmissionPort | null
+  private readonly importedServices: ImportedTranslationPort | null
   private readonly active = new Map<string, ActiveRequest>()
 
   constructor(deps: {
@@ -58,6 +74,7 @@ export class TranslationService {
     myMemoryAdapter: Pick<MyMemoryAdapter, 'translate'>
     qwenMtAdapter: Pick<QwenMtAdapter, 'translate'>
     translationAdmission?: TranslationAdmissionPort
+    importedServices?: ImportedTranslationPort
     timeoutMs?: number
   }) {
     this.dataStore = deps.dataStore
@@ -66,16 +83,25 @@ export class TranslationService {
     this.myMemoryAdapter = deps.myMemoryAdapter
     this.qwenMtAdapter = deps.qwenMtAdapter
     this.admission = deps.translationAdmission ?? null
+    this.importedServices = deps.importedServices ?? null
     this.timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS
   }
 
   async translate(request: TranslationRequest): Promise<TranslationResult> {
+    return this.execute(request, signal => this.runTranslation(request, signal))
+  }
+
+  async translateWithTarget(request: TranslationRequest, target: Translation2ExecutionTarget): Promise<TranslationResult> {
+    return this.execute(request, signal => this.runTranslation2(request, target, signal))
+  }
+
+  private async execute(request: TranslationRequest, run: (signal: AbortSignal) => Promise<TranslationResult>): Promise<TranslationResult> {
     if (!validateTranslationRequest(request)) throw new ServiceError('INVALID_TRANSLATION', '翻译输入无效。')
     const admissionGeneration = this.captureAdmissionGeneration()
     if (admissionGeneration === null) throw new ServiceError('TRANSLATION_DISABLED', '翻译功能当前不可用。')
     const active = this.beginRequest(request.requestId)
     try {
-      const result = await this.runTranslation(request, active.controller.signal)
+      const result = await run(active.controller.signal)
       if (active.controller.signal.aborted) throw active.controller.signal.reason
       if (!this.isAdmissionGenerationCurrent(admissionGeneration)) throw new ServiceError('TRANSLATION_DISABLED', '翻译功能当前不可用。')
       if (result.translation.length > MAX_TRANSLATION_OUTPUT_LENGTH) throw new ServiceError('TRANSLATION_OUTPUT_TOO_LONG', '翻译结果超出允许长度，请缩短原文后重试。')
@@ -90,6 +116,25 @@ export class TranslationService {
     } finally {
       this.finishRequest(request.requestId, active)
     }
+  }
+
+  private async runTranslation2(request: TranslationRequest, target: Translation2ExecutionTarget, signal: AbortSignal): Promise<TranslationResult> {
+    if (target.kind === 'ai') {
+      const messages = buildTranslationMessages(request.text, request.sourceLanguage, request.targetLanguage)
+      const result = await this.sharedAI.completeWithProvider(target.providerId, messages, signal, 4096)
+      return { translation: result.text, provider: this.aiResultInfo(result) }
+    }
+    if (target.adapterId === 'mymemory' && target.instanceId === 'builtin.mymemory') {
+      const text = await this.myMemoryAdapter.translate({ text: request.text, sourceLanguage: request.sourceLanguage, targetLanguage: request.targetLanguage, signal })
+      return { translation: text, provider: { engine: 'mymemory', providerName: 'MyMemory 免费翻译', configured: true } }
+    }
+    if ((target.adapterId === 'imported' || target.adapterId === 'deepl') && this.importedServices) {
+      const text = await this.importedServices.execute(target.instanceId, {
+        text: request.text, sourceLanguage: request.sourceLanguage, targetLanguage: request.targetLanguage, signal,
+      })
+      return { translation: text, provider: { engine: 'imported-api', providerName: target.adapterId === 'deepl' ? 'DeepL API' : 'Imported translation API', configured: true } }
+    }
+    throw new ServiceError('TRANSLATION_SERVICE_UNAVAILABLE', '所选翻译服务尚未实现或当前不可用。')
   }
 
   captureAdmissionGeneration(): number | null { return this.admission ? this.admission.captureGeneration() : 0 }

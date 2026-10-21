@@ -9,6 +9,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Interop;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using WebTools.NativeHost.Catalog;
 using WebTools.NativeHost.Data;
@@ -34,6 +35,61 @@ public partial class MainWindow : Window
     private readonly LauncherStateStore _stateStore;
     private readonly AppCatalogSnapshotStore _catalogSnapshotStore;
     private readonly ManagerController _managerController;
+    private string? _launcherSessionId;
+    private long _launcherSessionGeneration;
+    private void ScheduleLauncherSession()
+    {
+        if (_launcherSessionId is not null) return;
+        var generation = ++_launcherSessionGeneration;
+        EventHandler? painted = null;
+        painted = (_, _) => {
+            CompositionTarget.Rendering -= painted;
+            Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() => {
+                if (generation != _launcherSessionGeneration || !IsVisible || !QueryBox.IsKeyboardFocused || _openingWindow is not null) return;
+                var id = _launcherSessionId ??= Guid.NewGuid().ToString("N");
+                WindowStartupTrace.Record("wpf-first-frame-input-ready", entry: "launcher", sessionId: id);
+                _managerController.BeginLauncherSession(id);
+            }));
+        };
+        CompositionTarget.Rendering += painted;
+    }
+    private void ReleaseLauncherSession()
+    {
+        ++_launcherSessionGeneration;
+        if (_launcherSessionId is not { } id) return;
+        _launcherSessionId = null;
+        _managerController.EndLauncherSession(id);
+    }
+    private (string RequestId, string PluginId, string Startup)? _openingWindow;
+    internal void BeginWindowHandoff(string id, string title, string pluginId)
+    {
+        var startup = _managerController.HasLiveElectronHost ? "warm" : "cold";
+        _openingWindow = (id, pluginId, startup);
+        WindowStartupTrace.Record("user-target-selected", id, "launcher", pluginId, startup, _launcherSessionId);
+        WindowStartupTrace.Record("confirm-input", id, "launcher", pluginId, startup);
+        HandoffStatusText.Text = $"正在打开 {title}…";
+        System.Windows.Automation.AutomationProperties.SetName(HandoffStatusText, HandoffStatusText.Text);
+        UpdateLayoutForResults();
+        QueryBox.IsReadOnly = true;
+        EventHandler? rendered = null;
+        rendered = (_, _) => {
+            CompositionTarget.Rendering -= rendered;
+            if (_openingWindow?.RequestId == id && IsVisible) WindowStartupTrace.Record("wpf-handoff-render", id, "launcher", pluginId, startup);
+        };
+        CompositionTarget.Rendering += rendered;
+        if (!IsVisible) { MonitorPlacement.PositionForCursorMonitor(this); Show(); }
+        Activate();
+    }
+    internal bool CompleteWindowHandoff(string requestId, IntPtr target, int processId)
+    {
+        if (_openingWindow is not { } opening || opening.RequestId != requestId) return false;
+        if (!NativeWindowHandoff.ShowAndHide(this, target, processId)) throw new InvalidOperationException("Plugin window handoff failed.");
+        WindowStartupTrace.Record("target-window-presented", requestId, "launcher", opening.PluginId, opening.Startup);
+        HideLauncher("window-presented");
+        NativeWindowHandoff.Focus(target);
+        WindowStartupTrace.Record("wpf-surface-hidden", requestId, "launcher", opening.PluginId, opening.Startup);
+        return true;
+    }
     private readonly LauncherInteractionState _state = new();
     private readonly AppCatalogService _catalog = new();
     private readonly FileSearchProjection _fileSearchProjection = new();
@@ -42,10 +98,24 @@ public partial class MainWindow : Window
     private readonly LauncherResultSelectionController _selection;
     private readonly LauncherDragGesture _searchBarDragGesture = new();
     private readonly TaskCompletionSource _resourceTestReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly DispatcherTimer _queryDebounceTimer;
+    private readonly DispatcherTimer _catalogChangeDebounceTimer;
     private WebsiteSnapshot _snapshot;
     private SearchCore _search = new([], []);
     private int _searchIndexGeneration;
+    private int _indexedCatalogRevision = -1;
+    private SearchEntry[] _indexedWebsites = [];
+    private AppSearchMemoryRecord[] _indexedAppSearchMemory = [];
+    private SearchEntry[] _indexedPluginFeatures = [];
+    private string? _indexedFeatureHostSessionId;
+    private long _indexedFeatureRevision = -1;
+    private AppCatalogChangeMonitor? _catalogChangeMonitor;
+    private bool _catalogRefreshRunning;
+    private bool _catalogQuickRefreshQueued;
+    private bool _catalogFullRefreshQueued;
+    private DateTimeOffset _lastQuickCatalogRefreshRequestedUtc;
     private NativeFeatureProjectionV2? _featureProjection;
+    private string? _pendingFeatureInvocation;
     private EverythingClient _everything = new("");
     private ResultActionExecutor _actions;
     private List<ResultRow> _rows = [];
@@ -73,6 +143,9 @@ public partial class MainWindow : Window
     private string _effectiveTheme = "dark";
 
     public event Action<string>? EffectiveThemeChanged;
+    public event Action? QuickSurfaceShowing;
+    internal void DismissForQuickSurface() => HideLauncher("super-panel");
+    internal Task<BitmapSource?> ReadProjectedFeatureIconAsync(string? reference) => _icons.GetAsync(reference);
 
     internal MainWindow(DiagnosticsService diagnostics, LauncherStateStore stateStore, LauncherState initialState,
         AppCatalogSnapshotStore catalogSnapshotStore, ManagerController managerController, bool resourceTestMode = false,
@@ -83,6 +156,7 @@ public partial class MainWindow : Window
         _snapshot = initialState.ToWebsiteSnapshot();
         _catalogSnapshotStore = catalogSnapshotStore;
         _managerController = managerController;
+        _managerController.FeatureInvocationFeedback += OnFeatureInvocationFeedback;
         _resourceTestMode = resourceTestMode;
         _featureProjection = initialFeatureProjection;
         _featureProjectionV2Active = featureProjectionV2Active && initialFeatureProjection is not null;
@@ -90,6 +164,10 @@ public partial class MainWindow : Window
         _actions = new ResultActionExecutor(_catalog, _everything);
         _icons = new NativeIconCache(64, outcome => _diagnostics.Record("packaged_icon_lookup", outcome));
         InitializeComponent();
+        _queryDebounceTimer = new DispatcherTimer(DispatcherPriority.Input, Dispatcher) { Interval = TimeSpan.FromMilliseconds(50) };
+        _queryDebounceTimer.Tick += QueryDebounceTimer_Tick;
+        _catalogChangeDebounceTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromMilliseconds(350) };
+        _catalogChangeDebounceTimer.Tick += CatalogChangeDebounceTimer_Tick;
         FileCategoriesList.ItemsSource = _fileSearchProjection.Categories
             .Select(category => new FileCategoryRow(category, GetFileCategoryLabel(category))).ToArray();
         FileCategoriesList.SelectedIndex = 0;
@@ -98,6 +176,11 @@ public partial class MainWindow : Window
         SystemEvents.UserPreferenceChanged += SystemPreferenceChanged;
         _search = new SearchCore([], _snapshot.Websites, initialState.AppSearchMemory,
             _featureProjection?.Features.Select(SearchEntry.PluginFeature));
+        _indexedWebsites = _snapshot.Websites.ToArray();
+        _indexedAppSearchMemory = initialState.AppSearchMemory.ToArray();
+        _indexedPluginFeatures = _featureProjection?.Features.Select(SearchEntry.PluginFeature).ToArray() ?? [];
+        _indexedFeatureHostSessionId = _featureProjection?.HostSessionId;
+        _indexedFeatureRevision = _featureProjection?.Revision ?? -1;
     }
 
     public void RegisterHotkey(IntPtr handle, string? shortcutOverride = null) => _hotkey = new GlobalHotkeyService(handle, shortcutOverride ?? _stateStore.Snapshot.QuickSearchShortcut, OnHotkey, _diagnostics);
@@ -178,7 +261,10 @@ public partial class MainWindow : Window
             _diagnostics.Record("launcher_index_error", error.Message);
         }
 
-        _ = RefreshCatalogAsync();
+        if (_resourceTestMode && Environment.GetEnvironmentVariable("WEBTOOLS_STARTUP_ACCEPTANCE") == "1")
+        { _resourceTestReady.TrySetResult(); return; }
+        StartCatalogChangeMonitor();
+        RequestCatalogRefresh(deepScan: true);
     }
 
     internal Task WaitForResourceTestReadyAsync() => _resourceTestReady.Task;
@@ -201,6 +287,18 @@ public partial class MainWindow : Window
             var button = PluginShortcuts.Children.OfType<System.Windows.Controls.Button>().FirstOrDefault(item => item.Tag is LauncherPluginRef value && value == reference)
                 ?? throw new InvalidOperationException("Plugin shortcut is unavailable.");
             button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        });
+    }
+
+    internal async Task ActivateFeatureFromResourceTestAsync(string query, NativeFeatureRef reference)
+    {
+        if (!_resourceTestMode) throw new InvalidOperationException("The isolated test driver is not enabled.");
+        await SetQueryFromResourceTestAsync(query);
+        await Dispatcher.InvokeAsync(() =>
+        {
+            var result = _state.Results.FirstOrDefault(item => item.Action is OpenPluginFeatureAction feature && feature.Ref == reference)
+                ?? throw new InvalidOperationException("The requested Feature is absent from the search results.");
+            ActivateResult(result);
         });
     }
 
@@ -271,56 +369,189 @@ public partial class MainWindow : Window
             PluginShortcuts.Children.OfType<System.Windows.Controls.Button>().Count(button => button.IsVisible));
     }
 
-    private async Task RefreshCatalogAsync()
+    private void StartCatalogChangeMonitor()
+    {
+        if (_resourceTestMode || _catalogChangeMonitor is not null) return;
+        _catalogChangeMonitor = new AppCatalogChangeMonitor(
+            () => QueueCatalogChange(fullRefresh: true),
+            () =>
+            {
+                _diagnostics.Record("catalog_change_watch", "unavailable-or-overflow");
+                QueueCatalogChange(fullRefresh: true);
+            });
+    }
+
+    private void QueueCatalogChange(bool fullRefresh)
+    {
+        if (_disposed || Dispatcher.HasShutdownStarted) return;
+        void Queue()
+        {
+            if (_disposed) return;
+            _catalogFullRefreshQueued |= fullRefresh;
+            _catalogQuickRefreshQueued = true;
+            _catalogChangeDebounceTimer.Stop();
+            _catalogChangeDebounceTimer.Start();
+        }
+        if (Dispatcher.CheckAccess()) Queue();
+        else Dispatcher.BeginInvoke(new Action(Queue), DispatcherPriority.Background);
+    }
+
+    private void CatalogChangeDebounceTimer_Tick(object? sender, EventArgs e)
+    {
+        _catalogChangeDebounceTimer.Stop();
+        RequestCatalogRefresh(deepScan: _catalogFullRefreshQueued);
+    }
+
+    private void RequestCatalogRefresh(bool deepScan)
+    {
+        if (_disposed) return;
+        _lastQuickCatalogRefreshRequestedUtc = DateTimeOffset.UtcNow;
+        _catalogQuickRefreshQueued = true;
+        _catalogFullRefreshQueued |= deepScan;
+        if (_catalogRefreshRunning) return;
+        _catalogRefreshRunning = true;
+        _ = DrainCatalogRefreshRequestsAsync();
+    }
+
+    private async Task DrainCatalogRefreshRequestsAsync()
+    {
+        try
+        {
+            while (!_disposed && (_catalogQuickRefreshQueued || _catalogFullRefreshQueued))
+            {
+                var deepScan = _catalogFullRefreshQueued;
+                _catalogQuickRefreshQueued = false;
+                _catalogFullRefreshQueued = false;
+                await RefreshCatalogPassAsync(deepScan);
+            }
+        }
+        finally
+        {
+            _catalogRefreshRunning = false;
+            if (!_disposed && (_catalogQuickRefreshQueued || _catalogFullRefreshQueued)) RequestCatalogRefresh(_catalogFullRefreshQueued);
+        }
+    }
+
+    private async Task RefreshCatalogPassAsync(bool deepScan)
     {
         var scan = Stopwatch.StartNew();
         try
         {
-            await _catalog.RefreshAsync();
-            _catalogLoading = false;
-            var saved = await _catalogSnapshotStore.SaveIfChangedAsync(_catalog.Apps);
-            await RebuildIndexAsync();
-            RenderQuery();
-            _diagnostics.Record("catalog_refresh_complete", $"count={_catalog.Apps.Count};ms={scan.ElapsedMilliseconds};snapshotChanged={saved}");
+            var quickChanged = await _catalog.RefreshQuickAsync();
+            if (quickChanged) await PublishCatalogUpdateAsync("quick");
+
+            if (deepScan)
+            {
+                var fullChanged = await _catalog.RefreshAsync();
+                if (fullChanged) await PublishCatalogUpdateAsync("full");
+                _diagnostics.Record("catalog_refresh_complete", $"count={_catalog.Apps.Count};ms={scan.ElapsedMilliseconds};quickChanged={quickChanged};fullChanged={fullChanged}");
+            }
+            else _diagnostics.Record("catalog_quick_refresh_complete", $"count={_catalog.Apps.Count};ms={scan.ElapsedMilliseconds};changed={quickChanged}");
         }
         catch (Exception error)
         {
             if (!_catalog.Ready) _catalogLoading = false;
-            _diagnostics.Record("catalog_error", error.Message);
+            _diagnostics.Record("catalog_error", error.GetType().Name);
             if (_catalog.Apps.Count == 0) SetStatus("应用目录加载失败：" + error.Message);
         }
-        finally { _resourceTestReady.TrySetResult(); }
+        finally
+        {
+            if (deepScan) _resourceTestReady.TrySetResult();
+        }
+    }
+
+    private async Task PublishCatalogUpdateAsync(string stage)
+    {
+        _catalogLoading = false;
+        var saved = await _catalogSnapshotStore.SaveIfChangedAsync(_catalog.Apps);
+        await RebuildIndexAsync();
+        RenderQuery();
+        _diagnostics.Record("catalog_index_published", $"stage={stage};count={_catalog.Apps.Count};snapshotChanged={saved};revision={_catalog.Revision}");
+    }
+
+    private void MaybeRefreshCatalogQuickly()
+    {
+        if (_resourceTestMode) return;
+        if (DateTimeOffset.UtcNow - _lastQuickCatalogRefreshRequestedUtc >= TimeSpan.FromSeconds(30))
+            RequestCatalogRefresh(deepScan: false);
     }
 
     private async Task RebuildIndexAsync()
     {
+        var websites = _snapshot.Websites.ToArray();
+        var memory = _stateStore.Snapshot.AppSearchMemory.ToArray();
+        var pluginFeatures = _featureProjection?.Features.Select(SearchEntry.PluginFeature).ToArray() ?? [];
+        var featureHostSessionId = _featureProjection?.HostSessionId;
+        var featureRevision = _featureProjection?.Revision ?? -1;
+        if (_indexedCatalogRevision == _catalog.Revision
+            && SearchEntriesEqual(_indexedWebsites, websites)
+            && _indexedAppSearchMemory.SequenceEqual(memory)
+            && SearchEntriesEqual(_indexedPluginFeatures, pluginFeatures)
+            && _indexedFeatureHostSessionId == featureHostSessionId
+            && _indexedFeatureRevision == featureRevision) return;
+
         var generation = Interlocked.Increment(ref _searchIndexGeneration);
         var apps = _catalog.Apps.Select(app => app.AsSearchEntry()).ToArray();
-        var websites = _snapshot.Websites;
-        var memory = _stateStore.Snapshot.AppSearchMemory;
-        var pluginFeatures = _featureProjection?.Features.Select(SearchEntry.PluginFeature).ToArray() ?? [];
         var next = await Task.Run(() => new SearchCore(apps, websites, memory, pluginFeatures));
-        if (generation == Volatile.Read(ref _searchIndexGeneration)) _search = next;
+        if (generation != Volatile.Read(ref _searchIndexGeneration)) return;
+        _search = next;
+        _indexedCatalogRevision = _catalog.Revision;
+        _indexedWebsites = websites;
+        _indexedAppSearchMemory = memory;
+        _indexedPluginFeatures = pluginFeatures;
+        _indexedFeatureHostSessionId = featureHostSessionId;
+        _indexedFeatureRevision = featureRevision;
+    }
+
+    private static bool SearchEntriesEqual(IReadOnlyList<SearchEntry> left, IReadOnlyList<SearchEntry> right)
+    {
+        if (left.Count != right.Count) return false;
+        for (var index = 0; index < left.Count; index++)
+        {
+            var a = left[index]; var b = right[index];
+            if (a.Id != b.Id || a.Name != b.Name || a.Kind != b.Kind || a.Subtitle != b.Subtitle
+                || a.SearchText != b.SearchText || a.Url != b.Url || a.IconReference != b.IconReference
+                || a.IconToken != b.IconToken || a.FeatureRef != b.FeatureRef
+                || !a.Aliases.SequenceEqual(b.Aliases, StringComparer.Ordinal)) return false;
+        }
+        return true;
     }
 
     public void DisposeNativeResources()
     {
         if (_disposed) return;
         _disposed = true;
+        _queryDebounceTimer.Stop();
+        _queryDebounceTimer.Tick -= QueryDebounceTimer_Tick;
+        _catalogChangeDebounceTimer.Stop();
+        _catalogChangeDebounceTimer.Tick -= CatalogChangeDebounceTimer_Tick;
+        _catalogChangeMonitor?.Dispose();
+        _catalogChangeMonitor = null;
         _fileGeneration.Dispose();
+        _managerController.FeatureInvocationFeedback -= OnFeatureInvocationFeedback;
         SystemEvents.UserPreferenceChanged -= SystemPreferenceChanged;
         _hotkey?.Dispose();
         _hotkey = null;
     }
 
-    private void OnHotkey()
+    private async void OnHotkey()
     {
+        if (await _managerController.TryFocusCurrentTemporaryWindowAsync()) return;
         if (IsVisible) HideLauncher("hotkey-toggle");
         else ShowLauncher();
     }
 
+    internal void ShowEmptyFromPlugin()
+    {
+        HideLauncher("plugin-return");
+        ShowLauncher();
+    }
+
     private void ShowLauncher()
     {
+        WindowStartupTrace.Record("wpf-show-requested", entry: "launcher");
+        MaybeRefreshCatalogQuickly();
+        QuickSurfaceShowing?.Invoke();
         _pendingShowTimestamp = Stopwatch.GetTimestamp();
         _awaitingShowFocus = true;
         _expanded = _snapshot.ExpandedByDefault;
@@ -336,26 +567,35 @@ public partial class MainWindow : Window
         Activate();
         if (IsActive) FocusQueryBox();
         _diagnostics.Record("launcher_show_requested", "hotkey");
+        ScheduleLauncherSession();
     }
 
     public void ShowFromTray()
     {
+        QuickSurfaceShowing?.Invoke();
         if (!IsVisible)
         {
             ShowLauncher();
             return;
         }
 
+        MaybeRefreshCatalogQuickly();
         _pendingShowTimestamp = Stopwatch.GetTimestamp();
         _awaitingShowFocus = true;
         WindowState = WindowState.Normal;
         Topmost = true;
         Activate();
         if (IsActive) FocusQueryBox();
+        ScheduleLauncherSession();
     }
 
     private void HideLauncher(string reason)
     {
+        ReleaseLauncherSession();
+        if (IsVisible) Hide();
+        _openingWindow = null;
+        _pendingFeatureInvocation = null;
+        QueryBox.IsReadOnly = false;
         _diagnostics.Record("launcher_hide", reason);
         _searchBarDragGesture.End();
         if (_activeDragSurface is not null && Mouse.Captured == _activeDragSurface) Mouse.Capture(null);
@@ -369,6 +609,7 @@ public partial class MainWindow : Window
         ++_resultGeneration;
         _state.Reset();
         QueryBox.Clear();
+        _queryDebounceTimer.Stop();
         _rows = [];
         _selection.Clear(ResultsList);
         _selection.Clear(FileResultsList);
@@ -384,6 +625,8 @@ public partial class MainWindow : Window
         ShortcutPanel.Visibility = Visibility.Collapsed;
         ResultsList.Visibility = Visibility.Collapsed;
         StatusText.Visibility = Visibility.Collapsed;
+        HandoffPanel.Visibility = Visibility.Collapsed;
+        ExpandButton.Visibility = Visibility.Visible;
         QueryPlaceholder.Visibility = Visibility.Visible;
         Height = CompactHeight;
         if (IsVisible) Hide();
@@ -407,13 +650,30 @@ public partial class MainWindow : Window
 
     private void QueryBox_TextChanged(object sender, TextChangedEventArgs e)
     {
+        _pendingFeatureInvocation = null;
         _state.SetQuery(QueryBox.Text);
         QueryPlaceholder.Visibility = QueryBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-        RenderQuery();
+        MaybeRefreshCatalogQuickly();
+        _queryDebounceTimer.Stop();
+        // Keep the existing resource-test driver synchronous with TextChanged; production typing is debounced.
+        if (_resourceTestMode)
+        {
+            RenderQuery();
+            return;
+        }
+        _queryDebounceTimer.Start();
+    }
+
+    private void QueryDebounceTimer_Tick(object? sender, EventArgs e)
+    {
+        _queryDebounceTimer.Stop();
+        if (!_disposed) RenderQuery();
     }
 
     private void RenderQuery()
     {
+        if (_openingWindow is not null) return;
+        _queryDebounceTimer.Stop();
         var command = SearchCommand.Parse(QueryBox.Text);
         _fileSearchProjection.SetQuery(QueryBox.Text);
         _everything.InvalidateCurrentResults();
@@ -523,6 +783,16 @@ public partial class MainWindow : Window
         UpdateLayoutForResults();
     }
 
+    private void RestoreAfterWindowHandoff()
+    {
+        _openingWindow = null;
+        _pendingFeatureInvocation = null;
+        QueryBox.IsReadOnly = false;
+        HandoffPanel.Visibility = Visibility.Collapsed;
+        ExpandButton.Visibility = Visibility.Visible;
+        RenderQuery();
+    }
+
     private void SetFileFeedback(string message)
     {
         FileStatusText.Text = BoundFileFeedback(message);
@@ -597,6 +867,20 @@ public partial class MainWindow : Window
 
     private void UpdateLayoutForResults()
     {
+        if (_openingWindow is not null)
+        {
+            FooterHints.Visibility = Visibility.Collapsed;
+            ShortcutPanel.Visibility = Visibility.Collapsed;
+            FileSearchPanel.Visibility = Visibility.Collapsed;
+            ResultsList.Visibility = Visibility.Collapsed;
+            StatusText.Visibility = Visibility.Collapsed;
+            HandoffPanel.Visibility = Visibility.Visible;
+            ExpandButton.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        HandoffPanel.Visibility = Visibility.Collapsed;
+        ExpandButton.Visibility = Visibility.Visible;
         var hasQuery = QueryBox.Text.Trim().Length > 0;
         FooterHints.Visibility = hasQuery ? Visibility.Visible : Visibility.Collapsed;
         ShortcutPanel.Visibility = !hasQuery && _expanded ? Visibility.Visible : Visibility.Collapsed;
@@ -731,13 +1015,18 @@ public partial class MainWindow : Window
                 };
                 glyph.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, "AccentBrush");
                 icon.Child = glyph;
+                if (feature.IconReference is { } projectedIcon)
+                {
+                    var targetIcon = icon;
+                    _ = LoadProjectedShortcutIconAsync(targetIcon, projectedIcon, _resultGeneration);
+                }
                 content.Children.Add(icon);
                 var label = new TextBlock { Text = feature.Title, FontSize = 11, Width = 70, Margin = new Thickness(9, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
                 label.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
                 content.Children.Add(label);
                 var button = new System.Windows.Controls.Button { Width = 127, Height = 54, Margin = new Thickness(0, 0, 6, 6), Content = content, ToolTip = feature.Title, Tag = featureRef.Ref, Style = (Style)FindResource("LauncherShortcutButtonStyle") };
                 System.Windows.Automation.AutomationProperties.SetName(button, feature.Title);
-                button.Click += (_, _) => { HideLauncher("feature-invocation"); _managerController.InvokeFeature(featureRef.Ref); };
+                button.Click += (_, _) => ActivateResult(feature);
                 PluginShortcuts.Children.Add(button);
             }
             if (features.Count == 0) PluginShortcuts.Children.Add(new TextBlock { Text = "暂无可显示的插件功能", Foreground = (Brush)FindResource("QuietBrush"), FontSize = 10 });
@@ -765,7 +1054,10 @@ public partial class MainWindow : Window
             label.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush"); content.Children.Add(label);
             var button = new System.Windows.Controls.Button { Width = 127, Height = 54, Margin = new Thickness(0, 0, 6, 6), Content = content, ToolTip = item.DisplayName, Tag = item.Ref, Style = (Style)FindResource("LauncherShortcutButtonStyle") };
             System.Windows.Automation.AutomationProperties.SetName(button, item.DisplayName);
-            button.Click += (_, _) => { HideLauncher("open-plugin"); _managerController.OpenPlugin(item.Ref); };
+            button.Click += (_, _) => {
+                var id = _managerController.OpenPlugin(item.Ref);
+                if (id is not null) { _pendingFeatureInvocation = id; BeginWindowHandoff(id, item.DisplayName, item.Ref.Id); }
+            };
             PluginShortcuts.Children.Add(button);
         }
         if (_plugins.Count == 0) PluginShortcuts.Children.Add(new TextBlock { Text = "启用的插件会显示在这里", Foreground = (Brush)FindResource("QuietBrush"), FontSize = 10 });
@@ -774,7 +1066,12 @@ public partial class MainWindow : Window
     { if (_featureProjectionV2Active || _plugins.Count <= 6) return; _pluginsExpanded = !_pluginsExpanded; RefreshPluginShortcuts(); PluginScroll.ScrollToTop(); UpdateLayoutForResults(); QueryBox.Focus(); }
     private void QueryBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => CompleteShowFocusMeasurement();
 
-    private void BrandButton_Click(object sender, RoutedEventArgs e) => _managerController.OpenPage(ManagerPage.Favorites);
+    private void BrandButton_Click(object sender, RoutedEventArgs e)
+    {
+        var id = _managerController.OpenPage(ManagerPage.Favorites);
+        _pendingFeatureInvocation = id;
+        BeginWindowHandoff(id, "WebTools", "manager");
+    }
 
     private void LoadBrandIcon()
     {
@@ -840,6 +1137,8 @@ public partial class MainWindow : Window
             return;
         }
         if (TryGetOpenFileContextMenu(out _)) return;
+        if (_queryDebounceTimer.IsEnabled && e.Key is (Key.Enter or Key.Up or Key.Down or Key.Home or Key.End))
+            QueryDebounceTimer_Tick(this, EventArgs.Empty);
         if (_fileSearchProjection.IsActive && (e.Key == Key.Apps || e.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift)
             && _state.SelectedIndex >= 0
             && FileResultsList.ItemContainerGenerator.ContainerFromIndex(_state.SelectedIndex) is ListBoxItem { ContextMenu: { } contextMenu } item)
@@ -911,13 +1210,22 @@ public partial class MainWindow : Window
 
     private void ActivateResult(SearchResult result)
     {
+        if (_openingWindow is not null) return;
         if (result.Action is OpenPluginFeatureAction feature)
         {
             var acceptsLauncherText = _featureProjection?.Features.Any(row => row.Ref == feature.Ref
                 && row.AcceptedContexts.Any(context => context.Type == "text" && context.Sources.Contains("launcher-input"))) == true;
             var launcherText = acceptsLauncherText ? QueryBox.Text : null;
-            HideLauncher("feature-invocation");
-            _managerController.InvokeFeature(feature.Ref, launcherText);
+            var projected = _featureProjection?.Features.FirstOrDefault(row => row.Ref == feature.Ref);
+            var presentation = projected?.Presentation;
+            if (presentation == "command") SetStatus($"正在执行 {result.Title}…");
+            var windowHandoff = presentation != "command";
+            var openingId = windowHandoff ? Guid.NewGuid().ToString("D") : null;
+            var requestId = _managerController.InvokeFeature(feature.Ref, launcherText, openingId);
+            _pendingFeatureInvocation = requestId;
+            if (requestId is not null && windowHandoff) BeginWindowHandoff(requestId, result.Title, feature.Ref.PluginId);
+            if (requestId is not null && presentation != "command" && !windowHandoff) HideLauncher("feature-invocation");
+            if (requestId is null && windowHandoff) RestoreAfterWindowHandoff();
             return;
         }
         if (result.Action is SearchFilesAction fileSearch)
@@ -929,8 +1237,10 @@ public partial class MainWindow : Window
         }
         if (result.Action is OpenTranslationAction translation)
         {
-            HideLauncher("translation-handoff");
-            _managerController.OpenTranslation(translation.Text);
+            var requestId = Guid.NewGuid().ToString("D");
+            _pendingFeatureInvocation = requestId;
+            _managerController.OpenTranslation(translation.Text, requestId, "launcher");
+            BeginWindowHandoff(requestId, "翻译", "webtools.translation");
             return;
         }
         if (result.Action is OpenFileAction file && result.Kind is (ResultKind.File or ResultKind.Folder))
@@ -962,10 +1272,44 @@ public partial class MainWindow : Window
 
     public void OpenManagerPage(ManagerPage page) => _managerController.OpenPage(page);
 
+    private void OnFeatureInvocationFeedback(string requestId, NativeFeatureRef reference, string status, bool dismissPanel)
+    {
+        if (_disposed || Dispatcher.HasShutdownStarted) return;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_disposed || _pendingFeatureInvocation != requestId) return;
+            _pendingFeatureInvocation = null;
+            if (!IsVisible) return;
+            if (status == "accepted" && _openingWindow is null) HideLauncher("feature-opened");
+            else if (status is "failed" or "rejected")
+            {
+                if (_openingWindow is not null) RestoreAfterWindowHandoff();
+            }
+            else if (status == "cancelled")
+            {
+                if (_openingWindow is not null) RestoreAfterWindowHandoff();
+                else SetStatus("命令已取消。");
+            }
+            else if (status == "completed") SetStatus("命令执行完成。");
+        }));
+    }
+
+    private async Task LoadProjectedShortcutIconAsync(Border target, string reference, int generation)
+    {
+        var bitmap = await _icons.GetAsync(reference);
+        if (_disposed || generation != _resultGeneration || bitmap is null) return;
+        target.Child = new Image { Source = bitmap, Width = 24, Height = 24, Stretch = Stretch.Uniform };
+    }
+
     public void ShowManagerError(string message)
     {
-        if (Dispatcher.CheckAccess()) SetStatus(message);
-        else Dispatcher.BeginInvoke(new Action(() => SetStatus(message)));
+        void ShowError()
+        {
+            if (_openingWindow is not null) RestoreAfterWindowHandoff();
+            else SetStatus(message);
+        }
+        if (Dispatcher.CheckAccess()) ShowError();
+        else Dispatcher.BeginInvoke(new Action(ShowError));
     }
 
     private void ResultsList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -1033,7 +1377,7 @@ public partial class MainWindow : Window
     private void Window_Activated(object? sender, EventArgs e) => FocusQueryBox();
     private void Window_Deactivated(object? sender, EventArgs e)
     {
-        if (IsVisible && !_isDraggingSearchBar) HideLauncher("blur");
+        if (IsVisible && !_isDraggingSearchBar && _openingWindow is null) HideLauncher("blur");
     }
 
     private void DragSurface_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)

@@ -18,7 +18,7 @@ export function builtinPluginEntries(hostVersion: string, state: BuiltinTranslat
     kind: 'builtin', id: 'webtools.translation', source: 'bundled', name: '翻译',
     description: '使用当前翻译服务理解文字', version: hostVersion,
     icon: { kind: 'host', key: 'translation' }, compatibility: { status: 'compatible' },
-    state: presentationState(state), entry: { kind: 'builtin-page', key: 'translation' },
+    state: presentationState(state), entry: { kind: 'builtin-window', key: 'translation' },
     hostUsage: ['translation', 'shared-ai', 'external-open', 'clipboard'],
     management: {
       canToggle: state.status === 'ready' || state.status === 'disabled' || state.status === 'faulted',

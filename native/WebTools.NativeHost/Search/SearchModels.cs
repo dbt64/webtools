@@ -50,6 +50,6 @@ public sealed record SearchEntry(
             .ToArray();
         return new(
             $"feature:{feature.Ref.PluginId}/{feature.Ref.FeatureId}", feature.Title, ResultKind.PluginFeature,
-            feature.PluginName, aliases, FeatureRef: feature.Ref, IconToken: feature.IconToken);
+            feature.PluginName, aliases, SearchText: feature.Description ?? "", IconReference: feature.IconDataUrl, FeatureRef: feature.Ref, IconToken: feature.IconToken);
     }
 }

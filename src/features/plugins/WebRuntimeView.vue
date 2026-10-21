@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { X } from '@lucide/vue'
 
 const props = defineProps<{ generation: number }>()
@@ -14,6 +14,8 @@ function publishBounds(): void {
 }
 
 function closeRuntime(): void { window.desktop.webRuntime.close(props.generation) }
+
+watch(() => props.generation, () => { void nextTick(publishBounds) })
 
 onMounted(() => {
   publishBounds()

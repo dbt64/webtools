@@ -36,7 +36,10 @@ internal static class Phase6D6Checks
         var request = NativeFeatureInvocationProtocol.CreateRequest(reference);
         Check(NativeFeatureInvocationProtocol.IsValidRequest(request), "A bounded Launcher Feature request has a valid protocol shape.");
         Check(request.Source == "launcher" && request.Ref == reference, "Native sends only the closed Launcher source and FeatureRef.");
-        Check(!NativeFeatureInvocationProtocol.IsValidRequest(request with { Source = "super-panel" }), "Unsupported invocation sources are rejected.");
+        var superPanelRequest = NativeFeatureInvocationProtocol.CreateSuperPanelRequest(reference,
+            new NativeLauncherTextContext("text", "selected-text", "selected", 0));
+        Check(NativeFeatureInvocationProtocol.IsValidRequest(superPanelRequest), "A bounded Super Panel selected-text Feature request has a valid protocol shape.");
+        Check(!NativeFeatureInvocationProtocol.IsValidRequest(request with { Source = "unsupported" }), "Unsupported invocation sources are rejected.");
         Check(!NativeFeatureInvocationProtocol.IsValidRequest(request with { RequestId = "not-a-guid" }), "Malformed request IDs are rejected.");
         Check(!NativeFeatureInvocationProtocol.IsValidRequest(request with { Ref = new NativeFeatureRef("org.example.notes", "../settings") }), "Invalid FeatureRefs are rejected.");
         Check(!NativeFeatureInvocationProtocol.IsValidRequest(request with { Ref = new NativeFeatureRef(new string('a', 129), "notes") }), "Oversized FeatureRefs are rejected.");

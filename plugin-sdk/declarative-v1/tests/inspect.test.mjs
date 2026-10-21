@@ -1,13 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { crc32 } from 'node:zlib'
 import { fileURLToPath } from 'node:url'
-import { LIMITS_V1 } from '../index.mjs'
+import { LIMITS_V3 } from '../index.mjs'
 import { manifest, packageBytes, png, zip } from '../../../electron/plugins/fixtures.mjs'
 
 const bin = fileURLToPath(new URL('../bin/webtools-plugin.mjs', import.meta.url))
@@ -76,6 +76,11 @@ test('inspect reports validated manifest metadata, archive size and SHA-256 in J
     apiMajor: value.api.apiMajor,
     minHostVersion: value.api.minHostVersion,
     capabilities: value.requestedCapabilities,
+    features: value.pages.map(({ id, title }) => ({ id, title })),
+    dependencies: [],
+    nativeAddons: [],
+    helpers: [],
+    resources: [],
   })
   assert.equal(envelope.result.size, bytes.length)
   assert.equal(envelope.result.sha256, createHash('sha256').update(bytes).digest('hex'))
@@ -114,7 +119,7 @@ test('inspect rejects non-wtplugin extensions and empty or truncated archives wi
     assert.equal(result.stderr, '', name)
     const envelope = JSON.parse(result.stdout)
     assert.equal(envelope.ok, false, name)
-    assert.equal(envelope.error.code, 'INVALID_PACKAGE', name)
+    assert.equal(envelope.error.code, name === 'wrong.zip' ? 'INVALID_PACKAGE' : 'UNSAFE_ARCHIVE', name)
     assert.equal(result.stdout.includes(root), false, name)
     assert.deepEqual(await readFile(archive), before, name)
   }
@@ -123,10 +128,11 @@ test('inspect rejects non-wtplugin extensions and empty or truncated archives wi
 
 test('inspect rejects oversized files before parsing and does not create extraction output', async t => {
   const root = await setup(t)
-  const archive = await writeArchive(root, 'oversized.wtplugin', Buffer.alloc(LIMITS_V1.archive + 1))
+  const archive = await writeArchive(root, 'oversized.wtplugin', Buffer.alloc(0))
+  await truncate(archive, LIMITS_V3.archive + 1)
   const result = run(['inspect', archive, '--host-version', hostVersion, '--json'], root)
   assert.equal(result.status, 1)
-  assert.equal(JSON.parse(result.stdout).error.code, 'INVALID_PACKAGE')
+  assert.equal(JSON.parse(result.stdout).error.code, 'PACKAGE_LIMIT_EXCEEDED')
   assert.deepEqual((await readdir(root)).sort(), ['oversized.wtplugin'])
 })
 
@@ -144,7 +150,7 @@ test('inspect rejects malformed local and central ZIP records', async t => {
     const before = await readFile(archive)
     const result = run(['inspect', archive, '--host-version', hostVersion, '--json'], root)
     assert.equal(result.status, 1, name)
-    assert.equal(JSON.parse(result.stdout).error.code, 'INVALID_PACKAGE', name)
+    assert.equal(JSON.parse(result.stdout).error.code, 'UNSAFE_ARCHIVE', name)
     assert.deepEqual(await readFile(archive), before, name)
   }
 })
@@ -162,7 +168,7 @@ test('inspect rejects undeclared, duplicate and path-colliding archive entries w
     const before = await readFile(archive)
     const result = run(['inspect', archive, '--host-version', hostVersion, '--json'], root)
     assert.equal(result.status, 1, name)
-    assert.equal(JSON.parse(result.stdout).error.code, 'INVALID_PACKAGE', name)
+    assert.equal(JSON.parse(result.stdout).error.code, name === 'duplicate.wtplugin' ? 'UNSAFE_ARCHIVE' : 'INVALID_PACKAGE', name)
     assert.deepEqual(await readFile(archive), before, name)
   }
   assert.deepEqual((await readdir(root)).sort(), cases.map(([name]) => name).sort())

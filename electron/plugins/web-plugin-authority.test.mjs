@@ -5,13 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PluginManager } from './plugin-manager.ts'
 import { WebHostCapabilities } from './web-host-capabilities.ts'
-import { webManifest, webPackage } from './fixtures.mjs'
+import { runtimeV3Manifest, runtimeV3Package, webManifest, webPackage } from './fixtures.mjs'
 
 const capabilities = ['plugin.storage.read', 'plugin.storage.write', 'sharedAI.complete', 'clipboard.write']
 function fixture(extra = {}) {
-  const base = webManifest()
+  const base = runtimeV3Manifest()
   const { requiredCapabilities = capabilities, ...fields } = extra
-  return webManifest({ ...fields, requestedCapabilities: fields.requestedCapabilities ?? capabilities,
+  return runtimeV3Manifest({ ...fields, requestedCapabilities: fields.requestedCapabilities ?? capabilities,
     features: [{ ...base.features[0], requiredCapabilities,
       acceptedContexts: [{ type: 'text', sources: ['launcher-input'] }] }] })
 }
@@ -42,7 +42,7 @@ function deferred() {
 
 test('replacement revokes authority before confirmation settles; denial never revives old effects or tickets', async t => {
   const env = await setup(t); const m = fixture()
-  await env.manager.install(webPackage(m), env.manager.session); await env.manager.setEnabled(m.id, true, env.manager.session)
+  await env.manager.install(runtimeV3Package(m), env.manager.session); await env.manager.setEnabled(m.id, true, env.manager.session)
   const old = await ticket(env.manager, m); const effectConfirmation = deferred(); const effectEntered = deferred(); const writes = []
   const host = new WebHostCapabilities({ authority: old, store: env.manager.store, isRuntimeCurrent: () => old.isCurrent(),
     effects: { hasForegroundGesture: () => true, isAIConfigured: async () => true, completeAI: async () => ({ text: 'isolated', outputTokens: 1 }),
@@ -52,7 +52,7 @@ test('replacement revokes authority before confirmation settles; denial never re
   pendingEffect.catch(() => {}); await effectEntered.promise
   const entered = deferred(); const answer = deferred()
   env.deps.confirm = async request => { assert.equal(request.kind, 'install'); entered.resolve(); return answer.promise }
-  const replacement = env.manager.install(webPackage(fixture({ version: '2.0.0' })), env.manager.session)
+  const replacement = env.manager.install(runtimeV3Package(fixture({ version: '2.0.0' })), env.manager.session)
   await entered.promise
   assert.equal(old.isCurrent(), false, 'old ticket must be invalid while confirmation is unresolved')
   await assert.rejects(() => host.dispatch({ method: 'storage.get', payload: { key: 'note' } }, new AbortController().signal))
@@ -66,10 +66,10 @@ test('replacement revokes authority before confirmation settles; denial never re
 test('replacement approval cannot overwrite a newer disable, grant mutation or uninstall intent', async t => {
   for (const action of ['disable', 'grants', 'uninstall']) await t.test(action, async t => {
     const env = await setup(t); const m = fixture()
-    await env.manager.install(webPackage(m), env.manager.session); await env.manager.setEnabled(m.id, true, env.manager.session)
+    await env.manager.install(runtimeV3Package(m), env.manager.session); await env.manager.setEnabled(m.id, true, env.manager.session)
     const old = await ticket(env.manager, m); const entered = deferred(); const answer = deferred()
     env.deps.confirm = async request => request.kind === 'install' ? (entered.resolve(), answer.promise) : true
-    const replacement = env.manager.install(webPackage(fixture({ version: '2.0.0' })), env.manager.session)
+    const replacement = env.manager.install(runtimeV3Package(fixture({ version: '2.0.0' })), env.manager.session)
     replacement.catch(() => {}); await entered.promise
     const mutation = action === 'disable' ? env.manager.setEnabled(m.id, false, env.manager.session)
       : action === 'grants' ? env.manager.setGrants(m.id, ['plugin.storage.read'], env.manager.session)
@@ -84,12 +84,12 @@ test('replacement approval cannot overwrite a newer disable, grant mutation or u
 
 test('concurrent replacement attempts serialize and each binds the then-current installation', async t => {
   const env = await setup(t); const m = fixture()
-  await env.manager.install(webPackage(m), env.manager.session); await env.manager.setEnabled(m.id, true, env.manager.session)
+  await env.manager.install(runtimeV3Package(m), env.manager.session); await env.manager.setEnabled(m.id, true, env.manager.session)
   const old = await ticket(env.manager, m); const entered = deferred(); const answer = deferred()
   env.deps.confirm = async request => request.version === '2.0.0' ? (entered.resolve(), answer.promise) : true
-  const first = env.manager.install(webPackage(fixture({ version: '2.0.0' })), env.manager.session)
+  const first = env.manager.install(runtimeV3Package(fixture({ version: '2.0.0' })), env.manager.session)
   await entered.promise
-  const second = env.manager.install(webPackage(fixture({ version: '3.0.0' })), env.manager.session)
+  const second = env.manager.install(runtimeV3Package(fixture({ version: '3.0.0' })), env.manager.session)
   assert.equal(old.isCurrent(), false); answer.resolve(true)
   assert.equal((await first).outcome, 'installed'); assert.equal((await second).change.currentVersion, '2.0.0')
   assert.equal((await env.manager.list())[0].version, '3.0.0'); assert.equal(old.isCurrent(), false)
@@ -97,40 +97,31 @@ test('concurrent replacement attempts serialize and each binds the then-current 
 })
 
 test('replacement revalidates its installed archive after trusted confirmation', async t => {
-  const env = await setup(t); const m = fixture(); const installed = await env.manager.install(webPackage(m), env.manager.session)
+  const env = await setup(t); const m = fixture(); const installed = await env.manager.install(runtimeV3Package(m), env.manager.session)
   await env.manager.setEnabled(m.id, true, env.manager.session); const old = await ticket(env.manager, m)
   const entered = deferred(); const answer = deferred()
   env.deps.confirm = async () => { entered.resolve(); return answer.promise }
-  const replacement = env.manager.install(webPackage(fixture({ version: '2.0.0' })), env.manager.session); replacement.catch(() => {})
+  const replacement = env.manager.install(runtimeV3Package(fixture({ version: '2.0.0' })), env.manager.session); replacement.catch(() => {})
   await entered.promise
-  await writeFile(join(env.root, 'plugins', 'packages', m.id, m.version, `${installed.plugin.hash}.wtplugin`), webPackage(fixture({ name: 'Changed archive' })))
+  await writeFile(join(env.root, 'plugins', 'packages', m.id, m.version, `${installed.plugin.hash}.wtplugin`), runtimeV3Package(fixture({ name: 'Changed archive' })))
   answer.resolve(true); await assert.rejects(replacement, error => error.code === 'INTEGRITY_FAILED')
   assert.equal(old.isCurrent(), false); assert.equal((await env.manager.list())[0].version, '1.0.0')
 })
 
-test('network domains remains requested but cannot be granted, restored from stale registry or enabled after restart', async t => {
+test('retired v2 network declarations require repack and v3 no longer accepts the legacy capability', async t => {
   const env = await setup(t)
-  const m = fixture({ requestedCapabilities: ['network.domains', 'plugin.storage.read'], requiredCapabilities: ['network.domains'],
+  const legacy = webManifest({ requestedCapabilities: ['network.domains', 'plugin.storage.read'],
+    features: [{ id: 'hello', title: 'Hello', entry: { kind: 'web-bundle', document: 'web/index.html' }, requiredCapabilities: ['network.domains'] }],
     network: { mode: 'domains', domains: [{ host: 'status.example.com', protocol: 'https' }] } })
-  const installed = await env.manager.install(webPackage(m), env.manager.session)
-  assert.equal(installed.plugin.status, 'incompatible'); assert.deepEqual(installed.plugin.requested, ['network.domains', 'plugin.storage.read'])
-  await assert.rejects(() => env.manager.setGrants(m.id, ['network.domains'], env.manager.session), error => error.code === 'INCOMPATIBLE_PLUGIN')
-  await env.manager.setGrants(m.id, ['plugin.storage.read'], env.manager.session)
-  await assert.rejects(() => env.manager.setEnabled(m.id, true, env.manager.session), error => error.code === 'INCOMPATIBLE_PLUGIN')
-  env.manager.close()
-  const path = join(env.root, 'plugins', 'registry.json'); const raw = JSON.parse(await readFile(path, 'utf8'))
-  raw.plugins[0].granted.push('network.domains'); await writeFile(path, JSON.stringify(raw))
-  const restarted = new PluginManager(env.deps); await restarted.initialize(); t.after(() => restarted.close())
-  const row = (await restarted.list())[0]
-  assert.deepEqual(row.granted, ['plugin.storage.read']); assert.equal(row.status, 'incompatible')
-  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).plugins[0].granted, ['plugin.storage.read'])
-  await assert.rejects(() => ticket(restarted, m)); await assert.rejects(() => restarted.setGrants(m.id, ['network.domains'], restarted.session))
+  await assert.rejects(() => env.manager.install(webPackage(legacy), env.manager.session), error => error.code === 'INCOMPATIBLE_PLUGIN')
+  const v3 = fixture({ requestedCapabilities: ['network.domains'], requiredCapabilities: ['network.domains'] })
+  await assert.rejects(() => env.manager.install(runtimeV3Package(v3), env.manager.session), error => error.code === 'INVALID_CAPABILITY')
 })
 
-test('v2 installation persists exact package identity and requests without granting authority; restart preserves explicit grants', async t => {
+test('v3 installation persists exact package identity and requests without granting authority; restart preserves explicit grants', async t => {
   const env = await setup(t); const m = fixture()
-  const installed = await env.manager.install(webPackage(m), env.manager.session)
-  assert.equal(installed.plugin.manifestVersion, 2)
+  const installed = await env.manager.install(runtimeV3Package(m), env.manager.session)
+  assert.equal(installed.plugin.manifestVersion, 3)
   assert.equal(installed.plugin.enabled, false)
   assert.deepEqual(installed.plugin.requested, capabilities)
   assert.deepEqual(installed.plugin.granted, [])
@@ -147,10 +138,10 @@ test('v2 installation persists exact package identity and requests without grant
   assert.deepEqual((await restarted.list())[0].granted, capabilities)
   assert.equal((await ticket(restarted, m)).isCurrent('plugin.storage.write'), true)
 })
-test('valid v2 Unicode scalar metadata limits survive registry persistence without weakening v1 rules', async t => {
+test('valid v3 Unicode scalar metadata limits survive registry persistence without weakening v1 rules', async t => {
   const env = await setup(t)
   const m = fixture({ name: '😀'.repeat(80), description: '😀'.repeat(512), author: { name: '😀'.repeat(128) } })
-  const installed = await env.manager.install(webPackage(m), env.manager.session)
+  const installed = await env.manager.install(runtimeV3Package(m), env.manager.session)
   assert.equal(installed.plugin.name, m.name); assert.equal(installed.plugin.description, m.description)
   env.manager.close(); const restarted = new PluginManager(env.deps); await restarted.initialize(); t.after(() => restarted.close())
   assert.equal((await restarted.list())[0].name, m.name)
@@ -158,7 +149,7 @@ test('valid v2 Unicode scalar metadata limits survive registry persistence witho
 
 test('grant revoke and disable synchronously revoke existing tickets before queued persistence', async t => {
   const { manager } = await setup(t); const m = fixture()
-  await manager.install(webPackage(m), manager.session); await manager.setEnabled(m.id, true, manager.session)
+  await manager.install(runtimeV3Package(m), manager.session); await manager.setEnabled(m.id, true, manager.session)
   const current = await ticket(manager, m); let revoked = 0; current.onRevoke(() => revoked++)
   const revoke = manager.setGrants(m.id, ['plugin.storage.read'], manager.session)
   assert.equal(current.isCurrent('plugin.storage.write'), false); assert.equal(revoked, 1)
@@ -171,7 +162,7 @@ test('grant revoke and disable synchronously revoke existing tickets before queu
 
 test('per-Feature required capabilities are authority; package grants alone do not authorize undeclared methods', async t => {
   const { manager } = await setup(t); const m = fixture({ requiredCapabilities: ['plugin.storage.read'] })
-  await manager.install(webPackage(m), manager.session); await manager.setEnabled(m.id, true, manager.session)
+  await manager.install(runtimeV3Package(m), manager.session); await manager.setEnabled(m.id, true, manager.session)
   const current = await ticket(manager, m)
   assert.equal(current.isCurrent('plugin.storage.read'), true)
   assert.equal(current.isCurrent('plugin.storage.write'), false)
@@ -180,22 +171,22 @@ test('per-Feature required capabilities are authority; package grants alone do n
 
 test('update revokes old package; expansion never auto-grants; uninstall/reinstall never restores stale grants', async t => {
   const { manager } = await setup(t); const m = fixture({ requestedCapabilities: ['plugin.storage.read'], requiredCapabilities: ['plugin.storage.read'] })
-  await manager.install(webPackage(m), manager.session); await manager.setEnabled(m.id, true, manager.session)
+  await manager.install(runtimeV3Package(m), manager.session); await manager.setEnabled(m.id, true, manager.session)
   const first = await ticket(manager, m)
   const updated = fixture({ version: '2.0.0' })
-  await manager.install(webPackage(updated), manager.session)
+  await manager.install(runtimeV3Package(updated), manager.session)
   assert.equal(first.isCurrent(), false)
   assert.deepEqual((await manager.list())[0].granted, ['plugin.storage.read'])
   await assert.rejects(() => ticket(manager, updated))
   await manager.uninstall(m.id, manager.session)
-  await manager.install(webPackage(updated), manager.session)
+  await manager.install(runtimeV3Package(updated), manager.session)
   assert.deepEqual((await manager.list())[0].granted, [])
   assert.equal((await manager.list())[0].enabled, false)
 })
 
-test('registry corruption and v1 grant records cannot recreate v2 authority; archive/hash mismatch fails closed', async t => {
+test('registry corruption and legacy grant records cannot recreate v3 authority; archive/hash mismatch fails closed', async t => {
   const env = await setup(t); const m = fixture()
-  const installed = await env.manager.install(webPackage(m), env.manager.session)
+  const installed = await env.manager.install(runtimeV3Package(m), env.manager.session)
   await env.manager.setEnabled(m.id, true, env.manager.session); env.manager.close()
   const path = join(env.root, 'plugins', 'registry.json')
   const registry = JSON.parse(await readFile(path, 'utf8'))

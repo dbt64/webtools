@@ -3,7 +3,7 @@ import { INSTALLED_PLUGIN_CAPABILITIES as PLUGIN_CAPABILITIES, type InstalledPlu
 import { opaqueKey, record, validPluginId, versionParts } from '../plugins/manifest.ts'
 import { PluginManager } from '../plugins/plugin-manager.ts'
 import { fail, safePluginError } from '../plugins/errors.ts'
-import type { IpcSenderContext } from './window-security.ts'
+import { registerManagerInvokeHandlers, type IpcSenderContext, type ManagerInvokeRegistry } from './window-security.ts'
 
 interface PluginHandlerDependencies {
   getManager(): PluginManager | null
@@ -14,13 +14,13 @@ interface PluginHandlerDependencies {
 type Handler = (event: IpcSenderContext, ...args: unknown[]) => Promise<IpcResult<unknown>>
 function id(value: unknown): string { if (!validPluginId(value)) fail('INVALID_INPUT'); return value }
 export function createPluginHandlers(deps: PluginHandlerDependencies): Record<string, Handler> {
-  const guard = (count: number, action: (manager: PluginManager, session: string, args: unknown[]) => Promise<unknown>, refresh = false): Handler => async (event, ...args) => {
+  const guard = (count: number, action: (manager: PluginManager, session: string, args: unknown[], mayManage: () => boolean) => Promise<unknown>, refresh = false): Handler => async (event, ...args) => {
     try {
       if (!deps.isManagerMainFrame(event)) fail('PERMISSION_DENIED')
       if (args.length !== count) fail('INVALID_INPUT')
       const manager = deps.getManager(); if (!manager) fail('OPERATION_FAILED')
       const session = manager.session; if (!manager.isSession(session)) fail('SESSION_EXPIRED')
-      const data = await action(manager, session, args)
+      const data = await action(manager, session, args, () => deps.isManagerMainFrame(event))
       if (!deps.isManagerMainFrame(event) || !manager.isSession(session)) fail('SESSION_EXPIRED')
       if (refresh) await deps.onCatalogChanged?.()
       if (!deps.isManagerMainFrame(event) || !manager.isSession(session)) fail('SESSION_EXPIRED')
@@ -29,6 +29,7 @@ export function createPluginHandlers(deps: PluginHandlerDependencies): Record<st
   }
   return {
     [IPC_CHANNELS.pluginList]: guard(0, async manager => manager.list()),
+    [IPC_CHANNELS.pluginStopRuntime]: guard(1, async (manager, session, args) => manager.stopRuntime(id(args[0]), session)),
     [IPC_CHANNELS.pluginInstall]: guard(0, async (manager, session) => {
       const bytes = await deps.choosePackage(); if (!manager.isSession(session)) fail('SESSION_EXPIRED')
       return bytes ? manager.install(bytes, session) : { outcome: 'cancelled' }
@@ -42,6 +43,9 @@ export function createPluginHandlers(deps: PluginHandlerDependencies): Record<st
       return manager.setGrants(id(args[0]), grants as PluginCapability[], session)
     }, true),
     [IPC_CHANNELS.pluginGetPages]: guard(1, async (manager, session, args) => manager.getPages(id(args[0]), session)),
+    [IPC_CHANNELS.pluginConfigurationGet]: guard(1, async (manager, session, args, mayManage) => manager.getConfiguration(args[0] as Parameters<PluginManager['getConfiguration']>[0], session, mayManage)),
+    [IPC_CHANNELS.pluginConfigurationUpdate]: guard(1, async (manager, session, args, mayManage) => manager.updateConfiguration(args[0] as Parameters<PluginManager['updateConfiguration']>[0], session, mayManage)),
+    [IPC_CHANNELS.pluginConfigurationReset]: guard(1, async (manager, session, args, mayManage) => manager.resetConfiguration(args[0] as Parameters<PluginManager['resetConfiguration']>[0], session, mayManage)),
     [IPC_CHANNELS.pluginInvoke]: guard(1, async (manager, session, args) => {
       const request = record(args[0], ['pluginId', 'version', 'hash', 'actionId', 'input']); id(request.pluginId); versionParts(request.version); opaqueKey(request.actionId)
       if (typeof request.hash !== 'string' || !/^[a-f0-9]{64}$/.test(request.hash)) fail('INVALID_INPUT')
@@ -57,8 +61,7 @@ export function createPluginHandlers(deps: PluginHandlerDependencies): Record<st
     [IPC_CHANNELS.pluginUninstall]: guard(1, async (manager, session, args) => manager.uninstall(id(args[0]), session), true),
   }
 }
-export function registerPluginIpcHandlers(ipc: { handle(channel: string, handler: Handler): void; removeHandler(channel: string): void }, deps: PluginHandlerDependencies): () => void {
+export function registerPluginIpcHandlers(ipc: ManagerInvokeRegistry, deps: PluginHandlerDependencies): () => void {
   const handlers = createPluginHandlers(deps)
-  for (const [channel, handler] of Object.entries(handlers)) ipc.handle(channel, handler)
-  return () => { for (const channel of Object.keys(handlers)) ipc.removeHandler(channel) }
+  return registerManagerInvokeHandlers(ipc, deps.isManagerMainFrame, handlers)
 }

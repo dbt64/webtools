@@ -20,7 +20,10 @@ public sealed record NativeFeatureRef(string PluginId, string FeatureId)
         && FeatureId is { Length: >= 1 and <= 64 }
         && FeatureIdPattern.IsMatch(FeatureId);
 }
-public sealed record NativeFeatureAcceptedContextV2(string Type, IReadOnlyList<string> Sources);
+public sealed record NativeFeatureAcceptedContextV2(string Type, IReadOnlyList<string> Sources,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Extensions = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? MaxItems = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? TextMatch = null);
 public sealed record NativeFeatureProjectionRowV2(
     NativeFeatureRef Ref,
     string PluginName,
@@ -29,7 +32,10 @@ public sealed record NativeFeatureProjectionRowV2(
     IReadOnlyList<NativeFeatureAcceptedContextV2> AcceptedContexts,
     string IconToken,
     string FeatureKind,
-    string Group);
+    string Group,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Description = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Presentation = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? IconDataUrl = null);
 public sealed record NativeFeatureProjectionV2(
     int ProjectionVersion,
     string HostSessionId,
@@ -43,7 +49,7 @@ public sealed class NativeFeatureProjectionStore
 {
     public const string CacheFileName = "feature-projection-v2.json";
     public const int MaximumSerializedBytes = 3 * 1024 * 1024;
-    public const int MaximumFeaturesPerPlugin = 16;
+    public const int MaximumFeaturesPerPlugin = 64;
     public const int MaximumFeatures = 2000;
     private const long MaximumSafeInteger = 9_007_199_254_740_991;
     private static readonly string[] ProjectionFields = ["projectionVersion", "hostSessionId", "revision", "generatedAtUnixMs", "features"];
@@ -52,8 +58,8 @@ public sealed class NativeFeatureProjectionStore
     private static readonly string[] ContextFields = ["type", "sources"];
     private static readonly Regex HostSessionPattern = new("^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly HashSet<string> IconTokens = new(["plugin", "sparkles", "document", "globe", "translate"], StringComparer.Ordinal);
-    private static readonly HashSet<string> ContextSources = new(["launcher-input", "clipboard"], StringComparer.Ordinal);
-    private static readonly HashSet<string> FeatureKinds = new(["declarative-compatibility", "built-in"], StringComparer.Ordinal);
+    private static readonly HashSet<string> ContextSources = new(["launcher-input", "clipboard", "selected-text", "explorer-selection"], StringComparer.Ordinal);
+    private static readonly HashSet<string> FeatureKinds = new(["declarative-compatibility", "built-in", "runtime-v3"], StringComparer.Ordinal);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -212,7 +218,8 @@ public sealed class NativeFeatureProjectionStore
 
     private static NativeFeatureProjectionRowV2 ParseRow(JsonElement row)
     {
-        if (!HasExactFields(row, RowFields)) throw new InvalidDataException("Feature Projection row has unknown or missing fields.");
+        var optionalFields = new[] { "description", "presentation", "iconDataUrl" }.Where(name => row.ValueKind == JsonValueKind.Object && row.TryGetProperty(name, out _)).ToArray();
+        if (!HasExactFields(row, RowFields.Concat(optionalFields).ToArray())) throw new InvalidDataException("Feature Projection row has unknown or missing fields.");
         var reference = row.GetProperty("ref");
         if (!HasExactFields(reference, RefFields)
             || !ReadString(reference, "pluginId", out var pluginId)
@@ -237,7 +244,7 @@ public sealed class NativeFeatureProjectionStore
         }
 
         var contextElement = row.GetProperty("acceptedContexts");
-        if (contextElement.ValueKind != JsonValueKind.Array || contextElement.GetArrayLength() > 1)
+        if (contextElement.ValueKind != JsonValueKind.Array || contextElement.GetArrayLength() > 4)
             throw new InvalidDataException("Feature Projection accepted context metadata is invalid.");
         var contexts = new List<NativeFeatureAcceptedContextV2>(contextElement.GetArrayLength());
         foreach (var context in contextElement.EnumerateArray()) contexts.Add(ParseContext(context));
@@ -247,17 +254,44 @@ public sealed class NativeFeatureProjectionStore
             || !ReadString(row, "group", out var group) || group != "plugin-features")
             throw new InvalidDataException("Feature Projection icon, kind or group is invalid.");
 
+        string? description = null;
+        string? presentation = null;
+        string? iconDataUrl = null;
+        if (row.TryGetProperty("description", out _))
+        {
+            if (!ReadString(row, "description", out var text) || (description = NormalizeText(text, 240)) is null)
+                throw new InvalidDataException("Feature description is invalid.");
+        }
+        if (row.TryGetProperty("presentation", out _))
+        {
+            if (!ReadString(row, "presentation", out var text) || text is not ("window" or "command"))
+                throw new InvalidDataException("Feature presentation is invalid.");
+            presentation = text;
+        }
+        if (featureKind == "runtime-v3" && presentation is null) throw new InvalidDataException("Runtime Feature presentation is missing.");
+        if (row.TryGetProperty("iconDataUrl", out _))
+        {
+            if (!ReadString(row, "iconDataUrl", out var text) || text.Length > 5500 || !text.StartsWith("data:image/png;base64,", StringComparison.Ordinal))
+                throw new InvalidDataException("Feature icon is invalid.");
+            byte[] bytes;
+            try { bytes = Convert.FromBase64String(text[22..]); } catch (FormatException) { throw new InvalidDataException("Feature icon encoding is invalid."); }
+            if (bytes.Length is < 24 or > 4096 || !bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 })
+                || Convert.ToBase64String(bytes) != text[22..]) throw new InvalidDataException("Feature icon is not a bounded canonical PNG.");
+            iconDataUrl = text;
+        }
         return new NativeFeatureProjectionRowV2(
             new NativeFeatureRef(pluginId, featureId), pluginName, title,
-            Array.AsReadOnly(commands.ToArray()), Array.AsReadOnly(contexts.ToArray()), iconToken, featureKind, group);
+            Array.AsReadOnly(commands.ToArray()), Array.AsReadOnly(contexts.ToArray()), iconToken, featureKind, group, description, presentation, iconDataUrl);
     }
 
     private static NativeFeatureAcceptedContextV2 ParseContext(JsonElement value)
     {
-        if (!HasExactFields(value, ContextFields) || !ReadString(value, "type", out var type) || type != "text")
+        var optional = new[] { "extensions", "maxItems", "textMatch" }.Where(name => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(name, out _)).ToArray();
+        if (!HasExactFields(value, ContextFields.Concat(optional).ToArray()) || !ReadString(value, "type", out var type) || type is not ("text" or "files" or "directories" or "none"))
             throw new InvalidDataException("Feature Projection context metadata has an invalid shape.");
         var sourceElement = value.GetProperty("sources");
-        if (sourceElement.ValueKind != JsonValueKind.Array || sourceElement.GetArrayLength() is < 1 or > 2)
+        string[] allowed = type == "text" ? ["launcher-input", "clipboard", "selected-text"] : type == "none" ? [] : ["explorer-selection"];
+        if (sourceElement.ValueKind != JsonValueKind.Array || sourceElement.GetArrayLength() < (type == "none" ? 0 : 1) || sourceElement.GetArrayLength() > allowed.Length)
             throw new InvalidDataException("Feature Projection context sources are invalid.");
         var sources = new List<string>(sourceElement.GetArrayLength());
         var sourceSet = new HashSet<string>(StringComparer.Ordinal);
@@ -265,11 +299,31 @@ public sealed class NativeFeatureProjectionStore
         {
             if (sourceElementItem.ValueKind != JsonValueKind.String) throw new InvalidDataException("Feature Projection context source is invalid.");
             var source = sourceElementItem.GetString()!;
-            if (!ContextSources.Contains(source) || !sourceSet.Add(source)) throw new InvalidDataException("Feature Projection context source is invalid or duplicated.");
+            if (!ContextSources.Contains(source) || !allowed.Contains(source, StringComparer.Ordinal) || !sourceSet.Add(source)) throw new InvalidDataException("Feature Projection context source is invalid or duplicated.");
             sources.Add(source);
         }
         sources.Sort(StringComparer.Ordinal);
-        return new NativeFeatureAcceptedContextV2(type, Array.AsReadOnly(sources.ToArray()));
+        string? textMatch = null;
+        if (value.TryGetProperty("textMatch", out _))
+        {
+            if (type != "text" || sources.Count != 1 || sources[0] != "selected-text"
+                || !ReadString(value, "textMatch", out textMatch) || textMatch != "http-url")
+                throw new InvalidDataException("Selected-text matcher metadata is invalid.");
+        }
+        int? maxItems = null;
+        if (value.TryGetProperty("maxItems", out _))
+        {
+            if (type is not ("files" or "directories") || !ReadInt32(value, "maxItems", out var limit) || limit is < 1 or > 64) throw new InvalidDataException("Context count limit is invalid.");
+            maxItems = limit;
+        }
+        string[]? extensions = null;
+        if (value.TryGetProperty("extensions", out var extensionValues))
+        {
+            if (type != "files" || extensionValues.ValueKind != JsonValueKind.Array || extensionValues.GetArrayLength() > 16) throw new InvalidDataException("Context extensions are invalid.");
+            extensions = extensionValues.EnumerateArray().Select(item => item.ValueKind == JsonValueKind.String ? item.GetString()! : "").ToArray();
+            if (extensions.Any(extension => !Regex.IsMatch(extension, @"^\.[a-z0-9]{1,16}$", RegexOptions.CultureInvariant)) || extensions.Distinct(StringComparer.Ordinal).Count() != extensions.Length) throw new InvalidDataException("Context extensions are invalid.");
+        }
+        return new NativeFeatureAcceptedContextV2(type, Array.AsReadOnly(sources.ToArray()), extensions is null ? null : Array.AsReadOnly(extensions), maxItems, textMatch);
     }
 
     private static string ContentIdentity(NativeFeatureProjectionV2 value) => JsonSerializer.Serialize(value.Features, JsonOptions);
@@ -283,6 +337,7 @@ public sealed class NativeFeatureProjectionStore
             AcceptedContexts = Array.AsReadOnly(row.AcceptedContexts.Select(context => context with
             {
                 Sources = Array.AsReadOnly(context.Sources.ToArray()),
+                Extensions = context.Extensions is null ? null : Array.AsReadOnly(context.Extensions.ToArray()),
             }).ToArray()),
         }).ToArray()),
     };

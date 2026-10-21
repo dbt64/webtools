@@ -1,12 +1,26 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type { ValidatedWebPackageSnapshot } from './validated-web-package-snapshot.ts'
-import { isValidatedWebPackageSnapshot } from './package-validator.ts'
+import type { ValidatedPluginPackageSnapshotV3 } from './validated-plugin-package-snapshot.ts'
+import { isValidatedPluginRuntimeSnapshot } from './package-validator.ts'
 
 export const WEB_PLUGIN_SCHEME = 'webtools-plugin'
-const RUNTIME_HOST = /^[0-9a-f]{32}$/
+const RUNTIME_HOST = /^(?:[0-9a-f]{32}|p-[a-z2-7]{52})$/
 
-export function createRuntimeOrigin(): Readonly<{ host: string; origin: string }> {
-  const host = randomBytes(16).toString('hex')
+function stableHost(pluginId: string): string {
+  const digest = createHash('sha256').update(pluginId, 'utf8').digest()
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz234567'
+  let bits = 0; let value = 0; let encoded = ''
+  for (const byte of digest) {
+    value = (value << 8) | byte; bits += 8
+    while (bits >= 5) { bits -= 5; encoded += alphabet[(value >>> bits) & 31] }
+    value &= (1 << bits) - 1
+  }
+  if (bits) encoded += alphabet[(value << (5 - bits)) & 31]
+  return `p-${encoded}`
+}
+
+export function createRuntimeOrigin(pluginId?: string): Readonly<{ host: string; origin: string }> {
+  const host = pluginId === undefined ? randomBytes(16).toString('hex') : stableHost(pluginId)
   return Object.freeze({ host, origin: `${WEB_PLUGIN_SCHEME}://${host}` })
 }
 
@@ -19,16 +33,27 @@ export function buildRuntimeCsp(wasm = false): string {
   ].join('; ')
 }
 
+/** Standard Chromium networking, workers, storage and WASM for production Manifest v3 plugins. */
+export function buildRuntimeCspV3(): string {
+  return [
+    "default-src 'self' data: blob:", "base-uri 'none'", "object-src 'none'", "frame-ancestors 'none'",
+    "form-action https: http:", "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'", "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https: http:", "font-src 'self' data: https: http:",
+    "connect-src 'self' https: http: ws: wss:", "worker-src 'self' blob:", "frame-src 'none'",
+    "manifest-src 'self' https: http:",
+  ].join('; ')
+}
+
 /** Parse a protocol URL without allowing URL's dot-segment normalization to hide traversal. */
 export function parseRuntimePackageUrl(rawUrl: string, expectedHost: string): string | null {
   if (!RUNTIME_HOST.test(expectedHost)) return null
   const match = /^webtools-plugin:\/\/([^/?#]+)(\/[^?#]*)(?:\?[^#]*)?(?:#.*)?$/i.exec(rawUrl)
-  if (!match || match[1] !== expectedHost || rawUrl.includes('?') || rawUrl.includes('#')) return null
+  if (!match || match[1] !== expectedHost) return null
   const encodedPath = match[2]
   if (/%2f|%5c/i.test(encodedPath) || encodedPath.includes('\\')) return null
   let path: string
   try { path = decodeURIComponent(encodedPath.slice(1)) } catch { return null }
-  if (!path || path !== path.normalize('NFC') || path.startsWith('/') || path.includes('\\')) return null
+  if (!path || path !== path.normalize('NFC') || path.startsWith('/') || /[\\?#]/u.test(path)) return null
   const segments = path.split('/')
   if (segments.some(segment => !segment || segment === '.' || segment === '..')) return null
   return path
@@ -44,21 +69,29 @@ export function buildRuntimeResourceUrl(host: string, canonicalPath: string): st
   return `${WEB_PLUGIN_SCHEME}://${host}/${path}`
 }
 
-export function resolveRuntimeResource(snapshot: ValidatedWebPackageSnapshot, host: string, rawUrl: string) {
-  if (!isValidatedWebPackageSnapshot(snapshot)) return undefined
+export function resolveRuntimeResource(snapshot: ValidatedWebPackageSnapshot | ValidatedPluginPackageSnapshotV3, host: string, rawUrl: string) {
+  if (!isValidatedPluginRuntimeSnapshot(snapshot)) return undefined
   const path = parseRuntimePackageUrl(rawUrl, host)
   if (!path) return undefined
   return snapshot.getResource(path)
 }
 
 export function selectValidatedWebFeature(snapshot: unknown, featureId: string) {
-  if (!isValidatedWebPackageSnapshot(snapshot)) throw new TypeError('Web Plugin execution requires a Host-validated package snapshot')
-  if (snapshot.manifest.network.mode !== 'none') throw new Error('Web Plugin network mode is unavailable in this runtime')
+  if (!isValidatedPluginRuntimeSnapshot(snapshot)) throw new TypeError('Web Plugin execution requires a Host-validated package snapshot')
+  if (snapshot.manifest.manifestVersion === 2 && snapshot.manifest.network.mode !== 'none') throw new Error('Legacy Web Plugin network mode is unavailable in this runtime')
   const feature = snapshot.manifest.features.find(candidate => candidate.id === featureId)
   if (!feature) throw new Error('Web Plugin Feature does not belong to the validated package')
-  const resource = snapshot.inventory.find(item => item.canonicalPath === feature.entry.document && item.mimeType === 'text/html')
+  if (feature.entry.kind !== 'web-bundle') throw new Error('This Feature requires the Node command execution adapter.')
+  const entryPath = feature.entry.document
+  const resource = snapshot.inventory.find(item => item.canonicalPath === entryPath && item.mimeType === 'text/html')
   if (!resource) throw new Error('Web Plugin Feature entry is outside the validated package inventory')
-  const wasmFiles = snapshot.inventory.filter(item => item.mimeType === 'application/wasm')
-  if (feature.executionRequirements.wasm && wasmFiles.length === 0) throw new Error('Web Plugin WASM declaration does not match its validated inventory')
-  return Object.freeze({ feature, entryPath: resource.canonicalPath })
+  let csp: string
+  if (snapshot.manifest.manifestVersion === 2) {
+    const wasmFiles = snapshot.inventory.filter(item => item.mimeType === 'application/wasm')
+    const legacyFeature = feature as ValidatedWebPackageSnapshot['manifest']['features'][number]
+    if (legacyFeature.executionRequirements.wasm && wasmFiles.length === 0) throw new Error('Web Plugin WASM declaration does not match its validated inventory')
+    csp = buildRuntimeCsp(legacyFeature.executionRequirements.wasm)
+  } else csp = buildRuntimeCspV3()
+  return Object.freeze({ feature, entryPath: resource.canonicalPath, runtimeKind: snapshot.manifest.manifestVersion === 3 ? snapshot.manifest.runtime.kind : 'web' as const,
+    csp })
 }

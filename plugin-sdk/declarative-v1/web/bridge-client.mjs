@@ -38,10 +38,12 @@ export function createBridgeConnection(facade) {
     const result = await request(method, payload, options)
     try { validateCapabilityResult(method, result) } catch { throw safeError('INTERNAL_ERROR') }
     if (method === 'context.current') return result === null ? null : Object.freeze({ ...result })
-    return ['storage.set', 'storage.delete', 'clipboard.write'].includes(method) ? undefined : result
+    return ['config.set', 'storage.set', 'storage.delete', 'clipboard.write'].includes(method) ? undefined : result
   }
   const publicClient = Object.freeze({ ready,
     context: Object.freeze({ current: options => capability('context.current', null, options) }),
+    config: Object.freeze({ get: options => capability('config.get', null, options),
+      set: (key, value, options) => capability('config.set', { key, value }, options) }),
     storage: Object.freeze({ get: (key, options) => capability('storage.get', { key }, options),
       set: (key, value, options) => capability('storage.set', { key, value }, options),
       delete: (key, options) => capability('storage.delete', { key }, options) }),

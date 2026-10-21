@@ -16,6 +16,7 @@ public sealed class NativeFeatureInvocationQueue
     public NativeFeatureInvocationQueue() : this(TimeProvider.System) { }
     public NativeFeatureInvocationQueue(TimeProvider clock) => _clock = clock ?? throw new ArgumentNullException(nameof(clock));
     public int Count { get { lock (_gate) { if (ExpireLocked()) ScheduleExpiryLocked(); return _items.Count; } } }
+    internal string[] RequestIds { get { lock (_gate) { if (ExpireLocked()) ScheduleExpiryLocked(); return _requestIds.ToArray(); } } }
 
     public NativeFeatureInvocationEnqueueResult TryEnqueue(NativeFeatureInvocationRequest request)
     {
@@ -68,6 +69,27 @@ public sealed class NativeFeatureInvocationQueue
             _expiryTimer?.Dispose(); _expiryTimer = null;
             _items.Clear();
             _requestIds.Clear();
+        }
+    }
+    public bool Cancel(string requestId)
+    {
+        lock (_gate)
+        {
+            var removed = false;
+            for (var remaining = _items.Count; remaining > 0; remaining--)
+            {
+                var item = _items.Dequeue();
+                if (item.Request.RequestId == requestId) { _requestIds.Remove(requestId); removed = true; }
+                else _items.Enqueue(item);
+            }
+            ScheduleExpiryLocked(); return removed;
+        }
+    }
+    public void CancelQuickResults()
+    {
+        lock (_gate)
+        {
+            foreach (var requestId in _items.Where(item => item.Request.QuickResult is not null).Select(item => item.Request.RequestId).ToArray()) Cancel(requestId);
         }
     }
     private bool ExpireLocked()

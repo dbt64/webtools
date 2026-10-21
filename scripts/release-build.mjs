@@ -185,7 +185,9 @@ async function verifyVersionBuildWiring(root) {
       || /WebTools-Setup-0\.1\.0\.exe/.test(nsis)) {
     throw new ReleaseCliError('VERSION_WIRING', 'Installer version metadata and name must be injected by the versioned build.')
   }
-  if (!electronMain.includes('IPC_CHANNELS.getVersion, () => app.getVersion()')) throw new ReleaseCliError('VERSION_WIRING', 'Manager version must continue to derive from Electron app version.')
+  const managerVersionHandlerRegistered = electronMain.includes('IPC_CHANNELS.getVersion, () => app.getVersion()')
+    || /\[\s*IPC_CHANNELS\.getVersion\s*\]\s*:\s*\(\)\s*=>\s*app\.getVersion\(\)/.test(electronMain)
+  if (!managerVersionHandlerRegistered) throw new ReleaseCliError('VERSION_WIRING', 'Manager version must continue to derive from Electron app version.')
   if (!buildScript.includes('$managerVersionForms = @("$major.$minor.$patch", $windowsFileVersion)')
       || !buildScript.includes('$managerVersion.FileVersion -notin $managerVersionForms')
       || !buildScript.includes('$managerVersion.ProductVersion -notin $managerVersionForms')) {
@@ -234,11 +236,11 @@ async function buildRelease(preflight) {
   const stage = join(workDirectory, 'stage')
   const files = [
     [join(workDirectory, installerName(buildInfo)), `installer/${installerName(buildInfo)}`],
-    [join(stage, 'host/WebTools.NativeHost.exe'), 'components/native/WebTools.NativeHost.exe'],
-    [join(stage, 'host/WebTools.NativeHost.dll'), 'components/native/WebTools.NativeHost.dll'],
+    [join(stage, 'application/WebTools.NativeHost.exe'), 'components/native/WebTools.NativeHost.exe'],
+    [join(stage, 'application/WebTools.NativeHost.dll'), 'components/native/WebTools.NativeHost.dll'],
     [join(stage, 'updater/WebTools.UpdateHelper.exe'), 'components/update-helper/WebTools.UpdateHelper.exe'],
-    [join(stage, 'manager/WebTools.exe'), 'components/manager/WebTools.exe'],
-    [join(stage, 'manager/resources/app.asar'), 'components/manager/resources/app.asar'],
+    [join(stage, 'application/Manager/WebTools.exe'), 'components/manager/WebTools.exe'],
+    [join(stage, 'application/Manager/resources/app.asar'), 'components/manager/resources/app.asar'],
   ]
   await mkdir(buildingDirectory)
   for (const [source, target] of files) await copyRegularFile(source, join(buildingDirectory, target))

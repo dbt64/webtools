@@ -1,0 +1,13 @@
+{
+  "name": "webtools-selected-text-actions",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "build": "esbuild src/search.cjs src/open-link.cjs --bundle --platform=node --format=cjs --target=node24 --outdir=assets --out-extension:.js=.cjs && webtools-plugin build .",
+    "validate": "webtools-plugin validate dist --host-version 0.1.0",
+    "pack": "webtools-plugin pack dist --out selected-text-actions.wtplugin --host-version 0.1.0",
+    "inspect": "webtools-plugin inspect selected-text-actions.wtplugin --host-version 0.1.0"
+  },
+  "devDependencies": { "esbuild": "0.25.12" }
+}

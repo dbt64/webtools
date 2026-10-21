@@ -1,29 +1,18 @@
 import { isAIProviderId } from '../../src/shared/ai-config.ts'
-import { isTranslationLanguage } from '../../src/shared/translation-contracts.ts'
 import type { IpcResult } from '../../src/shared/ipc.ts'
-import { buildGoogleTranslateUrl } from '../services/google-translate.ts'
 import type { AIProviderCredentialStore } from '../services/ai-credentials.ts'
 import type { SharedAIService } from '../services/shared-ai-service.ts'
-import type { TranslationService } from '../services/translation-service.ts'
-import { validateTranslationRequest } from '../services/translation-service.ts'
 import { ServiceError } from '../services/service-error.ts'
-import type { IpcSenderContext } from './window-security.ts'
+import { createManagerInvokeRegistry, type IpcSenderContext, type ManagerInvokeRegistry } from './window-security.ts'
 
 const MAX_API_KEY_LENGTH = 4096
 type TranslationHandler = (event: IpcSenderContext, ...args: unknown[]) => Promise<IpcResult<unknown>> | IpcResult<unknown>
 
 function fail<T>(code: string, message: string): IpcResult<T> { return { ok: false, error: { code, message } } }
-function providerError(error: unknown, fallbackCode: string, fallbackMessage: string): { code: string; message: string } {
-  if (error instanceof ServiceError) return { code: error.code, message: error.message }
-  if (error instanceof Error && error.name === 'TimeoutError') return { code: `${fallbackCode}_TIMEOUT`, message: '请求超时，请检查网络后重试。' }
-  return { code: fallbackCode, message: fallbackMessage }
-}
 
 export function createTranslationIpcHandlers(deps: {
-  translationService: TranslationService
   sharedAIService: SharedAIService
   aiCredentials: AIProviderCredentialStore
-  openExternal: (url: string) => Promise<void>
   isManagerMainFrame: (event: IpcSenderContext) => boolean
 }): { handlers: Record<string, TranslationHandler>; dispose(): void } {
   const activeConnectionTests = new Set<AbortController>()
@@ -53,48 +42,26 @@ export function createTranslationIpcHandlers(deps: {
     'ai:qwen-regions': (event) => deps.isManagerMainFrame(event)
       ? { ok: true, data: deps.sharedAIService.getQwenRegions() }
       : fail('UNAUTHORIZED', '当前窗口无权执行此操作。'),
-    'translate:provider-info': async (event): Promise<IpcResult<Awaited<ReturnType<TranslationService['getProviderInfo']>>>> => {
-      if (!deps.isManagerMainFrame(event)) return fail('UNAUTHORIZED', '当前窗口无权读取翻译服务状态。')
-      try { return { ok: true, data: await deps.translationService.getProviderInfo() } }
-      catch { return fail('TRANSLATION_STATUS_UNAVAILABLE', '无法读取翻译服务状态。') }
-    },
-    'translate:run': async (event, request: unknown): Promise<IpcResult<Awaited<ReturnType<TranslationService['translate']>>>> => {
-      if (!deps.isManagerMainFrame(event)) return fail('UNAUTHORIZED', '当前窗口无权调用翻译服务。')
-      if (!validateTranslationRequest(request)) return fail('INVALID_TRANSLATION', '翻译输入无效。')
-      try { return { ok: true, data: await deps.translationService.translate(request) } }
-      catch (error) { return { ok: false, error: providerError(error, 'TRANSLATION_FAILED', '翻译失败，请稍后重试。') } }
-    },
-    'translate:cancel': (event, requestId: unknown): IpcResult<{ cancelled: boolean }> => {
-      if (!deps.isManagerMainFrame(event)) return fail('UNAUTHORIZED', '当前窗口无权取消翻译请求。')
-      if (typeof requestId !== 'string' || !/^[a-zA-Z0-9-]{8,64}$/.test(requestId)) return fail('INVALID_REQUEST_ID', '翻译请求编号无效。')
-      return { ok: true, data: { cancelled: deps.translationService.cancel(requestId) } }
-    },
-    'ai:test-connection': async (event): Promise<IpcResult<{ providerName: string; model: string }>> => {
+    'ai:test-connection': async (event, providerId): Promise<IpcResult<{ providerName: string; model: string }>> => {
       if (!deps.isManagerMainFrame(event)) return fail('UNAUTHORIZED', '当前窗口无权测试 AI 服务。')
+      if (providerId !== undefined && !isAIProviderId(providerId)) return fail('INVALID_PROVIDER', 'AI 服务类型无效。')
       const controller = new AbortController()
       activeConnectionTests.add(controller)
       const timeout = setTimeout(() => controller.abort(new DOMException('Connection test timed out.', 'TimeoutError')), 30_000)
       try {
-        const result = await deps.sharedAIService.testConnection(controller.signal)
+        const result = await deps.sharedAIService.testConnection(controller.signal, providerId)
         if (controller.signal.aborted) throw controller.signal.reason
         return { ok: true, data: { providerName: result.providerName, model: result.model } }
-      } catch (error) { return { ok: false, error: providerError(error, 'AI_CONNECTION_FAILED', '无法连接 AI 服务，请检查网络和设置。') } }
+      } catch (error) {
+        // Only fixed product copy crosses this credential-bearing operation's boundary.
+        if (error instanceof ServiceError && error.code === 'AI_NOT_CONFIGURED') return fail('AI_NOT_CONFIGURED', '请先保存模型、服务配置和 API Key。')
+        if (error instanceof ServiceError && error.code === 'AI_CONFIGURATION_INVALID') return fail('AI_CONFIGURATION_INVALID', '请检查已保存的服务地址、地区和工作空间。')
+        if (error instanceof Error && error.name === 'TimeoutError') return fail('AI_CONNECTION_FAILED_TIMEOUT', '请求超时，请检查网络后重试。')
+        return fail('AI_CONNECTION_FAILED', '无法连接 AI 服务，请检查网络、模型、服务地址和凭据。')
+      }
       finally { clearTimeout(timeout); activeConnectionTests.delete(controller) }
     },
-    'translate:open-google': async (event, input: unknown): Promise<IpcResult<void>> => {
-      if (!deps.isManagerMainFrame(event)) return fail('UNAUTHORIZED', '当前窗口无权打开翻译网站。')
-      if (typeof input !== 'object' || input === null || Array.isArray(input)) return fail('INVALID_TRANSLATION', '翻译输入无效。')
-      const value = input as Record<string, unknown>
-      if (Object.keys(value).some((key) => !['text', 'targetLanguage'].includes(key)) || typeof value.text !== 'string' || !value.text.trim() || value.text.length > 20_000 || !isTranslationLanguage(value.targetLanguage)) return fail('INVALID_TRANSLATION', '翻译输入无效。')
-      const generation = deps.translationService.captureAdmissionGeneration()
-      if (generation === null) return fail('TRANSLATION_DISABLED', '翻译功能当前不可用。')
-      if (!deps.translationService.isAdmissionGenerationCurrent(generation)) return fail('TRANSLATION_DISABLED', '翻译功能当前不可用。')
-      try {
-        await deps.openExternal(buildGoogleTranslateUrl(value.text, value.targetLanguage))
-        if (!deps.translationService.isAdmissionGenerationCurrent(generation)) return fail('TRANSLATION_DISABLED', '翻译功能当前不可用。')
-        return { ok: true, data: undefined }
-      } catch { return fail('GOOGLE_TRANSLATE_FAILED', '无法打开 Google Translate。') }
-    },
+
   }
   return {
     handlers,
@@ -103,10 +70,11 @@ export function createTranslationIpcHandlers(deps: {
 }
 
 export function registerTranslationIpcHandlers(
-  ipcMain: { handle(channel: string, handler: TranslationHandler): void },
+  ipcMain: ManagerInvokeRegistry,
   deps: Parameters<typeof createTranslationIpcHandlers>[0],
 ): () => void {
   const created = createTranslationIpcHandlers(deps)
-  for (const [channel, handler] of Object.entries(created.handlers)) ipcMain.handle(channel, handler)
+  const managerIpc = createManagerInvokeRegistry(ipcMain, deps.isManagerMainFrame)
+  for (const [channel, handler] of Object.entries(created.handlers)) managerIpc.handle(channel, handler)
   return created.dispose
 }

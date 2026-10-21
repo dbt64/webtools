@@ -5,6 +5,8 @@ using System.Text.Json;
 using WebTools.NativeHost;
 using WebTools.NativeHost.Services;
 using WebTools.NativeHost.Data;
+using WebTools.NativeHost.SuperPanel;
+using System.Diagnostics;
 
 namespace WebTools.NativeHost.Diagnostics;
 
@@ -30,7 +32,8 @@ internal sealed record Phase4EResourcePresentation(
 /// Local, current-user-only control surface used only by the explicitly opted-in Phase 4E resource test process.
 /// It drives the real WPF QueryBox and explicit Manager requests, never application/website launches.
 /// </summary>
-internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow window, string startupHotkey, ManagerController? managerController = null)
+internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow window, string startupHotkey, ManagerController? managerController = null,
+    SuperPanelTriggerController? superPanel = null, SuperPanelWindow? panelWindow = null, DiagnosticsService? selectionDiagnostics = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
@@ -53,7 +56,10 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
             using var reader = new StreamReader(pipe, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), bufferSize: 4096, leaveOpen: true) { AutoFlush = true };
 
-            await window.WaitForResourceTestReadyAsync();
+            // Startup frame acceptance supplies its own catalog. It measures a
+            // feature activation, not the unrelated whole-desktop deep scan.
+            if (Environment.GetEnvironmentVariable("WEBTOOLS_STARTUP_ACCEPTANCE") != "1")
+                await window.WaitForResourceTestReadyAsync();
             await WriteAsync(writer, new { ok = true, type = "ready", processId = Environment.ProcessId }, cancellationToken);
 
             while (!cancellationToken.IsCancellationRequested)
@@ -79,6 +85,78 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
                         : null;
                     switch (type)
                     {
+                        case "launcher-prewarm-mode":
+                            if (managerController is null) throw new InvalidOperationException("Manager driver is not available.");
+                            managerController.ConfigureSessionPrewarmForResourceTest(root.GetProperty("enabled").GetBoolean());
+                            response = new { ok = true, type };
+                            break;
+                        case "manager-pipe-disconnect":
+                            if (managerController is null) throw new InvalidOperationException("Manager driver is not available.");
+                            managerController.DisconnectPipeForResourceTest();
+                            response = new { ok = true, type };
+                            break;
+                        case "manager-disconnect-on-handoff":
+                            if (managerController is null) throw new InvalidOperationException("Manager driver is not available.");
+                            managerController.DisconnectAfterHandoffForResourceTest();
+                            response = new { ok = true, type };
+                            break;
+                        case "manager-disconnect-during-initialization":
+                            if (managerController is null) throw new InvalidOperationException("Manager driver is not available.");
+                            managerController.DisconnectDuringInitializationForResourceTest();
+                            response = new { ok = true, type };
+                            break;
+                        case "launcher-session-begin":
+                            if (managerController is null) throw new InvalidOperationException("Manager driver is not available.");
+                            managerController.BeginLauncherSession(root.GetProperty("sessionId").GetString() ?? throw new InvalidOperationException("Session ID required."));
+                            response = new { ok = true, type, processId = Environment.ProcessId };
+                            break;
+                        case "launcher-session-end":
+                            if (managerController is null) throw new InvalidOperationException("Manager driver is not available.");
+                            managerController.EndLauncherSession(root.GetProperty("sessionId").GetString() ?? throw new InvalidOperationException("Session ID required."));
+                            response = new { ok = true, type, processId = Environment.ProcessId };
+                            break;
+                        case "quick-result-invoke":
+                        {
+                            if (superPanel is null || panelWindow is null || selectionDiagnostics is null) throw new InvalidOperationException("Super Panel acceptance is not enabled.");
+                            var reference = new NativeFeatureRef(root.GetProperty("pluginId").GetString() ?? "", root.GetProperty("featureId").GetString() ?? "");
+                            var text = root.GetProperty("text").GetString() ?? "";
+                            var previewOnly = root.TryGetProperty("previewOnly", out var preview) && preview.ValueKind == JsonValueKind.True;
+                            var requestId = await window.Dispatcher.InvokeAsync(() => panelWindow.InvokeQuickResultForAcceptance(reference, text, previewOnly));
+                            response = new { ok = true, type, processId = Environment.ProcessId, requestId };
+                            break;
+                        }
+                        case "quick-result-decision":
+                            if (superPanel is null || panelWindow is null || selectionDiagnostics is null) throw new InvalidOperationException("Super Panel acceptance is not enabled.");
+                            var approved = root.GetProperty("approved").GetBoolean();
+                            await window.Dispatcher.InvokeAsync(() => panelWindow.DecideQuickResultForAcceptance(approved));
+                            response = new { ok = true, type, processId = Environment.ProcessId };
+                            break;
+                        case "super-panel-open":
+                        case "super-panel-start":
+                        {
+                            if (superPanel is null || panelWindow is null || selectionDiagnostics is null) throw new InvalidOperationException("Super Panel acceptance is not enabled.");
+                            var now = Stopwatch.GetTimestamp(); var utc = DateTimeOffset.UtcNow;
+                            var attempt = selectionDiagnostics.BeginSelectionAttempt("control", "click", now, utc, now, utc);
+                            var activation = await window.Dispatcher.InvokeAsync(() => superPanel.ToggleAsync(attempt));
+                            if (type == "super-panel-open") await activation;
+                            response = new { ok = true, type, processId = Environment.ProcessId };
+                            break;
+                        }
+                        case "super-panel-dismiss":
+                            if (superPanel is null) throw new InvalidOperationException("Super Panel acceptance is not enabled.");
+                            await window.Dispatcher.InvokeAsync(superPanel.DismissForLauncher);
+                            response = new { ok = true, type, processId = Environment.ProcessId };
+                            break;
+                        case "super-panel-state":
+                            if (superPanel is null || panelWindow is null || selectionDiagnostics is null) throw new InvalidOperationException("Super Panel acceptance is not enabled.");
+                            response = await window.Dispatcher.InvokeAsync(() => new
+                            {
+                                ok = true, type, processId = Environment.ProcessId, pending = superPanel.CapturePending,
+                                workers = superPanel.ActiveWorkerCount, panel = panelWindow.CaptureHardeningSnapshot(),
+                                panelWindowCount = System.Windows.Application.Current.Windows.OfType<SuperPanelWindow>().Count(),
+                                events = selectionDiagnostics.SelectionSnapshot().TakeLast(48).ToArray(),
+                            });
+                            break;
                         case "manager-open":
                         {
                             if (managerController is null) throw new InvalidOperationException("Manager driver is not available.");
@@ -100,6 +178,16 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
                             var reference = new LauncherPluginRef(root.GetProperty("kind").GetString() ?? "", root.GetProperty("id").GetString() ?? "");
                             if (!reference.IsValid) throw new ArgumentException("Invalid test plugin reference.");
                             await window.ActivatePluginFromResourceTestAsync(reference);
+                            response = new { ok = true, type, processId = Environment.ProcessId };
+                            break;
+                        }
+                        case "launcher-feature":
+                        {
+                            if (managerController is null) throw new InvalidOperationException("Manager driver is not available.");
+                            var reference = new NativeFeatureRef(root.GetProperty("pluginId").GetString() ?? "", root.GetProperty("featureId").GetString() ?? "");
+                            var query = root.GetProperty("query").GetString() ?? "";
+                            if (!reference.IsValid || query.Length is < 1 or > 300) throw new ArgumentException("Invalid test Feature query.");
+                            await window.ActivateFeatureFromResourceTestAsync(query, reference);
                             response = new { ok = true, type, processId = Environment.ProcessId };
                             break;
                         }
@@ -190,7 +278,7 @@ internal sealed class Phase4EResourceControlServer(string pipeName, MainWindow w
                 await WriteAsync(writer, response, cancellationToken);
                 if (!shouldExit) continue;
 
-                await window.Dispatcher.InvokeAsync(() => window.Close());
+                await window.Dispatcher.InvokeAsync(() => System.Windows.Application.Current.Shutdown());
                 return;
             }
         }

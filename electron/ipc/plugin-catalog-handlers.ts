@@ -3,7 +3,7 @@ import type { PluginRef } from '../../src/shared/plugin-catalog-contracts.ts'
 import { record, validPluginId } from '../plugins/manifest.ts'
 import { fail, safePluginError } from '../plugins/errors.ts'
 import type { PluginCatalog } from '../plugins/plugin-catalog.ts'
-import type { IpcSenderContext } from './window-security.ts'
+import { registerManagerInvokeHandlers, type IpcSenderContext, type ManagerInvokeRegistry } from './window-security.ts'
 import { isFeatureId } from '../../src/shared/feature-contracts.ts'
 
 interface Dependencies {
@@ -48,8 +48,7 @@ export function createPluginCatalogHandlers(deps: Dependencies): Record<string, 
     }, true),
   }
 }
-export function registerPluginCatalogIpcHandlers(ipc: { handle(channel: string, handler: Handler): void; removeHandler(channel: string): void }, deps: Dependencies): () => void {
+export function registerPluginCatalogIpcHandlers(ipc: ManagerInvokeRegistry, deps: Dependencies): () => void {
   const handlers = createPluginCatalogHandlers(deps)
-  for (const [channel, handler] of Object.entries(handlers)) ipc.handle(channel, handler)
-  return () => { for (const channel of Object.keys(handlers)) ipc.removeHandler(channel) }
+  return registerManagerInvokeHandlers(ipc, deps.isManagerMainFrame, handlers)
 }

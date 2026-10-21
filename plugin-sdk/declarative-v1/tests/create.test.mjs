@@ -49,7 +49,7 @@ test('create writes one basic public-API starter in a Unicode path and derives s
   assert.match(await readFile(path.join(target, 'manifest.typecheck.ts'), 'utf8'), /from '@webtools\/plugin-sdk'/)
   const readme = await readFile(path.join(target, 'README.md'), 'utf8')
   assert.match(readme, /local SDK tarball/i)
-  assert.match(readme, /file:\.\.\/\.\.\/artifacts\/webtools-plugin-sdk-1\.2\.0\.tgz/)
+  assert.match(readme, /file:\.\.\/\.\.\/artifacts\/webtools-plugin-sdk-1\.6\.0\.tgz/)
   assert.equal((await lstat(path.join(target, 'dist'))).isDirectory(), true)
 })
 

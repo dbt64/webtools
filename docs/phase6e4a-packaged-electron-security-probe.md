@@ -4,6 +4,8 @@
 
 **Historical note:** Part B below preserves the original Phase 6E-4A observations and incomplete decision as recorded before the supplemental closure. The later “Phase 6E-4A.1 Evidence Closure” section is the current authority; it does not rewrite the original results.
 
+**Repository cleanup note (2026-10-10):** The standalone probe package and its checked-in evidence snapshot were retired because they exercised a separate test Electron app rather than the current WebTools Runtime 2.0. The results below remain historical; the old probe commands are no longer runnable. Current coverage lives in the product-level plugin runtime tests and `scripts/verify-plugin-runtime-packaged.mjs`.
+
 ## Part A — Phase 6E-3 Checkpoint
 
 ### Starting identity and worktree

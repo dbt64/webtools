@@ -52,7 +52,7 @@ test('repository version contract reads the canonical product and independent pl
   assert.equal(contract.productVersion, '0.1.0')
   assert.equal(contract.pluginApiMajor, 1)
   assert.equal(contract.manifestVersion, 1)
-  assert.equal(contract.pluginSdkVersion, '1.2.0')
+  assert.equal(contract.pluginSdkVersion, '1.8.0')
   assert.notEqual(contract.pluginApiMajor, contract.productVersion)
   assert.notEqual(contract.manifestVersion, contract.productVersion)
 })
@@ -88,7 +88,7 @@ test('Windows package derives NativeHost, UpdateHelper and NSIS versions from th
   assert.match(coverInstall, /WEBTOOLS_CHANNEL/)
   assert.doesNotMatch(nativeProject, /<Version>|<AssemblyVersion>|<FileVersion>/)
   assert.doesNotMatch(updaterProject, /<Version>|<AssemblyVersion>|<FileVersion>/)
-  assert.match(mainProcess, /IPC_CHANNELS\.getVersion, \(\) => app\.getVersion\(\)/)
+  assert.match(mainProcess, /registerManagerInvokeHandlers\(ipcMain,\s*context => isCurrentWindowMainFrame\(context, managerWindow\),\s*\{\s*\[IPC_CHANNELS\.getVersion\]: \(\) => app\.getVersion\(\)/)
 })
 
 test('release channels accept only the declared stable and beta values', () => {

@@ -4,22 +4,29 @@ export interface FeatureRef {
   readonly featureId: string
 }
 
+/** Invocation identifies the caller; presentation identifies the execution surface. */
+export type FeatureInvocationSurface = 'manager' | 'launcher' | 'super-panel'
+export type FeaturePresentation = import('../../plugin-sdk/runtime-v3/manifest-v3.mjs').FeaturePresentationV3
+
 export const FEATURE_ID_MAX_SCALARS = 64
 export const FEATURE_TITLE_MAX_SCALARS = 80
 export const FEATURE_COMMANDS_MAX_COUNT = 8
 export const FEATURE_COMMAND_MAX_SCALARS = 48
 export const FEATURE_PROJECTION_VERSION = 2
-export const FEATURE_PROJECTION_MAX_PER_PLUGIN = 16
+export const FEATURE_PROJECTION_MAX_PER_PLUGIN = 64
 export const FEATURE_PROJECTION_MAX_FEATURES = 2000
 export const FEATURE_PROJECTION_MAX_BYTES = 3 * 1024 * 1024
 
 export type FeatureProjectionIconToken = 'plugin' | 'sparkles' | 'document' | 'globe' | 'translate'
-export type FeatureProjectionKind = 'declarative-compatibility' | 'built-in'
-export type FeatureProjectionContextSource = 'launcher-input' | 'clipboard'
+export type FeatureProjectionKind = 'declarative-compatibility' | 'built-in' | 'runtime-v3'
+export type FeatureProjectionContextSource = 'launcher-input' | 'clipboard' | 'selected-text' | 'explorer-selection'
 
 export interface FeatureProjectionAcceptedContextV2 {
-  readonly type: 'text'
+  readonly type: 'text' | 'files' | 'directories' | 'none'
   readonly sources: readonly FeatureProjectionContextSource[]
+  readonly extensions?: readonly string[]
+  readonly maxItems?: number
+  readonly textMatch?: 'http-url'
 }
 
 export interface FeatureProjectionRowV2 {
@@ -31,6 +38,9 @@ export interface FeatureProjectionRowV2 {
   readonly iconToken: FeatureProjectionIconToken
   readonly featureKind: FeatureProjectionKind
   readonly group: 'plugin-features'
+  readonly description?: string
+  readonly presentation?: 'window' | 'command'
+  readonly iconDataUrl?: string
 }
 
 export interface FeatureProjectionV2 {
@@ -82,7 +92,7 @@ export function isFeatureRef(value: unknown): value is FeatureRef {
 
 /** NFC-normalizes and collapses whitespace, then enforces a Unicode scalar-value limit. */
 export function normalizeFeatureText(value: unknown, maxScalars: number): string | null {
-  if (typeof value !== 'string' || !Number.isInteger(maxScalars) || maxScalars < 1 || maxScalars > FEATURE_TITLE_MAX_SCALARS) return null
+  if (typeof value !== 'string' || !Number.isInteger(maxScalars) || maxScalars < 1 || maxScalars > 240) return null
 
   for (const character of value) {
     const scalar = character.codePointAt(0)!
@@ -102,8 +112,8 @@ export function normalizeFeatureText(value: unknown, maxScalars: number): string
 }
 
 const projectionIconTokens = new Set<FeatureProjectionIconToken>(['plugin', 'sparkles', 'document', 'globe', 'translate'])
-const projectionKinds = new Set<FeatureProjectionKind>(['declarative-compatibility', 'built-in'])
-const projectionContextSources = new Set<FeatureProjectionContextSource>(['launcher-input', 'clipboard'])
+const projectionKinds = new Set<FeatureProjectionKind>(['declarative-compatibility', 'built-in', 'runtime-v3'])
+const projectionContextSources = new Set<FeatureProjectionContextSource>(['launcher-input', 'clipboard', 'selected-text', 'explorer-selection'])
 const hostSessionPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function hasExactDataFields(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
@@ -139,26 +149,45 @@ function hasOnlyArrayValues(value: unknown): value is unknown[] {
 }
 
 function readProjectionContext(value: unknown): FeatureProjectionAcceptedContextV2 | null {
-  if (!hasExactDataFields(value, ['type', 'sources']) || value.type !== 'text' || !hasOnlyArrayValues(value.sources)) return null
-  if (value.sources.length < 1 || value.sources.length > projectionContextSources.size) return null
+  if (!value || typeof value !== 'object') return null
+  const optional = ['extensions', 'maxItems', 'textMatch'].filter(key => Object.hasOwn(value, key))
+  if (!hasExactDataFields(value, ['type', 'sources', ...optional]) || !['text', 'files', 'directories', 'none'].includes(String(value.type)) || !hasOnlyArrayValues(value.sources)) return null
+  const allowed = value.type === 'text' ? ['launcher-input', 'clipboard', 'selected-text'] : value.type === 'none' ? [] : ['explorer-selection']
+  if (value.sources.length < (value.type === 'none' ? 0 : 1) || value.sources.length > allowed.length) return null
   const sources: FeatureProjectionContextSource[] = []
   const seen = new Set<string>()
   for (const source of value.sources) {
-    if (typeof source !== 'string' || !projectionContextSources.has(source as FeatureProjectionContextSource) || seen.has(source)) return null
+    if (typeof source !== 'string' || !projectionContextSources.has(source as FeatureProjectionContextSource) || !allowed.includes(source) || seen.has(source)) return null
     seen.add(source)
     sources.push(source as FeatureProjectionContextSource)
   }
   sources.sort((a, b) => a < b ? -1 : a > b ? 1 : 0)
-  return { type: 'text', sources }
+  if (optional.includes('textMatch') && (value.textMatch !== 'http-url' || value.type !== 'text'
+    || sources.length !== 1 || sources[0] !== 'selected-text')) return null
+  if (optional.includes('maxItems') && (!['files', 'directories'].includes(String(value.type)) || !Number.isInteger(value.maxItems) || (value.maxItems as number) < 1 || (value.maxItems as number) > 64)) return null
+  if (optional.includes('extensions') && (value.type !== 'files' || !hasOnlyArrayValues(value.extensions)
+    || value.extensions.length > 16 || value.extensions.some(item => typeof item !== 'string' || !/^\.[a-z0-9]{1,16}$/.test(item))
+    || new Set(value.extensions).size !== value.extensions.length)) return null
+  return { type: value.type as FeatureProjectionAcceptedContextV2['type'], sources,
+    ...(optional.includes('textMatch') ? { textMatch: 'http-url' as const } : {}),
+    ...(optional.includes('extensions') ? { extensions: value.extensions as string[] } : {}),
+    ...(optional.includes('maxItems') ? { maxItems: value.maxItems as number } : {}) }
 }
 
 function readProjectionRow(value: unknown): FeatureProjectionRowV2 | null {
-  if (!hasExactDataFields(value, ['ref', 'pluginName', 'title', 'commands', 'acceptedContexts', 'iconToken', 'featureKind', 'group'])) return null
+  if (typeof value !== 'object' || value === null) return null
+  const extra = ['description', 'presentation', 'iconDataUrl'].filter(key => Object.hasOwn(value, key))
+  if (!hasExactDataFields(value, ['ref', 'pluginName', 'title', 'commands', 'acceptedContexts', 'iconToken', 'featureKind', 'group', ...extra])) return null
   if (!isFeatureRef(value.ref)) return null
   const pluginName = normalizeFeatureText(value.pluginName, FEATURE_TITLE_MAX_SCALARS)
   const title = normalizeFeatureText(value.title, FEATURE_TITLE_MAX_SCALARS)
   if (!pluginName || !title || typeof value.iconToken !== 'string' || !projectionIconTokens.has(value.iconToken as FeatureProjectionIconToken)) return null
   if (typeof value.featureKind !== 'string' || !projectionKinds.has(value.featureKind as FeatureProjectionKind) || value.group !== 'plugin-features') return null
+  const description = extra.includes('description') ? normalizeFeatureText(value.description, 240) : undefined
+  if (extra.includes('description') && !description) return null
+  if (extra.includes('presentation') && value.presentation !== 'window' && value.presentation !== 'command') return null
+  if (extra.includes('iconDataUrl') && (typeof value.iconDataUrl !== 'string' || value.iconDataUrl.length > 5500
+    || !/^data:image\/png;base64,iVBORw0KGgo[A-Za-z0-9+/]*={0,2}$/.test(value.iconDataUrl))) return null
   if (!hasOnlyArrayValues(value.commands) || value.commands.length > FEATURE_COMMANDS_MAX_COUNT) return null
   const commands: string[] = []
   const commandKeys = new Set<string>()
@@ -170,7 +199,7 @@ function readProjectionRow(value: unknown): FeatureProjectionRowV2 | null {
     commandKeys.add(key)
     commands.push(command)
   }
-  if (!hasOnlyArrayValues(value.acceptedContexts) || value.acceptedContexts.length > 1) return null
+  if (!hasOnlyArrayValues(value.acceptedContexts) || value.acceptedContexts.length > 4) return null
   const acceptedContexts: FeatureProjectionAcceptedContextV2[] = []
   for (const context of value.acceptedContexts) {
     const parsed = readProjectionContext(context)
@@ -187,6 +216,9 @@ function readProjectionRow(value: unknown): FeatureProjectionRowV2 | null {
     iconToken: value.iconToken as FeatureProjectionIconToken,
     featureKind: value.featureKind as FeatureProjectionKind,
     group: 'plugin-features',
+    ...(description ? { description } : {}),
+    ...(extra.includes('presentation') ? { presentation: value.presentation as 'window' | 'command' } : {}),
+    ...(extra.includes('iconDataUrl') ? { iconDataUrl: value.iconDataUrl as string } : {}),
   }
 }
 

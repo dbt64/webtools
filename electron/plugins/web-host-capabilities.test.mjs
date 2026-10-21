@@ -4,18 +4,18 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PluginManager } from './plugin-manager.ts'
-import { webManifest, webPackage } from './fixtures.mjs'
+import { runtimeV3Manifest, runtimeV3Package } from './fixtures.mjs'
 import { WebHostCapabilities } from './web-host-capabilities.ts'
 
 const caps = ['plugin.storage.read', 'plugin.storage.write', 'sharedAI.complete', 'clipboard.write']
-async function setup(t, overrides = {}) {
+async function setup(t, overrides = {}, capabilities = caps) {
   const root = await mkdtemp(join(tmpdir(), 'webtools-capability-')); t.after(() => rm(root, { recursive: true, force: true }))
-  const base = webManifest(); const m = webManifest({ requestedCapabilities: caps,
-    features: [{ ...base.features[0], requiredCapabilities: caps, acceptedContexts: [{ type: 'text', sources: ['launcher-input'] }] }] })
+  const base = runtimeV3Manifest(); const m = runtimeV3Manifest({ requestedCapabilities: capabilities,
+    features: [{ ...base.features[0], requiredCapabilities: capabilities, acceptedContexts: [{ type: 'text', sources: ['launcher-input'] }] }] })
   const manager = new PluginManager({ userData: root, hostVersion: '0.1.0', confirm: async () => true,
     externalOpen: async () => {}, clipboardWrite: () => {}, ai: { complete: async () => ({ text: 'unused' }), getDefaultProviderInfo: async () => ({ providerName: 'test', model: 'test' }) } })
   await manager.initialize(); t.after(() => manager.close())
-  await manager.install(webPackage(m), manager.session); await manager.setEnabled(m.id, true, manager.session)
+  await manager.install(runtimeV3Package(m), manager.session); await manager.setEnabled(m.id, true, manager.session)
   let authority; const ticket = await manager.authorizeWebFeature({ pluginId: m.id, featureId: m.features[0].id }, manager.session, async a => { authority = a }); await ticket.completion
   const writes = []; const prompts = []; let now = 0; let aiCalls = 0
   const effects = { confirm: async request => { prompts.push(request); return true }, hasForegroundGesture: () => true,
@@ -27,6 +27,21 @@ async function setup(t, overrides = {}) {
   const call = (method, payload, signal = new AbortController().signal) => service.dispatch({ method, payload }, signal)
   return { manager, authority, m, service, writes, prompts, call, setNow: n => { now = n }, aiCalls: () => aiCalls }
 }
+test('external browser action requires declared grant and one-use explicit activation, and rejects unsafe URLs', async t => {
+  const opened = []; let gesture = true
+  const env = await setup(t, { externalOpen: async url => opened.push(url), hasForegroundGesture: () => { const value = gesture; gesture = false; return value } }, ['external.open'])
+  for (const url of ['file:///D:/x', 'javascript:alert(1)', 'https://user:password@example.com', 'https://example.com/\npath'])
+    await assert.rejects(() => env.call('external.open', { url }), error => error.code === 'INVALID_REQUEST')
+  assert.equal(opened.length, 0)
+  assert.equal(await env.call('external.open', { url: 'https://www.bing.com/search?q=selected%20text' }), null)
+  assert.deepEqual(opened, ['https://www.bing.com/search?q=selected%20text'])
+  await assert.rejects(() => env.call('external.open', { url: 'https://example.com' }), error => error.code === 'USER_CANCELLED')
+  const denied = await setup(t, { externalOpen: async url => opened.push(url) })
+  await assert.rejects(() => denied.call('external.open', { url: 'https://example.com' }), error => error.code === 'PERMISSION_DENIED')
+  env.authority.revoke()
+  await assert.rejects(() => env.call('external.open', { url: 'https://example.com' }))
+  assert.equal(opened.length, 1)
+})
 test('context exposes only immutable invocation text and expires; revoked context cannot be retrieved', async t => {
   const env = await setup(t)
   assert.deepEqual(await env.call('context.current', null), { type: 'text', source: 'launcher-input', text: ' 中文 exact 😀 ' })

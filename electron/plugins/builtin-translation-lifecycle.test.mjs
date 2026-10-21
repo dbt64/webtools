@@ -10,6 +10,17 @@ function createLifecycle(store, cancelTranslation = () => {}) {
 
 const ready = enabled => ({ status: 'ready', enabled, source: 'stored' })
 
+test('closing the Translation window cancels work and invalidates results while preserving enabled state', async () => {
+  let cancelled = 0
+  const lifecycle = createLifecycle({ load: async () => ready(true) }, () => { cancelled++ })
+  await lifecycle.initialize()
+  const generation = lifecycle.generation
+  lifecycle.closeWindow()
+  assert.equal(cancelled, 1)
+  assert.equal(lifecycle.isGenerationCurrent(generation), false)
+  assert.equal(lifecycle.isEnabled(), true)
+})
+
 test('disable closes Main admission and cancels Translation only before persistent IO settles', async () => {
   let finishWrite
   let cancelled = 0

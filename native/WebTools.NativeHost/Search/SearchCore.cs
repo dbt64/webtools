@@ -35,6 +35,7 @@ public sealed class SearchCore
     public int IndexedFeatureCount => _pluginFeatures.Length;
 
     public IReadOnlyList<SearchResult> GetEmptyQueryPluginFeatures() => _pluginFeatures
+        .OrderBy(item => item.Entry.FeatureRef is { PluginId: "webtools.translation", FeatureId: "translate-text" } ? 0 : 1)
         .Take(6)
         .Select(item => FeatureResult(item.Entry, int.MaxValue, MatchKind.Name))
         .ToArray();
@@ -137,7 +138,7 @@ public sealed class SearchCore
     private static SearchResult FeatureResult(SearchEntry entry, int rank, MatchKind match) => new(
         entry.Id, ResultKind.PluginFeature, entry.Name, entry.Subtitle, rank, match,
         new OpenPluginFeatureAction(entry.FeatureRef ?? throw new InvalidDataException("Feature search entry has no FeatureRef.")),
-        IconToken: entry.IconToken, Group: ResultGroup.PluginFeatures);
+        IconReference: entry.IconReference, IconToken: entry.IconToken, Group: ResultGroup.PluginFeatures);
 
     private static SearchResult SearchFilesResult(string query) => new("search-files", ResultKind.SearchFiles, "搜索文件", $"搜索文件“{query.Trim()}”",
         int.MaxValue, MatchKind.Name, new SearchFilesAction(query));

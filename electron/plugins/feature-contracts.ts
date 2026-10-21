@@ -30,7 +30,18 @@ export interface BuiltInResolvedFeature extends ResolvedFeatureBase {
   }
 }
 
-export type MainResolvedFeature = DeclarativeCompatibilityFeature | BuiltInResolvedFeature
+export interface RuntimeResolvedFeature {
+  readonly ref: FeatureRef
+  readonly sourceKind: 'runtime-v3'
+  readonly title: string
+  readonly description?: string
+  readonly commands: readonly string[]
+  readonly acceptedContexts: readonly import('../../src/shared/feature-contracts.ts').FeatureProjectionAcceptedContextV2[]
+  readonly iconToken: import('../../src/shared/feature-contracts.ts').FeatureProjectionIconToken
+  readonly iconDataUrl?: string
+  readonly presentation: 'window' | 'command'
+}
+export type MainResolvedFeature = DeclarativeCompatibilityFeature | BuiltInResolvedFeature | RuntimeResolvedFeature
 
 export interface DeclarativeFeatureCandidate {
   readonly pluginName: string

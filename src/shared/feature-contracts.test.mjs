@@ -118,11 +118,11 @@ test('Feature Projection v2 rejects overlong and duplicate text plus malformed c
 
 test('Feature Projection v2 enforces per-plugin and global feature-count limits', () => {
   const parse = projectionParser()
-  const perPlugin = Array.from({ length: 16 }, (_, index) => projectionRow({
+  const perPlugin = Array.from({ length: 64 }, (_, index) => projectionRow({
     ref: { pluginId: 'org.example.editor', featureId: `feature-${index}` },
   }))
   assert.notEqual(parse(projection(perPlugin)), null)
-  const tooManyForPlugin = [...perPlugin, projectionRow({ ref: { pluginId: 'org.example.editor', featureId: 'feature-16' } })]
+  const tooManyForPlugin = [...perPlugin, projectionRow({ ref: { pluginId: 'org.example.editor', featureId: 'feature-64' } })]
   assert.equal(parse(projection(tooManyForPlugin)), null)
   const globalLimit = Array.from({ length: 2000 }, (_, index) => projectionRow({
     ref: { pluginId: `org.example.p${index}`, featureId: 'feature' },

@@ -4,6 +4,7 @@ using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using WebTools.NativeHost.Data;
+using WebTools.NativeHost.SuperPanel;
 
 namespace WebTools.NativeHost.Services;
 
@@ -15,6 +16,18 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
 {
     public const string DefaultPipeName = "WebTools.NativeHost.Manager.v1";
     public const string FeatureProjectionV2Capability = "feature-projection-v2";
+    public const string ElectronHostLifecycleCapability = "electron-host-lifecycle-v1";
+    public const string LauncherFeatureSurfacesCapability = "launcher-feature-surfaces-v1";
+    public const string SuperPanelContextCapability = "super-panel-context-v1";
+    public const string SuperPanelSettingsCapability = "super-panel-settings-v2";
+    private static readonly HashSet<string> SupportedManagerCapabilities = new(StringComparer.Ordinal)
+    {
+        FeatureProjectionV2Capability,
+        ElectronHostLifecycleCapability,
+        LauncherFeatureSurfacesCapability,
+        SuperPanelContextCapability,
+        SuperPanelSettingsCapability,
+    };
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     private readonly string _pipeName;
     private readonly LauncherStateStore _stateStore;
@@ -30,6 +43,10 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
     private IManagerPipePeerAuthenticator? _peerAuthenticator;
     private int _runStarted;
     private bool _disposed;
+    private Func<Task<SuperPanelSettingsStatus>>? _readSuperPanelSettings;
+    private Func<SuperPanelSettings, Task<SuperPanelSettingsStatus>>? _updateSuperPanelSettings;
+    private Func<Task>? _showEmptyLauncher;
+    private Func<string, IntPtr, int, Task<bool>>? _completeWindowHandoff;
 
     internal NativeManagerPipeServer(
         string pipeName,
@@ -57,9 +74,33 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
 
     public bool IsConnected => _session is not null;
     public string PipeName => _pipeName;
+    internal void DisconnectForResourceTest() => _session?.Stream.Dispose();
+    private int _disconnectAfterHandoffForResourceTest;
+    internal void DisconnectAfterHandoffForResourceTest() => Interlocked.Exchange(ref _disconnectAfterHandoffForResourceTest, 1);
+    private int _disconnectDuringInitializationForResourceTest;
+    internal void DisconnectDuringInitializationForResourceTest() => Interlocked.Exchange(ref _disconnectDuringInitializationForResourceTest, 1);
+    public bool SupportsHostLifecycle => _session?.HostLifecycleNegotiated == true;
+    public bool SupportsLauncherFeatures => _session?.LauncherFeaturesNegotiated == true;
+    private Func<ElectronHostOwnershipSnapshot>? _readHostOwnership;
+    private Func<long, ElectronHostOwnershipSync>? _confirmHostOwnership;
+    internal void ConfigureHostOwnership(Func<ElectronHostOwnershipSnapshot> read, Func<long, ElectronHostOwnershipSync> confirm)
+    { _readHostOwnership = read; _confirmHostOwnership = confirm; }
+    public bool SupportsSuperPanelSettings => _session?.SuperPanelSettingsNegotiated == true;
+    public bool SupportsQuickResult => _session?.QuickResultNegotiated == true;
+    internal void ConfigureLauncherReturn(Func<Task> showEmptyLauncher) => _showEmptyLauncher = showEmptyLauncher;
+    internal void ConfigureWindowHandoff(Func<string, IntPtr, int, Task<bool>> complete) => _completeWindowHandoff = complete;
+    public event Func<NativeFeatureTextResult, bool>? QuickResultReceived;
+    public event Action<NativeFeatureResultControl>? QuickResultCleared;
+    public event Action<NativeFeatureProjectionV2>? DevelopmentProjectionReceived;
+    public event Func<NativeFeatureAIConfirmation, bool>? QuickResultConfirmation;
+    public event Func<NativeFeatureResultControl?>? AcceptedQuickResultRequested;
+    internal void ConfigureSuperPanelSettings(Func<Task<SuperPanelSettingsStatus>> read, Func<SuperPanelSettings, Task<SuperPanelSettingsStatus>> update)
+    { _readSuperPanelSettings = read; _updateSuperPanelSettings = update; }
     public event Action? ManagerConnected;
     public event Action? ManagerDisconnected;
     public event Action? RendererReady;
+    public event Action? ElectronHostReady;
+    public event Action? ElectronHostClosing;
     public event Action? RendererNotReady;
 
     internal void ConfigurePeerAuthenticator(IManagerPipePeerAuthenticator peerAuthenticator)
@@ -220,6 +261,16 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
                     await session.ReplyAsync(message, false, null, "INVALID_HELLO", "Manager hello payload is malformed or too large.", cancellationToken).ConfigureAwait(false);
                     return false;
                 }
+                string? developmentAuthenticationToken = null;
+                if (payload.TryGetProperty("developmentAuthenticationToken", out var authenticationToken))
+                {
+                    if (authenticationToken.ValueKind != JsonValueKind.String || authenticationToken.GetString() is not { Length: 64 } token)
+                    {
+                        await session.ReplyAsync(message, false, null, "INVALID_HELLO", "Manager hello authentication metadata is invalid.", cancellationToken).ConfigureAwait(false);
+                        return false;
+                    }
+                    developmentAuthenticationToken = token;
+                }
                 if (payload.TryGetProperty("managerVersion", out var managerVersion)
                     && (managerVersion.ValueKind != JsonValueKind.String || (managerVersion.GetString()?.Length ?? 0) > 64))
                 {
@@ -230,6 +281,12 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
                 {
                     _diagnostics.Record("manager_peer_rejected", "hello-pid-mismatch");
                     await session.ReplyAsync(message, false, null, "CLIENT_PID_MISMATCH", "Manager hello PID does not match the OS-observed pipe client PID.", cancellationToken).ConfigureAwait(false);
+                    return false;
+                }
+                if (!session.IsHandshakeAuthorized(developmentAuthenticationToken))
+                {
+                    _diagnostics.Record("manager_peer_rejected", "development-pipe-token-mismatch");
+                    await session.ReplyAsync(message, false, null, "MANAGER_PEER_AUTHENTICATION_FAILED", "Manager pipe peer authentication failed.", cancellationToken).ConfigureAwait(false);
                     return false;
                 }
                 if (!session.IsCurrentPeer())
@@ -249,9 +306,18 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
                     greeted = true;
                     session.Authenticated = true;
                     session.Handshook = true;
-                    session.FeatureProjectionV2Negotiated = OffersFeatureProjectionV2(payload);
+                    session.FeatureProjectionV2Negotiated = OffersCapability(payload, FeatureProjectionV2Capability);
+                    session.HostLifecycleNegotiated = OffersCapability(payload, ElectronHostLifecycleCapability);
+                    session.LauncherFeaturesNegotiated = OffersCapability(payload, LauncherFeatureSurfacesCapability);
+                    session.SuperPanelNegotiated = OffersCapability(payload, SuperPanelContextCapability);
+                    session.SuperPanelSettingsNegotiated = _readSuperPanelSettings is not null && _updateSuperPanelSettings is not null && OffersCapability(payload, SuperPanelSettingsCapability);
                     _diagnostics.Record("manager_pipe_hello", $"pid={processId}");
-                    var negotiatedFeatures = session.FeatureProjectionV2Negotiated ? new[] { FeatureProjectionV2Capability } : Array.Empty<string>();
+                    var negotiatedFeatures = new List<string>();
+                    if (session.FeatureProjectionV2Negotiated) negotiatedFeatures.Add(FeatureProjectionV2Capability);
+                    if (session.HostLifecycleNegotiated) negotiatedFeatures.Add(ElectronHostLifecycleCapability);
+                    if (session.LauncherFeaturesNegotiated) negotiatedFeatures.Add(LauncherFeatureSurfacesCapability);
+                    if (OffersCapability(payload, SuperPanelContextCapability)) negotiatedFeatures.Add(SuperPanelContextCapability);
+                    if (session.SuperPanelSettingsNegotiated) negotiatedFeatures.Add(SuperPanelSettingsCapability);
                     await session.ReplyAsync(message, true, new { state = _stateStore.Snapshot, hostProcessId = Environment.ProcessId, supportedFeatures = negotiatedFeatures }, null, null, cancellationToken).ConfigureAwait(false);
                     ManagerConnected?.Invoke();
                 }
@@ -277,7 +343,7 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
     private static bool HasUnknownHelloFields(JsonElement payload)
     {
         foreach (var property in payload.EnumerateObject())
-            if (property.Name is not ("processId" or "managerVersion" or "capabilities")) return true;
+            if (property.Name is not ("processId" or "managerVersion" or "capabilities" or "developmentAuthenticationToken")) return true;
         return false;
     }
 
@@ -285,8 +351,106 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
     {
         try
         {
+            if (message.Type == "websites-update" && Interlocked.Exchange(ref _disconnectDuringInitializationForResourceTest, 0) == 1)
+            { session.Stream.Dispose(); return; }
             switch (message.Type)
             {
+                case "feature-window-presented":
+                    if (!session.LauncherFeaturesNegotiated) throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Launcher Features were not negotiated.");
+                    if (!NativeFeatureQuickResultProtocol.Exact(message.Payload, "requestId", "windowHandle")
+                        || message.Payload.GetProperty("requestId").ValueKind != JsonValueKind.String
+                        || message.Payload.GetProperty("requestId").GetString() is not { Length: > 0 and <= 128 } windowRequestId
+                        || message.Payload.GetProperty("windowHandle").ValueKind != JsonValueKind.String
+                        || !long.TryParse(message.Payload.GetProperty("windowHandle").GetString(), out var windowHandle) || windowHandle <= 0)
+                        throw new InvalidDataException("Invalid window presentation acknowledgement.");
+                    var handedOff = _completeWindowHandoff is not null && await _completeWindowHandoff(windowRequestId, new IntPtr(windowHandle), session.Peer.ClientProcessId).ConfigureAwait(false);
+                    if (Interlocked.Exchange(ref _disconnectAfterHandoffForResourceTest, 0) == 1) { session.Stream.Dispose(); return; }
+                    await session.ReplyAsync(message, true, new { handedOff }, null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "launcher-show-empty":
+                    if (!session.LauncherFeaturesNegotiated) throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Launcher Features were not negotiated.");
+                    if (!NativeFeatureQuickResultProtocol.Exact(message.Payload)) throw new InvalidDataException("Launcher return takes no arguments.");
+                    if (_showEmptyLauncher is null) throw new NativeManagerRequestException("LAUNCHER_UNAVAILABLE", "Launcher is unavailable.");
+                    await _showEmptyLauncher().ConfigureAwait(false);
+                    await session.ReplyAsync(message, true, new { shown = true }, null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "feature-text-match-negotiate-v1":
+                    if (!session.SuperPanelNegotiated || !NativeFeatureQuickResultProtocol.Exact(message.Payload, "capability")
+                        || message.Payload.GetProperty("capability").ValueKind != JsonValueKind.String
+                        || message.Payload.GetProperty("capability").GetString() != "selected-text-match-http-url-v1")
+                        throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Selected-text matching is unavailable.");
+                    await session.ReplyAsync(message, true, new { capability = "selected-text-match-http-url-v1" }, null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "feature-quick-result-negotiate-v1":
+                    if (!session.SuperPanelNegotiated || !session.LauncherFeaturesNegotiated
+                        || !NativeFeatureQuickResultProtocol.Exact(message.Payload, "capability")
+                        || message.Payload.GetProperty("capability").ValueKind != JsonValueKind.String
+                        || message.Payload.GetProperty("capability").GetString() != NativeFeatureQuickResultProtocol.Capability)
+                        throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Quick Result negotiation requires the Super Panel surface.");
+                    session.QuickResultNegotiated = true;
+                    await session.ReplyAsync(message, true, new { capability = NativeFeatureQuickResultProtocol.Capability, acceptedResult = AcceptedQuickResultRequested?.Invoke() }, null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "feature-result-v1":
+                    if (!session.QuickResultNegotiated) throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Quick Result was not negotiated.");
+                    if (!NativeFeatureQuickResultProtocol.TryParseResult(message.Payload, out var result)) throw new InvalidDataException("Invalid result.");
+                    if (QuickResultReceived?.Invoke(result!) != true) throw new NativeManagerRequestException("STALE_REQUEST", "The result presentation is no longer current.");
+                    await session.ReplyAsync(message, true, new { accepted = true }, null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "feature-result-clear-v1":
+                    if (!session.QuickResultNegotiated) throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Quick Result was not negotiated.");
+                    if (!NativeFeatureQuickResultProtocol.TryParseControl(message.Payload, out var clear)) throw new InvalidDataException("Invalid result clear.");
+                    QuickResultCleared?.Invoke(clear!);
+                    await session.ReplyAsync(message, true, null, null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "feature-ai-confirm-v1":
+                    if (!session.QuickResultNegotiated) throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Quick Result was not negotiated.");
+                    if (!NativeFeatureQuickResultProtocol.TryParseConfirmation(message.Payload, out var confirmation)) throw new InvalidDataException("Invalid confirmation.");
+                    if (QuickResultConfirmation?.Invoke(confirmation!) != true) throw new NativeManagerRequestException("STALE_REQUEST", "The confirmation presentation is no longer current.");
+                    await session.ReplyAsync(message, true, null, null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "feature-development-overlay-v1":
+                    if (!session.QuickResultNegotiated) throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Quick Result was not negotiated.");
+                    var overlay = NativeFeatureProjectionStore.Parse(message.Payload);
+                    if (overlay.Features.Count > 64 || overlay.Features.Any(f => f.FeatureKind != "runtime-v3" || f.Presentation != "command"
+                        || f.AcceptedContexts.Any(c => c.Type != "text" || c.Sources.Any(s => s != "selected-text")))) throw new InvalidDataException("Invalid development overlay.");
+                    DevelopmentProjectionReceived?.Invoke(overlay);
+                    await session.ReplyAsync(message, true, null, null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "super-panel-settings-get":
+                    if (!session.SuperPanelSettingsNegotiated || _readSuperPanelSettings is null) throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Super Panel settings are unavailable for this session.");
+                    if (message.Payload.ValueKind != JsonValueKind.Object || message.Payload.EnumerateObject().Any()) throw new InvalidDataException("Super Panel 读取请求无效。");
+                    await session.ReplyAsync(message, true, await _readSuperPanelSettings().ConfigureAwait(false), null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "super-panel-settings-update":
+                    if (!session.SuperPanelSettingsNegotiated || _updateSuperPanelSettings is null) throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Super Panel settings are unavailable for this session.");
+                    var panelSettings = SuperPanelSettings.Parse(message.Payload);
+                    await session.ReplyAsync(message, true, await _updateSuperPanelSettings(panelSettings).ConfigureAwait(false), null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "electron-host-closing":
+                    if (!session.LauncherFeaturesNegotiated) throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Launcher Features were not negotiated.");
+                    ElectronHostClosing?.Invoke();
+                    await session.ReplyAsync(message, true, null, null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "electron-host-ready":
+                    if (!session.HostLifecycleNegotiated)
+                        throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Electron Host lifecycle was not negotiated.");
+                    if (message.Payload.TryGetProperty("ownershipRevision", out var revision) && revision.TryGetInt64(out var number)
+                        && _confirmHostOwnership is not null)
+                    {
+                        var synchronized = _confirmHostOwnership(number);
+                        await session.ReplyAsync(message, true, synchronized, null, null, cancellationToken).ConfigureAwait(false);
+                        _diagnostics.Record("electron_host_ownership_synchronized", $"revision={synchronized.Snapshot.Revision};ready={synchronized.Synchronized}");
+                        return;
+                    }
+                    ElectronHostReady?.Invoke();
+                    _diagnostics.Record("electron_host_ready", "acknowledged");
+                    await session.ReplyAsync(message, true, null, null, null, cancellationToken).ConfigureAwait(false);
+                    return;
+                case "electron-host-ownership-get":
+                    if (!session.HostLifecycleNegotiated || _readHostOwnership is null)
+                        throw new NativeManagerRequestException("CAPABILITY_REQUIRED", "Host ownership is unavailable.");
+                    await session.ReplyAsync(message, true, _readHostOwnership(), null, null, cancellationToken).ConfigureAwait(false);
+                    return;
                 case "manager-renderer-ready":
                     RendererReady?.Invoke();
                     _diagnostics.Record("manager_renderer_ready", "acknowledged");
@@ -367,14 +531,18 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
     public static bool IsValidAppMemoryUpdate(AppMemoryUpdate? update) =>
         update is not null && LauncherStateStore.IsValidAppSearchMemory(update.Query, update.AppId);
 
-    private static bool OffersFeatureProjectionV2(JsonElement hello)
+    private static bool OffersCapability(JsonElement hello, string name)
     {
         if (!hello.TryGetProperty("capabilities", out var capabilities)
             || capabilities.ValueKind != JsonValueKind.Array
-            || capabilities.GetArrayLength() != 1) return false;
-        var capability = capabilities[0];
-        return capability.ValueKind == JsonValueKind.String
-            && capability.GetString() == FeatureProjectionV2Capability;
+            || capabilities.GetArrayLength() is < 1 or > 8) return false;
+        var offered = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var capability in capabilities.EnumerateArray())
+        {
+            if (capability.ValueKind != JsonValueKind.String || capability.GetString() is not { } value
+                || !SupportedManagerCapabilities.Contains(value) || !offered.Add(value)) return false;
+        }
+        return offered.Contains(name);
     }
 
     public async ValueTask DisposeAsync()
@@ -408,9 +576,19 @@ public sealed class NativeManagerPipeServer : IAsyncDisposable
         public bool Authenticated { get; set; }
         public bool Handshook { get; set; }
         public bool FeatureProjectionV2Negotiated { get; set; }
+        public bool HostLifecycleNegotiated { get; set; }
+        public bool LauncherFeaturesNegotiated { get; set; }
+        public bool SuperPanelSettingsNegotiated { get; set; }
+        public bool SuperPanelNegotiated { get; set; }
+        public bool QuickResultNegotiated { get; set; }
         public bool IsCurrentPeer()
         {
             try { return _peerAuthenticator.IsCurrent(_peer); }
+            catch (Exception) { return false; }
+        }
+        public bool IsHandshakeAuthorized(string? developmentAuthenticationToken)
+        {
+            try { return _peerAuthenticator.IsHandshakeAuthorized(_peer, developmentAuthenticationToken); }
             catch (Exception) { return false; }
         }
         public bool TryAcquireCurrentOperation(out IDisposable? lease)

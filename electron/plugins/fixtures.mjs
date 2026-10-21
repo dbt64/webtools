@@ -33,6 +33,19 @@ export function png(width = 1, height = 1) {
 }
 export function packageBytes(value = manifest(), entries = []) { return zip([{ name: 'manifest.json', data: JSON.stringify(value) }, ...entries]) }
 export function webPackage(value = webManifest(), entries = [{ name: 'web/index.html', data: '<!doctype html>' }]) { return zip([{ name: 'manifest.json', data: JSON.stringify(value) }, ...entries]) }
+export function runtimeV3Manifest(overrides = {}) {
+  return {
+    manifestVersion: 3, id: 'org.example.web-demo', name: 'Web Demo', description: '', author: { name: 'Example' },
+    version: '1.0.0', api: { apiMajor: 1, minHostVersion: '0.1.0' }, type: 'plugin', requestedCapabilities: [],
+    runtime: { kind: 'web' }, compatibility: { platforms: ['win32'], architectures: ['x64'] },
+    features: [{ id: 'hello', title: 'Hello', entry: { kind: 'web-bundle', document: 'web/index.html' }, requiredCapabilities: [] }],
+    runtimeFiles: [{ path: 'web/index.html', role: 'web', mediaType: 'text/html' }], dependencies: [],
+    package: { format: 'wtplugin', packageVersion: 1 }, ...overrides,
+  }
+}
+export function runtimeV3Package(value = runtimeV3Manifest(), entries = [{ name: 'web/index.html', data: '<!doctype html>' }]) {
+  return zip([{ name: 'manifest.json', data: JSON.stringify(value) }, ...entries])
+}
 export function zip64(bytes) {
   const end = bytes.subarray(bytes.length - 22); const prefix = bytes.subarray(0, bytes.length - 22)
   const record = Buffer.alloc(56); record.writeUInt32LE(0x06064b50); record.writeBigUInt64LE(44n, 4); record.writeUInt16LE(45, 12); record.writeUInt16LE(45, 14); record.writeBigUInt64LE(BigInt(end.readUInt16LE(8)), 24); record.writeBigUInt64LE(BigInt(end.readUInt16LE(10)), 32); record.writeBigUInt64LE(BigInt(end.readUInt32LE(12)), 40); record.writeBigUInt64LE(BigInt(end.readUInt32LE(16)), 48)

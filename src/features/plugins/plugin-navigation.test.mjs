@@ -26,12 +26,12 @@ test('plugin page response is accepted only for the current route and request ge
   assert.equal(isCurrentPluginPageRequest({ ...current, section: 'favorites' }, current), false)
 })
 
-test('Manager keeps Favorites as the default and routes Native Translation through the Main handoff gate', async () => {
+test('Manager keeps Favorites as the default and does not mount a Legacy Translation page', async () => {
   const app = await readFile(new URL('../../App.vue', import.meta.url), 'utf8')
   assert.ok(app.includes("ref<Section>('favorites')"))
-  assert.ok(app.includes("intent.kind === 'translation-handoff'"))
-  assert.ok(app.includes('window.desktop.builtinTranslationHandoff.get()'))
-  assert.ok(app.includes('enable-and-open'))
+  assert.ok(!app.includes("intent.kind === 'translation-handoff'"))
+  assert.ok(!app.includes('window.desktop.builtinTranslationHandoff.get()'))
+  assert.ok(!app.includes('TranslateView'))
   assert.ok(app.includes('acknowledgeNativeManagerIntent'))
   assert.doesNotMatch(app, /intent\.text/)
   assert.ok(app.includes('pluginNavItems'))

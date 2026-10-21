@@ -4,11 +4,13 @@ import test from 'node:test'
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 
-test('Electron Main owns only the Manager window and has no Launcher tray or hotkey', async () => {
+test('Electron Main owns only the Manager and built-in Translation windows and has no Launcher tray or hotkey', async () => {
   const main = await read('electron/main.ts')
   assert.doesNotMatch(main, /createLauncherWindow|launcherWindow|launcherVisibility|showLauncher|hideLauncher|toggleLauncher/)
   assert.doesNotMatch(main, /\bTray\b|\bGlobalHotkeyService\b|setLoginItemSettings|globalShortcut/)
-  assert.equal((main.match(/new BrowserWindow\(/g) ?? []).length, 1)
+  assert.equal((main.match(/new BrowserWindow\(/g) ?? []).length, 2)
+  assert.match(main, /new BuiltinTranslationWindow\(/)
+  assert.match(main, /preload:\s*join\(__dirname, '\.\.\/preload\/translation\.js'\)/)
 })
 
 test('Manager window retains Electron renderer isolation and sandboxing', async () => {
@@ -40,8 +42,8 @@ test('production installer enters through NativeHost and installs Electron under
   const script = await read('scripts/native-production.nsi')
   assert.match(script, /CreateShortcut "\$SMPROGRAMS\\WebTools\\WebTools\.lnk" "\$INSTDIR\\WebTools\.NativeHost\.exe"/)
   assert.match(script, /CreateShortcut "\$DESKTOP\\WebTools\.lnk" "\$INSTDIR\\WebTools\.NativeHost\.exe"/)
-  assert.match(script, /SetOutPath "\$INSTDIR\\Manager"/)
-  assert.match(script, /File \/r "stage\\manager\\\*\.\*"/)
+  assert.match(script, /SetOutPath "\$INSTDIR"/)
+  assert.match(script, /File \/r "stage\\application\\\*\.\*"/)
   assert.match(script, /DeleteRegKey HKCU/)
   assert.doesNotMatch(script, /\$APPDATA\\Nook|\$APPDATA\\WebTools/)
 })
@@ -60,12 +62,14 @@ test('Native first-start migration from legacy Electron data remains implemented
   assert.match(store, /legacyDataPath/)
 })
 
-test('packaged Electron connects to Native before creating its sole Manager window', async () => {
+test('packaged Electron connects to Native before creating its Manager window', async () => {
   const main = await read('electron/main.ts')
-  assert.match(main, /const nativeManaged = !webRuntimeAcceptance && \(app\.isPackaged \|\| isNativeManagerOnly/)
+  assert.match(main, /const nativeManaged = !pluginRuntimeAcceptanceStandalone\s+&& \(app\.isPackaged \|\| isNativeManagerOnly/)
+  assert.match(main, /const pluginRuntimeAcceptanceStandalone = pluginRuntimeAcceptanceRequested\s+&& process\.env\.WEBTOOLS_PLUGIN_RUNTIME_STANDALONE === '1'/)
+  assert.doesNotMatch(main, /legacyWebRuntimeAcceptance|WEBTOOLS_PHASE6E7_STANDALONE/)
   const startup = main.slice(main.indexOf('app.whenReady().then'))
   assert.ok(startup.indexOf('await nativeManagerClient.connect()') < startup.indexOf('createWindow()'))
-  assert.match(main, /builtinTranslationHandoff\?\.rendererReady\(\)/)
+  assert.doesNotMatch(main, /builtinTranslationHandoff/)
   assert.match(main, /if \(!nativeManaged \|\| !nativeManagerClient\?\.isConnected\) \{ deliverPendingNativeIntent\(\); return \}/)
 })
 
@@ -119,7 +123,7 @@ test('production builder stages a self-contained NativeHost and a separate Elect
 test('installer smoke test is isolated and cannot uninstall the existing production install', async () => {
   const script = await read('scripts/build-native-production.ps1')
   const nsi = await read('scripts/native-production.nsi')
-  assert.match(script, /native-production-\$stamp/)
+  assert.match(script, /\$releaseRoot = Join-Path \$repoRoot "release\\\$outputPrefix-\$stamp"/)
   assert.match(script, /WebTools Phase 4F 中文 空格/)
   assert.match(script, /"\/PHASE4FTEST"/)
   assert.match(nsi, /StrCmp \$IsTestInstall "1" done/)
@@ -188,8 +192,8 @@ test('Manager starts on Favorites and has no Search page or Search-only app APIs
   assert.doesNotMatch(ipc, /getApps\(|refreshApps\(|getAppIcon\(|launchApp\(|getRememberedAppSearchAppId|rememberAppSearchResult|openSearch\(/)
   assert.doesNotMatch(preload, /getApps:|refreshApps:|getAppIcon:|launchApp:|getRememberedAppSearchAppId:|rememberAppSearchResult:|openSearch:/)
   assert.doesNotMatch(main, /AppCatalogService|AppLauncher|registerAppIpcHandlers|appCatalog\.refresh/)
-  assert.match(main, /intent: \{ kind: 'open-page'; section: 'favorites' \| 'entries' \| 'settings' \}/)
-  assert.match(main, /if \(command\.section === 'translate'\) \{\s*await beginNativeTranslationHandoff\(command\.requestId, null\)/)
+  assert.match(main, /intent: \{ kind: 'open-page'; section: 'favorites' \| 'entries' \| 'settings'; settingsSection\?: 'super-panel' \}/)
+  assert.match(main, /if \(command\.section === 'translate'\) \{\s*await openTranslation2Window\(command\.requestId, null\)/)
   assert.match(await read('electron/services/native-manager-commands.ts'), /section: 'favorites' \| 'entries' \| 'settings' \| 'translate'/)
   assert.doesNotMatch(await read('src/shared/domain.ts'), /interface AppSearchEntry/)
 })

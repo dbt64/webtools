@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { lstat, mkdir, open, readdir, realpath, rename, rm } from 'node:fs/promises'
+import { lstat, mkdir, open, readdir, realpath, rename, rm, rmdir } from 'node:fs/promises'
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fail } from './errors.ts'
 import { validateArchivePath } from './manifest.ts'
 
@@ -13,6 +14,15 @@ export class SerialQueue {
 function missing(error: unknown): boolean { return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') }
 export function isMissing(error: unknown): boolean { return missing(error) }
 function contained(root: string, target: string): boolean { const r = relative(root, target); return r === '' || (!isAbsolute(r) && r !== '..' && !r.startsWith(`..${sep}`)) }
+
+const MAX_MANAGED_LOGICAL_PATH = 640
+function validateManagedLogicalPath(value: string): void {
+  if (value.length <= 240) { validateArchivePath(value); return }
+  if (!value || value.length > MAX_MANAGED_LOGICAL_PATH || /[\\:\x00-\x1f\x7f<>"|?*]/.test(value) || value.startsWith('/')) fail('UNSAFE_PATH')
+  const parts = value.replace(/\/$/, '').split('/')
+  if (parts.some(part => !part || part.length > 240 || part === '.' || part === '..' || /[. ]$/.test(part)
+    || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part))) fail('UNSAFE_PATH')
+}
 
 /** Only host-derived paths. Fail closed on any symlink/junction ancestor. */
 export class ManagedFs {
@@ -27,7 +37,7 @@ export class ManagedFs {
       catch (error) { if (!missing(error)) throw error; await mkdir(cursor) }
     }
     this.canonicalRoot = await realpath(this.root)
-    for (const dir of ['packages', 'config', 'data', 'cache', 'logs', 'staging']) await this.mkdir(dir)
+    for (const dir of ['packages', 'runtime', 'local-data', 'config', 'data', 'cache', 'logs', 'staging']) await this.mkdir(dir)
   }
   async assertSafe(target: string): Promise<void> {
     const absolute = resolve(target); if (!this.canonicalRoot || !contained(this.root, absolute)) fail('UNSAFE_PATH')
@@ -44,11 +54,11 @@ export class ManagedFs {
     }
   }
   async path(...parts: string[]): Promise<string> {
-    const logical = parts.join('/'); validateArchivePath(logical)
+    const logical = parts.join('/'); validateManagedLogicalPath(logical)
     const target = resolve(this.root, ...parts); await this.assertSafe(target); return target
   }
   async mkdir(logical: string): Promise<void> {
-    validateArchivePath(logical); const parts = logical.split('/'); let cursor = this.root
+    validateManagedLogicalPath(logical); const parts = logical.split('/'); let cursor = this.root
     for (const part of parts) {
       cursor = join(cursor, part); await this.assertSafe(cursor)
       try { await mkdir(cursor) } catch (error) { if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'EEXIST') throw error }
@@ -70,16 +80,49 @@ export class ManagedFs {
     try {
       const file = await open(temporary, 'wx')
       try { await file.writeFile(JSON.stringify(value)); await file.sync() } finally { await file.close() }
-      await this.assertSafe(target); if (!mayCommit()) fail('SESSION_EXPIRED'); await rename(temporary, target)
+      // Windows readers may briefly deny replacement. Keep the flushed file and
+      // original target intact, and revalidate authority before every attempt.
+      const retryDelays = [10, 20, 40, 80, 100]
+      for (let attempt = 0; ; attempt++) {
+        await this.assertSafe(temporary); await this.assertSafe(target)
+        if (!mayCommit()) fail('SESSION_EXPIRED')
+        try { await rename(temporary, target); break }
+        catch (error) {
+          const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+          if (process.platform !== 'win32' || (code !== 'EPERM' && code !== 'EBUSY') || attempt >= retryDelays.length) throw error
+          await delay(retryDelays[attempt])
+        }
+      }
     }
     finally { await this.assertSafe(temporary); await rm(temporary, { force: true }) }
   }
   async remove(target: string): Promise<void> {
-    await this.assertSafe(target); if (resolve(target) === this.root) fail('UNSAFE_PATH')
+    const absolute = resolve(target)
+    await this.assertSafe(absolute); if (absolute === this.root) fail('UNSAFE_PATH')
     try {
-      const stat = await lstat(target)
-      if (stat.isDirectory()) for (const child of await readdir(target)) await this.remove(join(target, child))
-      await this.assertSafe(target); await rm(target, { force: true, recursive: stat.isDirectory() })
+      const canonicalTarget = await realpath(absolute)
+      if (!contained(this.canonicalRoot, canonicalTarget)) fail('UNSAFE_PATH')
+      await this.removeEntry(absolute, canonicalTarget)
     } catch (error) { if (!missing(error)) throw error }
+  }
+  private async removeEntry(target: string, expectedCanonicalPath: string): Promise<void> {
+    const stat = await lstat(target)
+    if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory())) fail('UNSAFE_PATH')
+    const canonicalPath = await realpath(target)
+    if (canonicalPath !== expectedCanonicalPath || !contained(this.canonicalRoot, canonicalPath)) fail('UNSAFE_PATH')
+
+    if (stat.isDirectory()) {
+      for (const child of await readdir(target)) {
+        await this.removeEntry(join(target, child), join(canonicalPath, child))
+      }
+      const current = await lstat(target)
+      if (current.isSymbolicLink() || !current.isDirectory() || await realpath(target) !== expectedCanonicalPath) fail('UNSAFE_PATH')
+      await rmdir(target)
+      return
+    }
+
+    const current = await lstat(target)
+    if (current.isSymbolicLink() || !current.isFile() || await realpath(target) !== expectedCanonicalPath) fail('UNSAFE_PATH')
+    await rm(target, { force: true })
   }
 }

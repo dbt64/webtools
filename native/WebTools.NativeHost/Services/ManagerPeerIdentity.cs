@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
@@ -17,6 +18,7 @@ internal interface IManagerPipeClientProcessIdProvider
 internal interface IManagerPipePeerAuthenticator
 {
     bool TryAuthenticate(int osObservedProcessId, out IAuthenticatedManagerPipePeer? peer, out string failureReason);
+    bool IsHandshakeAuthorized(IAuthenticatedManagerPipePeer peer, string? developmentAuthenticationToken);
     bool IsCurrent(IAuthenticatedManagerPipePeer peer);
     bool TryAcquireCurrentOperation(IAuthenticatedManagerPipePeer peer, out IDisposable? lease);
 }
@@ -57,7 +59,8 @@ internal sealed class ManagerLaunchIdentity : IDisposable
         string expectedLaunchRootImagePath,
         string expectedClientImagePath,
         bool developmentMode,
-        long generation)
+        long generation,
+        byte[]? developmentAuthenticationTokenHash)
     {
         LaunchedProcess = launchedProcess;
         LaunchJob = launchJob;
@@ -65,6 +68,7 @@ internal sealed class ManagerLaunchIdentity : IDisposable
         ExpectedClientImagePath = expectedClientImagePath;
         DevelopmentMode = developmentMode;
         Generation = generation;
+        DevelopmentAuthenticationTokenHash = developmentAuthenticationTokenHash;
     }
 
     internal IManagerProcessObservation LaunchedProcess { get; }
@@ -73,13 +77,18 @@ internal sealed class ManagerLaunchIdentity : IDisposable
     internal string ExpectedClientImagePath { get; }
     internal bool DevelopmentMode { get; }
     internal long Generation { get; }
+    internal byte[]? DevelopmentAuthenticationTokenHash { get; }
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         try { LaunchJob?.Dispose(); }
-        finally { LaunchedProcess.Dispose(); }
+        finally
+        {
+            LaunchedProcess.Dispose();
+            if (DevelopmentAuthenticationTokenHash is not null) CryptographicOperations.ZeroMemory(DevelopmentAuthenticationTokenHash);
+        }
     }
 }
 
@@ -124,7 +133,8 @@ internal sealed class ManagerPeerIdentityService : IManagerPipePeerAuthenticator
         string expectedLaunchRootImagePath,
         string expectedClientImagePath,
         bool developmentMode,
-        long generation)
+        long generation,
+        string? developmentAuthenticationToken = null)
     {
         IManagerProcessObservation? launched = null;
         IManagerLaunchJob? job = null;
@@ -132,6 +142,7 @@ internal sealed class ManagerPeerIdentityService : IManagerPipePeerAuthenticator
         {
             var expectedRoot = _identityApi.CanonicalizeExecutablePath(expectedLaunchRootImagePath);
             var expected = _identityApi.CanonicalizeExecutablePath(expectedClientImagePath);
+            var authenticationTokenHash = CreateAuthenticationTokenHash(developmentMode, developmentAuthenticationToken);
             launched = _identityApi.OpenProcess(processId);
             if (!launched.IsAlive) throw new InvalidOperationException("The launched Manager process exited during identity capture.");
             if (launched.CreationFileTimeUtc != retainedCreationFileTimeUtc)
@@ -143,7 +154,7 @@ internal sealed class ManagerPeerIdentityService : IManagerPipePeerAuthenticator
             if (developmentMode) job = _identityApi.CreateAndAssignLaunchJob(launched);
             if (!launched.IsAlive) throw new InvalidOperationException("The launched Manager process exited during identity capture.");
 
-            var identity = new ManagerLaunchIdentity(launched, job, expectedRoot, expected, developmentMode, generation);
+            var identity = new ManagerLaunchIdentity(launched, job, expectedRoot, expected, developmentMode, generation, authenticationTokenHash);
             launched = null;
             job = null;
             return identity;
@@ -241,6 +252,20 @@ internal sealed class ManagerPeerIdentityService : IManagerPipePeerAuthenticator
         catch (Exception) { return false; }
     }
 
+    public bool IsHandshakeAuthorized(IAuthenticatedManagerPipePeer peer, string? developmentAuthenticationToken)
+    {
+        try
+        {
+            if (peer is not ManagerPipePeerSession session || session.IsDisposed || session.LaunchIdentity.IsDisposed || !IsCurrent(peer)) return false;
+            var expectedHash = session.LaunchIdentity.DevelopmentAuthenticationTokenHash;
+            if (!session.LaunchIdentity.DevelopmentMode) return developmentAuthenticationToken is null;
+            if (expectedHash is null || developmentAuthenticationToken is null || !IsAuthenticationToken(developmentAuthenticationToken)) return false;
+            var providedHash = SHA256.HashData(Convert.FromHexString(developmentAuthenticationToken));
+            return CryptographicOperations.FixedTimeEquals(expectedHash, providedHash);
+        }
+        catch (Exception) { return false; }
+    }
+
     public bool TryAcquireCurrentOperation(IAuthenticatedManagerPipePeer peer, out IDisposable? lease)
     {
         lease = null;
@@ -276,6 +301,20 @@ internal sealed class ManagerPeerIdentityService : IManagerPipePeerAuthenticator
         completed.SetResult(true);
         return completed;
     }
+
+    private static byte[]? CreateAuthenticationTokenHash(bool developmentMode, string? token)
+    {
+        if (!developmentMode)
+        {
+            if (token is not null) throw new InvalidOperationException("Packaged Manager launch cannot carry a development pipe token.");
+            return null;
+        }
+        if (token is null || !IsAuthenticationToken(token))
+            throw new InvalidOperationException("Development Manager launch requires a 256-bit hexadecimal pipe token.");
+        return SHA256.HashData(Convert.FromHexString(token));
+    }
+
+    private static bool IsAuthenticationToken(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
 
     private sealed class AuthenticatedOperationLease(Action release) : IDisposable
     {

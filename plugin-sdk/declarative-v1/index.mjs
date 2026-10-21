@@ -6,12 +6,17 @@ import { packPlugin } from './src/pack.mjs'
 import { rejectCredentialLike } from './src/sensitive-content.mjs'
 import { LIMITS_V2, MANIFEST_VERSION_V2, ManifestV2ValidationError } from './runtime/manifest-v2.mjs'
 import { validatePackageV2 } from './runtime/package-v2.mjs'
+import { ManifestV3ValidationError, LIMITS_V3, MANIFEST_VERSION_V3, parseManifestV3 } from './runtime-v3/manifest-v3.mjs'
+import { validatePackageV3 } from './runtime-v3/package-v3.mjs'
+import { packPluginV3, validatePluginSourceV3 } from './src/pack-v3.mjs'
 
 export { PluginValidationError } from './runtime/manifest-v1.mjs'
 export { ManifestV2ValidationError }
 
 export const MANIFEST_VERSION_V1 = 1
 export { LIMITS_V2, MANIFEST_VERSION_V2 }
+export { ManifestV3ValidationError, LIMITS_V3, MANIFEST_VERSION_V3, parseManifestV3 }
+export { getPluginPaths } from './node.mjs'
 export const API_MAJOR_V1 = 1
 export const CAPABILITIES_V1 = Object.freeze([
   'manager.page', 'plugin.config.read', 'plugin.config.write', 'plugin.storage.read',
@@ -105,3 +110,13 @@ export async function packPluginV1(sourceDirectory, outputFile, hostVersion) {
     sha256: checked.sha256,
   }
 }
+
+/** Advisory archive preflight only. Electron Main repeats full Host-authoritative install validation. */
+export async function validatePluginArchiveV3(bytes, hostVersion, host) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength <= 0 || bytes.byteLength > LIMITS_V3.archive
+    || typeof hostVersion !== 'string' || !hostVersion) throw new ManifestV3ValidationError('PACKAGE_LIMIT_EXCEEDED')
+  const result = await validatePackageV3(bytes, hostVersion, host)
+  return { valid: true, manifest: result.manifest, size: result.size, sha256: result.hash, runtimeSupport: result.runtimeSupport }
+}
+
+export { packPluginV3, validatePluginSourceV3 }

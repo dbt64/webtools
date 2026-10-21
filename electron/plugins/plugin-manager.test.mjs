@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PluginManager } from './plugin-manager.ts'
-import { manifest, packageBytes, webManifest, webPackage } from './fixtures.mjs'
+import { manifest, packageBytes, runtimeV3Manifest, runtimeV3Package, webManifest, webPackage } from './fixtures.mjs'
 async function setup(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'webtools-plugin-manager-')); t.after(() => rm(root, { recursive: true, force: true }))
   const effects = []; const prompts = []
@@ -15,6 +15,46 @@ const caps = ['manager.page', 'plugin.config.read', 'plugin.config.write', 'plug
 function allManifest(extra = {}) { return manifest({ requestedCapabilities: caps, settings: [{ key: 'label', label: 'Label', type: 'text', minLength: 0, maxLength: 32, default: 'hello' }], actions: [{ id: 'get', type: 'plugin.config.read', key: 'label' }, { id: 'set', type: 'plugin.config.write', key: 'label' }, { id: 'read', type: 'plugin.storage.read', key: 'saved' }, { id: 'write', type: 'plugin.storage.write', key: 'saved' }, { id: 'open', type: 'external.open', url: 'https://example.org/' }, { id: 'copy', type: 'clipboard.write' }, { id: 'ai', type: 'sharedAI.complete' }], ...extra }) }
 async function enabled(env, value = allManifest()) { const result = await env.manager.install(packageBytes(value), env.session); await env.manager.setEnabled(value.id, true, env.session); return (await env.manager.list())[0] }
 function request(p, actionId, input = null) { return { pluginId: p.id, version: p.version, hash: p.hash, actionId, input } }
+test('installed disable clears its temporary target synchronously before revoking authority', async t => {
+  const events = []
+  const env = await setup(t, { clearTemporaryWindowTarget: id => events.push(['clear', id]), closeFeatureWindows: async id => events.push(['close', id]) })
+  const m = runtimeV3Manifest()
+  await env.manager.install(runtimeV3Package(m), env.session)
+  await env.manager.setEnabled(m.id, true, env.session)
+  const dispatch = await env.manager.authorizeWebFeature({ pluginId: m.id, featureId: 'hello' }, env.session, authority => {
+    authority.onRevoke(() => events.push(['revoke', m.id]))
+  })
+  await dispatch.completion
+  events.length = 0
+  const disabled = env.manager.setEnabled(m.id, false, env.session)
+  assert.deepEqual(events[0], ['clear', m.id])
+  assert.ok(events.findIndex(item => item[0] === 'revoke') > 0)
+  await disabled
+  assert.ok(events.findIndex(item => item[0] === 'close') > events.findIndex(item => item[0] === 'revoke'))
+  env.manager.close()
+})
+
+test('Manager can stop installed plugin windows and commands without disabling the plugin', async t => {
+  const closed = []
+  const env = await setup(t, { closeFeatureWindows: async id => closed.push(id) })
+  const m = runtimeV3Manifest()
+  await env.manager.install(runtimeV3Package(m), env.session)
+  await env.manager.setEnabled(m.id, true, env.session)
+  let pendingAuthority
+  const ticket = await env.manager.authorizeWebFeature({ pluginId: m.id, featureId: 'hello' }, env.session, async authority => { pendingAuthority = authority })
+  await ticket.completion
+  const stopped = env.manager.stopRuntime(m.id, env.session)
+  assert.equal(pendingAuthority.isCurrent(), false, 'an activation waiting for old-window teardown must not recreate a stopped runtime')
+  assert.deepEqual(await stopped, { stopped: true })
+  assert.deepEqual(closed, [m.id])
+  assert.equal((await env.manager.list()).find(item => item.id === m.id).enabled, true)
+  const next = await env.manager.authorizeWebFeature({ pluginId: m.id, featureId: 'hello' }, env.session, async authority => {
+    assert.equal(authority.isCurrent(), true); authority.revoke()
+  })
+  await next.completion
+  await assert.rejects(env.manager.stopRuntime(m.id, 'stale'))
+  env.manager.close()
+})
 test('first install is disabled/ungranted and repeated identical import is idempotent', async t => {
   const env = await setup(t); const bytes = packageBytes()
   const first = await env.manager.install(bytes, env.session); assert.equal(first.plugin.enabled, false); assert.deepEqual(first.plugin.granted, [])
@@ -51,7 +91,7 @@ test('rejected adversarial packages leave installed registry, grants, and privat
   assert.deepEqual(await readdir(join(env.root, 'plugins', 'staging')), [])
   await assert.rejects(() => readFile(join(env.root, 'plugins', 'data', 'org.example.attack.json')), { code: 'ENOENT' })
 })
-test('invalid v2 replacement leaves v1 unchanged; authorized v2 replacement does not inherit v1 grants', async t => {
+test('retired v2 requires repack; authorized v3 replacement preserves private data without inheriting v1 grants', async t => {
   const env = await setup(t)
   const current = await enabled(env, allManifest({ id: 'org.example.preserved-v2' }))
   await env.manager.invoke(request(current, 'write', { value: { sentinel: 'preserve' } }), env.session)
@@ -78,8 +118,11 @@ test('invalid v2 replacement leaves v1 unchanged; authorized v2 replacement does
   assert.deepEqual(await readdir(join(env.root, 'plugins', 'staging')), [])
   assert.equal(env.prompts.length, promptCount, 'validation/rejection occurs before install consent')
   assert.deepEqual((await env.manager.invoke(request(current, 'read'), env.session)).value, { sentinel: 'preserve' })
-  const replacement = await env.manager.install(webPackage(webManifest({ id: current.id, version: '2.0.0' })), env.session)
-  assert.equal(replacement.plugin.manifestVersion, 2)
+  await assert.rejects(() => env.manager.install(webPackage(webManifest({ id: current.id, version: '2.0.0' })), env.session), error => error.code === 'INCOMPATIBLE_PLUGIN')
+  assert.deepEqual(await env.manager.list(), rowsBefore, 'retired v2 is not registered')
+  assert.deepEqual(await readFile(dataPath), dataBefore)
+  const replacement = await env.manager.install(runtimeV3Package(runtimeV3Manifest({ id: current.id, version: '2.0.0' })), env.session)
+  assert.equal(replacement.plugin.manifestVersion, 3)
   assert.deepEqual(replacement.plugin.granted, [])
   assert.deepEqual(await readFile(dataPath), dataBefore)
   await assert.rejects(() => env.manager.getPages(current.id, env.session))

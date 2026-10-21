@@ -15,6 +15,29 @@ public sealed class WindowsAppSource
 
     public IReadOnlyList<AppRecord> List(CancellationToken cancellationToken)
     {
+        var result = ListShortcutRecords(cancellationToken).ToList();
+        result.AddRange(ListFast(cancellationToken));
+        return result;
+    }
+
+    public IReadOnlyList<AppRecord> ListFast(CancellationToken cancellationToken)
+    {
+        var result = new List<AppRecord>();
+        result.AddRange(StartApps(cancellationToken));
+        result.AddRange(AppPaths(cancellationToken));
+        result.AddRange([
+            new AppRecord("文件资源管理器", ["File Explorer", "Explorer", "explorer.exe"], "system", new SystemTarget("file-explorer")),
+            new AppRecord("控制面板", ["Control Panel", "control.exe"], "system", new SystemTarget("control-panel")),
+            new AppRecord("设备管理器", ["Device Manager", "devmgmt.msc"], "system", new SystemTarget("device-manager")),
+        ]);
+        var diskManagement = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "diskmgmt.msc");
+        if (File.Exists(diskManagement))
+            result.Add(new AppRecord("磁盘管理", ["Disk Management", "diskmgmt.msc"], "system", new SystemTarget("disk-management")));
+        return result;
+    }
+
+    private static IReadOnlyList<AppRecord> ListShortcutRecords(CancellationToken cancellationToken)
+    {
         var result = new List<AppRecord>();
         var shellType = Type.GetTypeFromProgID("WScript.Shell");
         object? shell = null;
@@ -44,9 +67,10 @@ public sealed class WindowsAppSource
                             ? Path.GetFullPath(details.TargetPath)
                             : Path.GetFullPath(details.TargetPath, cwd.Length > 0 ? cwd : Path.GetDirectoryName(shortcut)!);
                         if (!File.Exists(target)) continue;
-                        var name = Path.GetFileNameWithoutExtension(shortcut).Trim();
+                        var fileName = Path.GetFileNameWithoutExtension(shortcut).Trim();
+                        var name = GetLocalizedShortcutName(shortcut) ?? fileName;
                         if (name.Length == 0) continue;
-                        var aliases = new[] { details.Description, Path.GetFileNameWithoutExtension(target) }
+                        var aliases = new[] { fileName, details.Description, Path.GetFileNameWithoutExtension(target) }
                             .Where(alias => !string.IsNullOrWhiteSpace(alias)).Distinct(StringComparer.Ordinal).ToArray();
                         result.Add(new AppRecord(name, aliases, "desktop", new ShortcutTarget(shortcut, target, details.Arguments.Trim(), cwd)));
                     }
@@ -58,18 +82,32 @@ public sealed class WindowsAppSource
             }
         }
         finally { if (shell is not null && Marshal.IsComObject(shell)) Marshal.FinalReleaseComObject(shell); }
-        result.AddRange(StartApps(cancellationToken));
-        result.AddRange(AppPaths(cancellationToken));
-        result.AddRange([
-            new AppRecord("文件资源管理器", ["File Explorer", "Explorer", "explorer.exe"], "system", new SystemTarget("file-explorer")),
-            new AppRecord("控制面板", ["Control Panel", "control.exe"], "system", new SystemTarget("control-panel")),
-            new AppRecord("设备管理器", ["Device Manager", "devmgmt.msc"], "system", new SystemTarget("device-manager")),
-        ]);
-        var diskManagement = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "diskmgmt.msc");
-        if (File.Exists(diskManagement))
-            result.Add(new AppRecord("磁盘管理", ["Disk Management", "diskmgmt.msc"], "system", new SystemTarget("disk-management")));
         return result;
     }
+
+    private static string? GetLocalizedShortcutName(string path)
+    {
+        try
+        {
+            var resourceModule = new StringBuilder(32768);
+            if (SHGetLocalizedName(path, resourceModule, (uint)resourceModule.Capacity, out var resourceId) != 0
+                || resourceModule.Length == 0) return null;
+            var localized = new StringBuilder(1024);
+            var indirect = $"@{resourceModule},-{resourceId}";
+            return SHLoadIndirectString(indirect, localized, (uint)localized.Capacity, IntPtr.Zero) == 0
+                && !string.IsNullOrWhiteSpace(localized.ToString()) ? localized.ToString().Trim() : null;
+        }
+        catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException or SEHException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int SHGetLocalizedName(string path, StringBuilder resourceModule, uint resourceModuleLength, out int resourceId);
+
+    [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int SHLoadIndirectString(string source, StringBuilder output, uint outputLength, IntPtr reserved);
 
     private static IEnumerable<string> EnumerateShortcuts(string root, CancellationToken cancellationToken)
     {

@@ -15,7 +15,7 @@ export interface BuiltinEntryDTO {
   name: string; description: string; version: string; icon: PluginIcon
   compatibility: { status: 'compatible' }
   state: BuiltinPluginStateDTO
-  entry: { kind: 'builtin-page'; key: 'translation' }
+  entry: { kind: 'builtin-window'; key: 'translation' }
   hostUsage: readonly ('translation' | 'shared-ai' | 'external-open' | 'clipboard')[]
   management: { canToggle: boolean; canRecover: boolean; canManageGrants: false; canUninstall: false; canReplacePackage: false }
 }
@@ -33,7 +33,7 @@ export interface CatalogSnapshot {
   declarativeAvailability: { status: 'available' } | { status: 'unavailable'; errorCode: string }
 }
 export type CatalogOpenDTO =
-  | { kind: 'builtin'; id: 'webtools.translation'; key: 'translation'; generation: number }
+  | { kind: 'builtin'; id: 'webtools.translation'; key: 'translation'; generation: number; presentation?: 'manager-page' | 'window' }
   | { kind: 'declarative'; page: PluginPageDTO }
   | { kind: 'web'; id: string; featureId: string }
 export interface PluginCatalogApi {

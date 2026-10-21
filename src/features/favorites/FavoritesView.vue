@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Check, ChevronDown, ChevronRight, FolderPlus, Globe, GripVertical, Pencil, Plus, Trash2 } from '@lucide/vue'
+import { ArrowDownWideNarrow, Check, ChevronDown, ChevronRight, ExternalLink, FolderPlus, Globe, GripVertical, LayoutGrid, List, MoreVertical, Pencil, Plus, Search, Trash2 } from '@lucide/vue'
 import type { BookmarkFolder, WebsiteCollection, WebsiteEntry, WebsiteOrderByCollection, WebsiteSaveInput } from '@/shared/domain'
 import EntryEditor from '../entries/EntryEditor.vue'
 import Favicon from '../bookmarks/Favicon.vue'
@@ -8,6 +8,8 @@ import FolderNameDialog from './FolderNameDialog.vue'
 import DeleteConfirmationDialog from './DeleteConfirmationDialog.vue'
 import { buildFavoriteSections, type FavoriteSection } from './favorites-model'
 
+const searchQuery = ref('')
+const emit = defineEmits<{ countChange: [count: number] }>()
 const websites = ref<WebsiteEntry[]>([])
 const folders = ref<BookmarkFolder[]>([])
 const websiteOrder = ref<WebsiteOrderByCollection>({ unclassified: [], folders: {} })
@@ -31,24 +33,79 @@ const savingOrder = ref(false)
 const deletionTarget = ref<{ kind: 'folder'; folder: BookmarkFolder } | { kind: 'website'; website: WebsiteEntry } | null>(null)
 const deleting = ref(false)
 const deletionError = ref('')
+const activeCollection = ref('all')
+const websiteLayout = ref<'grid' | 'list'>('grid')
+const savingLayout = ref(false)
+const sortOrder = ref<'manual' | 'newest' | 'name'>('manual')
+const categorySections = computed<FavoriteSection[]>(() => [
+  sections.value.find(section => section.id === 'uncategorized') ?? { id: 'uncategorized', name: '未分类', websites: [] },
+  ...sections.value.filter(section => section.id !== 'uncategorized'),
+])
+const orderedAllWebsites = computed(() => {
+  const seen = new Set<string>()
+  return categorySections.value.flatMap(section => section.websites).filter(website => {
+    if (seen.has(website.id)) return false
+    seen.add(website.id)
+    return true
+  })
+})
+function websiteFolders(website: WebsiteEntry): BookmarkFolder[] {
+  return folders.value.filter(folder => website.folderIds.includes(folder.id))
+}
+function displayWebsites(entries: WebsiteEntry[]): WebsiteEntry[] {
+  const query = searchQuery.value.trim().toLocaleLowerCase()
+  const result = entries.filter(website => !query || [website.name, website.url, website.description ?? '', ...websiteFolders(website).map(folder => folder.name)].join(' ').toLocaleLowerCase().includes(query))
+  if (sortOrder.value === 'newest') result.sort((a, b) => b.createdAt - a.createdAt)
+  if (sortOrder.value === 'name') result.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+  return result
+}
+const displaySections = computed<FavoriteSection[]>(() => {
+  if (activeCollection.value === 'all' && !editMode.value) return [{ id: 'all', name: '全部', websites: displayWebsites(orderedAllWebsites.value) }]
+  return categorySections.value.filter(section => activeCollection.value === 'all' || section.id === activeCollection.value)
+    .map(section => ({ ...section, websites: displayWebsites(section.websites) }))
+})
+const visibleWebsiteCount = computed(() => new Set(displaySections.value.flatMap(section => section.websites.map(website => website.id))).size)
+function websiteDomain(website: WebsiteEntry): string {
+  try { return new URL(website.url).hostname.replace(/^www\./i, '') } catch { return website.url }
+}
+function toggleEditMode(): void {
+  editMode.value = !editMode.value
+  if (editMode.value) sortOrder.value = 'manual'
+  endDrag()
+}
+async function changeLayout(layout: 'grid' | 'list'): Promise<void> {
+  if (savingLayout.value || layout === websiteLayout.value) return
+  const previous = websiteLayout.value
+  websiteLayout.value = layout
+  savingLayout.value = true
+  try {
+    const result = await window.desktop.updateSettings({ websiteLayout: layout })
+    if (!result.ok) { websiteLayout.value = previous; errorMessage.value = result.error.message }
+  } catch { websiteLayout.value = previous; errorMessage.value = '保存显示方式失败，请重试。' }
+  finally { savingLayout.value = false }
+}
 
 async function refresh(expandFolderId?: string): Promise<void> {
   loading.value = true
   errorMessage.value = ''
   try {
-    const [loadedFolders, loadedWebsites, loadedOrder] = await Promise.all([
+    const [loadedFolders, loadedWebsites, loadedOrder, initialSettings] = await Promise.all([
       window.desktop.listBookmarkFolders(),
       window.desktop.listWebsites(),
       window.desktop.getWebsiteOrder(),
+      initialized.value ? Promise.resolve(null) : window.desktop.getSettings(),
     ])
     folders.value = loadedFolders
     websites.value = loadedWebsites
     websiteOrder.value = loadedOrder
+    if (initialSettings) websiteLayout.value = initialSettings.websiteLayout
+    emit('countChange', loadedWebsites.length)
+    if (activeCollection.value !== 'all' && activeCollection.value !== 'uncategorized' && !loadedFolders.some(folder => folder.id === activeCollection.value)) activeCollection.value = 'all'
     const nextSections = buildFavoriteSections(loadedFolders, loadedWebsites, loadedOrder)
-    const liveIds = new Set(nextSections.map((section) => section.id))
+    const liveIds = new Set(['uncategorized', ...nextSections.map((section) => section.id)])
     expandedFolders.value = initialized.value
       ? new Set([...expandedFolders.value].filter((id) => liveIds.has(id)))
-      : new Set(nextSections.map((section) => section.id))
+      : new Set(['uncategorized', ...nextSections.map((section) => section.id)])
     if (expandFolderId) expandedFolders.value = new Set([...expandedFolders.value, expandFolderId])
     initialized.value = true
   } catch {
@@ -84,6 +141,7 @@ async function saveFolder(name: string): Promise<void> {
     folderDialogOpen.value = false
     folderDialogTarget.value = null
     await refresh(created ? result.data.id : undefined)
+    if (created) activeCollection.value = result.data.id
   } catch {
     folderError.value = '保存收藏夹失败，请重试。'
   } finally {
@@ -109,6 +167,10 @@ function editWebsite(website: WebsiteEntry): void {
   initialFolderIds.value = [...website.folderIds]
   websiteEditorOpen.value = true
   errorMessage.value = ''
+}
+
+function closeWebsiteMenu(event: MouseEvent): void {
+  if (event.currentTarget instanceof HTMLElement) event.currentTarget.closest('details')?.removeAttribute('open')
 }
 
 async function saveWebsite(value: WebsiteSaveInput): Promise<void> {
@@ -203,15 +265,22 @@ function allowReorderDrop(section: FavoriteSection, event: DragEvent): void {
   if (!editMode.value || !dragSource.value) return
   event.preventDefault()
   const collection = collectionFor(section)
-  if (dragSource.value.collectionKey === collectionKey(collection) && event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  const canClassify = dragSource.value.collectionKey === 'unclassified' && collection.kind === 'folder'
+  if ((dragSource.value.collectionKey === collectionKey(collection) || canClassify) && event.dataTransfer) event.dataTransfer.dropEffect = 'move'
   else if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
 }
 
 async function dropOnWebsite(section: FavoriteSection, targetId: string): Promise<void> {
   const source = dragSource.value
   const collection = collectionFor(section)
+  if (source?.collectionKey === 'unclassified' && collection.kind === 'folder') {
+    const folder = folders.value.find(item => item.id === collection.folderId)
+    if (folder) await dropOnFolder(folder)
+    return
+  }
   if (!source || source.collectionKey !== collectionKey(collection) || source.websiteId === targetId || savingOrder.value) return
-  const orderedIds = section.websites.map((website) => website.id)
+  // Keep hidden search matches in the persisted collection order.
+  const orderedIds = (sections.value.find(item => item.id === section.id)?.websites ?? section.websites).map((website) => website.id)
   const sourceIndex = orderedIds.indexOf(source.websiteId)
   const targetIndex = orderedIds.indexOf(targetId)
   if (sourceIndex < 0 || targetIndex < 0) return
@@ -270,29 +339,54 @@ onMounted(() => { void refresh() })
 </script>
 
 <template>
-  <section class="content-page favorites-page">
-    <div class="page-heading">
-      <div>
-        <p class="eyebrow">常用入口</p>
-        <h1>网址</h1>
-        <p class="page-description">按收藏夹整理常访问的网站，点击即可打开。</p>
+  <section class="content-page favorites-page manager-grid-page">
+    <header class="manager-page-header">
+      <div class="manager-page-identity">
+        <span class="manager-page-icon" aria-hidden="true"><Globe :size="22" :stroke-width="1.8" /></span>
+        <div><h1>网址</h1><p class="page-description">收藏和整理常用的网站，快速打开你需要的内容。</p></div>
       </div>
       <div class="favorites-page-actions">
-        <button class="secondary-button" :aria-pressed="editMode" @click="editMode = !editMode; endDrag()">
+        <button class="secondary-button" :aria-pressed="editMode" @click="toggleEditMode">
           <Check v-if="editMode" :size="15" />
           <Pencil v-else :size="15" />
           {{ editMode ? '完成编辑' : '编辑' }}
         </button>
         <button class="secondary-button" @click="openFolderDialog()"><FolderPlus :size="15" />新建收藏夹</button>
-        <button class="primary-button" @click="addWebsite()"><Plus :size="16" />添加网址</button>
+        <button class="primary-button" @click="addWebsite(activeCollection === 'all' || activeCollection === 'uncategorized' ? undefined : activeCollection)"><Plus :size="16" />添加网址</button>
+      </div>
+    </header>
+
+    <nav class="website-category-tabs" aria-label="网址分类">
+      <button type="button" class="website-category-tab" :class="{ 'is-selected': activeCollection === 'all' }" :aria-pressed="activeCollection === 'all'" @click="activeCollection = 'all'">全部<span>{{ websites.length }}</span></button>
+      <button
+        v-for="category in categorySections" :key="category.id" type="button" class="website-category-tab"
+        :class="{ 'is-selected': activeCollection === category.id, 'is-drop-target': dragOverFolderId === category.id }"
+        :aria-pressed="activeCollection === category.id" :title="category.name" @click="activeCollection = category.id"
+        @dragover="category.id !== 'uncategorized' && folders.find(folder => folder.id === category.id) && allowFolderDrop(folders.find(folder => folder.id === category.id)!, $event)"
+        @dragleave="category.id !== 'uncategorized' && folders.find(folder => folder.id === category.id) && leaveFolder(folders.find(folder => folder.id === category.id)!, $event)"
+        @drop.stop="category.id !== 'uncategorized' && folders.find(folder => folder.id === category.id) && dropOnFolder(folders.find(folder => folder.id === category.id)!)"
+      >{{ category.name }}<span>{{ category.websites.length }}</span></button>
+      <button type="button" class="website-category-tab website-category-add" @click="openFolderDialog()"><Plus :size="15" />新建分类</button>
+    </nav>
+
+    <div class="manager-grid-toolbar">
+      <label class="manager-page-search"><Search :size="18" aria-hidden="true" /><input v-model="searchQuery" type="search" placeholder="搜索网址、分类或描述…" aria-label="搜索网址" /></label>
+      <div class="manager-view-switch" role="group" aria-label="网址显示方式">
+        <button type="button" :class="{ 'is-selected': websiteLayout === 'grid' }" :aria-pressed="websiteLayout === 'grid'" :disabled="savingLayout" @click="changeLayout('grid')"><LayoutGrid :size="17" />网格视图</button>
+        <button type="button" :class="{ 'is-selected': websiteLayout === 'list' }" :aria-pressed="websiteLayout === 'list'" :disabled="savingLayout" @click="changeLayout('list')"><List :size="17" />列表视图</button>
+      </div>
+      <div class="website-sort-controls">
+        <label class="website-sort"><ArrowDownWideNarrow :size="16" aria-hidden="true" /><select v-model="sortOrder" aria-label="网址排序" :disabled="editMode"><option value="manual">按手动顺序</option><option value="newest">按添加时间</option><option value="name">按名称</option></select></label>
+        <span class="manager-grid-count">共 {{ visibleWebsiteCount }} 个网址</span>
       </div>
     </div>
+    <p v-if="editMode" class="website-edit-note">拖动网址调整同分类内的顺序；将未分类网址拖到分类标签或收藏夹中即可归类。</p>
 
     <p v-if="errorMessage" class="inline-error" role="alert">{{ errorMessage }}</p>
     <div v-if="loading" class="favorites-empty" role="status">正在加载网址…</div>
-    <div v-else-if="sections.length" class="favorites-folders">
+    <div v-else class="favorites-folders">
       <section
-        v-for="section in sections"
+        v-for="section in displaySections"
         :key="section.id"
         class="favorite-folder"
         :class="{ 'is-drop-target': section.id !== 'uncategorized' && dragOverFolderId === section.id }"
@@ -300,7 +394,7 @@ onMounted(() => { void refresh() })
         @dragleave="section.id !== 'uncategorized' && folders.find((folder) => folder.id === section.id) && leaveFolder(folders.find((folder) => folder.id === section.id)!, $event)"
         @drop="section.id !== 'uncategorized' && folders.find((folder) => folder.id === section.id) && dropOnFolder(folders.find((folder) => folder.id === section.id)!)"
       >
-        <div class="favorite-folder-heading">
+        <div v-if="section.id !== 'all'" class="favorite-folder-heading">
           <button
             class="favorite-folder-toggle"
             :aria-expanded="expandedFolders.has(section.id)"
@@ -316,50 +410,49 @@ onMounted(() => { void refresh() })
             <button class="icon-button danger" :aria-label="`删除${section.name}`" title="删除收藏夹" @click="deleteFolder(folders.find((folder) => folder.id === section.id)!)"><Trash2 :size="13" /></button>
           </div>
         </div>
-        <div v-if="expandedFolders.has(section.id)" class="favorite-folder-content">
-          <div v-if="section.websites.length" class="favorite-bookmark-grid" :class="{ 'is-editing': editMode }">
+        <div v-if="section.id === 'all' || expandedFolders.has(section.id)" class="favorite-folder-content">
+          <div v-if="section.websites.length" class="manager-grid website-entry-grid" :class="{ 'is-editing': editMode, 'is-list': websiteLayout === 'list' }">
             <div
               v-for="website in section.websites"
               :key="website.id"
-              class="favorite-bookmark-item"
+              class="manager-card website-entry-card"
               :class="{ 'is-dragging': dragSource?.websiteId === website.id }"
               :draggable="editMode"
               @dragstart="startDrag(website, section, $event)"
               @dragend="endDrag"
               @dragover="allowReorderDrop(section, $event)"
-              @drop="dropOnWebsite(section, website.id)"
+              @drop.stop="dropOnWebsite(section, website.id)"
             >
               <button
-                class="favorite-bookmark"
+                class="website-entry-main"
                 :title="website.name"
                 :aria-label="editMode ? '编辑' + website.name : '打开' + website.name"
                 @click="editMode ? editWebsite(website) : openWebsite(website)"
               >
-                <span class="favorite-bookmark-icon"><Favicon :url="website.url" :favicon="website.favicon" /></span>
-                <span class="favorite-bookmark-title">{{ website.name }}</span>
+                <span class="manager-card-icon website-entry-icon"><Favicon :url="website.url" :favicon="website.favicon" /></span>
+                <span class="manager-card-copy">
+                  <strong class="manager-card-title">{{ website.name }}</strong>
+                  <span class="website-entry-domain" :title="website.url">{{ websiteDomain(website) }}</span>
+                  <span v-if="website.description" class="manager-card-description" :title="website.description">{{ website.description }}</span>
+                  <span v-if="websiteFolders(website).length" class="manager-card-meta"><span v-for="folder in websiteFolders(website).slice(0, 2)" :key="folder.id" class="website-folder-tag" :title="folder.name">{{ folder.name }}</span><span v-if="websiteFolders(website).length > 2" :title="websiteFolders(website).map(folder => folder.name).join('、')">+{{ websiteFolders(website).length - 2 }}</span></span>
+                </span>
               </button>
-              <div v-if="editMode" class="favorite-bookmark-actions">
-                <GripVertical class="favorite-bookmark-grip" :size="13" aria-hidden="true" />
-                <button class="icon-button" :aria-label="`编辑${website.name}`" title="编辑网址" @click="editWebsite(website)"><Pencil :size="12" /></button>
-                <button class="icon-button danger" :aria-label="`删除${website.name}`" title="删除网址" @click="deleteWebsite(website)"><Trash2 :size="12" /></button>
+              <div class="website-entry-actions">
+                <GripVertical v-if="editMode" class="favorite-bookmark-grip" :size="15" aria-hidden="true" />
+                <button type="button" class="manager-icon-action" :aria-label="`打开${website.name}`" title="在浏览器中打开" @click="openWebsite(website)"><ExternalLink :size="16" /></button>
+                <details class="website-card-menu" name="website-actions">
+                  <summary :aria-label="`更多${website.name}的操作`" title="更多操作"><MoreVertical :size="17" /></summary>
+                  <div class="website-card-menu-content"><button type="button" @click="closeWebsiteMenu($event); editWebsite(website)"><Pencil :size="14" />编辑网址</button><button type="button" class="is-danger" @click="closeWebsiteMenu($event); deleteWebsite(website)"><Trash2 :size="14" />删除网址</button></div>
+                </details>
               </div>
             </div>
           </div>
           <div v-else class="favorite-folder-empty">
-            <span>暂无收藏网址</span>
-            <button class="text-button" @click="addWebsite(section.id === 'uncategorized' ? undefined : section.id)"><Plus :size="14" />添加网址</button>
+            <span>{{ searchQuery.trim() ? '没有匹配的网址' : '暂无收藏网址' }}</span>
+            <button v-if="!searchQuery.trim()" class="text-button" @click="addWebsite(section.id === 'uncategorized' || section.id === 'all' ? undefined : section.id)"><Plus :size="14" />添加网址</button>
           </div>
         </div>
       </section>
-    </div>
-    <div v-else class="favorites-empty">
-      <span class="empty-orb"><Globe :size="18" /></span>
-      <strong>暂无收藏网址</strong>
-      <span>添加网址或创建收藏夹，整理你的常用入口。</span>
-      <div class="favorites-page-actions">
-        <button class="secondary-button" @click="openFolderDialog()"><FolderPlus :size="15" />新建收藏夹</button>
-        <button class="primary-button" @click="addWebsite()"><Plus :size="16" />添加网址</button>
-      </div>
     </div>
 
     <DeleteConfirmationDialog

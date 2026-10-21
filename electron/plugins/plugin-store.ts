@@ -2,11 +2,13 @@ import type { PluginJson, PluginSettingValue } from '../../src/shared/plugin-con
 import { LIMITS, opaqueKey, parseStrictJson, record, validPluginId, validateSettingValue, type ValidatedManifest } from './manifest.ts'
 import { ManagedFs, SerialQueue, isMissing } from './managed-fs.ts'
 import { fail } from './errors.ts'
+import { PluginConfigurationStore, runtimeConfigPaths } from './plugin-configuration.ts'
 
 export class PluginStore {
   private readonly writes = new SerialQueue()
   readonly fs: ManagedFs
-  constructor(fs: ManagedFs) { this.fs = fs }
+  readonly configuration: PluginConfigurationStore
+  constructor(fs: ManagedFs) { this.fs = fs; this.configuration = new PluginConfigurationStore(fs, this.writes) }
   private validateDocument(values: Record<string, PluginJson>): void {
     const json = JSON.stringify(values)
     if (Object.keys(values).length > LIMITS.keys || Buffer.byteLength(json) > LIMITS.data) fail('STORAGE_LIMIT')
@@ -67,7 +69,10 @@ export class PluginStore {
     })
   }
   async deletePrivateData(id: string): Promise<void> {
-    await this.writes.run(async () => { for (const scope of ['config', 'data'] as const) await this.fs.remove(await this.fs.path(this.logical(scope, id))) })
+    await this.writes.run(async () => {
+      const paths = [...(['config', 'data'] as const).map(scope => this.logical(scope, id)), ...runtimeConfigPaths(id)]
+      for (const path of paths) await this.fs.remove(await this.fs.path(path))
+    })
   }
   async deleteData(id: string, key: string, mayCommit: () => boolean): Promise<void> {
     opaqueKey(key)

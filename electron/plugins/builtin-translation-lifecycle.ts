@@ -136,7 +136,13 @@ export class BuiltinTranslationLifecycle {
     this.transitionPrior = null
   }
 
-  /** Manager shutdown is terminal for work, but persisted enable choice is untouched. */
+  /** Close the built-in surface and invalidate work without disabling Translation. */
+  closeWindow(): void {
+    this.invalidateSession()
+    this.cancelTranslation()
+  }
+
+  /** Host shutdown is terminal; closing a window uses closeWindow instead. */
   close(): void {
     this.generationValue += 1
     this.state = { status: 'disabled', enabled: false, generation: this.generationValue }

@@ -4,6 +4,8 @@
 
 **Phase 6E-4 COMPLETE — Gate 1 isolated-runtime baseline ACCEPTED.**
 
+**Repository cleanup note (2026-10-10):** The sanitized, checked-in Gate 1 evidence JSON and its shape-only test were retired as phase-specific evidence artifacts. This report preserves the historical decision and scope; it is not an active test input. Current packaged acceptance is provided by `scripts/verify-plugin-runtime-packaged.mjs`.
+
 - Gate 1 isolated-runtime baseline: **ACCEPTED**; security assurance **BOUNDED / NON-EXHAUSTIVE**.
 - Gate 4: **NOT CERTIFIED**.
 - `network.mode: domains`: **UNSUPPORTED**.

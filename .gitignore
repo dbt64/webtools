@@ -1,10 +1,13 @@
 node_modules/
 **/bin/
+!plugin-sdk/create-webtools-plugin/bin/
+!plugin-sdk/create-webtools-plugin/bin/**
 **/obj/
 out/
 dist/
 release/
 /output/
+/undefined/manager-package/
 **/.vs/
 **/.idea/
 **/TestResults/
@@ -14,3 +17,9 @@ release/
 !.superpowers/sdd/.gitignore
 *.log
 .DS_Store
+
+# Local packaging and Windows cache residue
+/Microsoft/
+/WebTools-current-source-test.zip
+/zip5gwSm
+/electron.def

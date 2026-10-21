@@ -53,7 +53,7 @@ export interface TranslationRequest {
 }
 
 export interface TranslationProviderInfo {
-  engine: TranslationEngineId
+  engine: TranslationEngineId | 'imported-api'
   providerName: string
   providerId?: string
   model?: string

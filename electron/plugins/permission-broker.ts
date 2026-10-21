@@ -4,8 +4,8 @@ import { boundedString, record } from './manifest.ts'
 import { fail } from './errors.ts'
 
 export interface PluginConsent {
-  kind: 'install' | 'replace' | 'downgrade' | 'grant' | 'uninstall' | 'delete-data' | 'external' | 'clipboard' | 'ai'
-  pluginId: string; name: string; version: string; capabilities?: InstalledPluginCapability[]; preview?: string; versionChange?: PluginVersionChange; manifestVersion?: 1 | 2
+  kind: 'install' | 'replace' | 'downgrade' | 'grant' | 'uninstall' | 'delete-data' | 'reset-config' | 'external' | 'clipboard' | 'ai'
+  pluginId: string; name: string; version: string; capabilities?: InstalledPluginCapability[]; preview?: string; versionChange?: PluginVersionChange; manifestVersion?: 1 | 2 | 3; runtimeKind?: 'web' | 'node'
 }
 export interface PluginProviderInfo { providerName: string; model: string; identity?: string }
 export interface PluginHostEffects {

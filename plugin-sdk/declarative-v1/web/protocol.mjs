@@ -1,7 +1,7 @@
 // Browser-neutral private wire helpers. Not a supported developer subpath.
 export const BRIDGE_MAJOR = 1
 export const ENVELOPE_BYTES = 532480
-export const ERROR_CODES = Object.freeze(['INVALID_REQUEST', 'UNAUTHORIZED', 'PERMISSION_DENIED', 'STALE_RUNTIME', 'CONTEXT_EXPIRED', 'NOT_AVAILABLE', 'LIMIT_EXCEEDED', 'TIMEOUT', 'CANCELLED', 'USER_CANCELLED', 'RUNTIME_CLOSED', 'INTERNAL_ERROR'])
+export const ERROR_CODES = Object.freeze(['INVALID_REQUEST', 'UNAUTHORIZED', 'PERMISSION_DENIED', 'STALE_RUNTIME', 'CONTEXT_EXPIRED', 'NOT_AVAILABLE', 'LIMIT_EXCEEDED', 'TIMEOUT', 'CANCELLED', 'USER_CANCELLED', 'RUNTIME_CLOSED', 'INTERNAL_ERROR', 'CONFIGURATION_NOT_DECLARED', 'CONFIGURATION_KEY_NOT_FOUND', 'CONFIG_INCOMPATIBLE'])
 
 export class BridgeWireError extends Error {
   constructor(code = 'INVALID_REQUEST') { super('Invalid Bridge message'); this.code = code }

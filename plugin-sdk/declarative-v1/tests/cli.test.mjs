@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { packageBytes, manifest as fixtureManifest } from '../../../electron/plugins/fixtures.mjs'
+import { packageBytes, runtimeV3Manifest, manifest as fixtureManifest } from '../../../electron/plugins/fixtures.mjs'
 import { errorRecord } from '../src/diagnostics.mjs'
 
 const bin = fileURLToPath(new URL('../bin/webtools-plugin.mjs', import.meta.url))
@@ -23,6 +23,66 @@ test('validate accepts a valid source directory read-only and reports safe metad
   assert.match(result.stdout, /INFO.*org\.example\.cli-test/)
   assert.match(result.stdout, /VALID/)
   assert.deepEqual(await readFile(path.join(root, 'manifest.json')), before)
+})
+
+test('Runtime v3 CLI validates, packs, validates the archive, and inspects runtime identity', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'wtplugin-cli-v3-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const source = path.join(root, 'plugin')
+  const output = path.join(root, 'artifacts', 'plugin.wtplugin')
+  await mkdir(source, { recursive: true }); await mkdir(path.dirname(output), { recursive: true })
+  const value = runtimeV3Manifest({ id: 'org.example.cli-v3', name: 'CLI v3', runtime: { kind: 'web' } })
+  await writeFile(path.join(source, 'manifest.json'), JSON.stringify(value))
+  await mkdir(path.join(source, 'web'), { recursive: true })
+  await writeFile(path.join(source, 'web', 'index.html'), '<!doctype html><title>CLI v3</title>')
+
+  const checkedSource = run(['validate', source, '--host-version', '0.1.0', '--json'], root)
+  assert.equal(checkedSource.status, 0, checkedSource.stderr)
+  assert.equal(JSON.parse(checkedSource.stdout).result.plugin.manifestVersion, 3)
+  const packed = run(['pack', source, '--out', output, '--host-version', '0.1.0', '--json'], root)
+  assert.equal(packed.status, 0, packed.stderr)
+  assert.equal(JSON.parse(packed.stdout).result.plugin.runtime, 'web')
+  const validatedArchive = run(['validate', output, '--host-version', '0.1.0', '--json'], root)
+  assert.equal(validatedArchive.status, 0, validatedArchive.stderr)
+  assert.equal(JSON.parse(validatedArchive.stdout).result.plugin.manifestVersion, 3)
+  const inspected = run(['inspect', output, '--host-version', '0.1.0', '--json'], root)
+  assert.equal(inspected.status, 0, inspected.stderr)
+  assert.equal(JSON.parse(inspected.stdout).result.plugin.runtime, 'web')
+})
+
+test('source validation names omitted optional dependencies in its warning', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'wtplugin-cli-optional-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const project = path.join(root, 'project')
+  await mkdir(path.join(project, 'web'), { recursive: true })
+  await mkdir(path.join(project, 'preload'), { recursive: true })
+  await mkdir(path.join(project, 'node_modules', '@sample', 'rootdep'), { recursive: true })
+  const value = runtimeV3Manifest({
+    id: 'org.example.optional-warning',
+    name: 'Optional Warning',
+    runtime: { kind: 'node', preload: 'preload/index.cjs' },
+    compatibility: { platforms: ['win32'], architectures: ['x64'], nodeAbi: '149' },
+    runtimeFiles: [
+      { path: 'web/index.html', role: 'web', mediaType: 'text/html' },
+      { path: 'preload/index.cjs', role: 'node-preload', mediaType: 'text/javascript' },
+    ],
+  })
+  await writeFile(path.join(project, 'manifest.json'), JSON.stringify(value))
+  await writeFile(path.join(project, 'package.json'), JSON.stringify({
+    name: 'optional-warning-plugin', version: '1.0.0', dependencies: { '@sample/rootdep': '1.0.0' },
+  }))
+  await writeFile(path.join(project, 'web', 'index.html'), '<!doctype html><title>optional dependency</title>')
+  await writeFile(path.join(project, 'preload', 'index.cjs'), "require('@sample/rootdep')\n")
+  await writeFile(path.join(project, 'node_modules', '@sample', 'rootdep', 'package.json'), JSON.stringify({
+    name: '@sample/rootdep', version: '1.0.0', main: 'index.cjs',
+    optionalDependencies: { '@sample/platform-addon': '1.0.0' },
+  }))
+  await writeFile(path.join(project, 'node_modules', '@sample', 'rootdep', 'index.cjs'), 'module.exports = true\n')
+
+  const result = run(['validate', project, '--host-version', '0.1.0'], root)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Optional dependency @sample\/platform-addon was not installed and was omitted/u)
+  assert.doesNotMatch(result.stdout, /undefined/u)
 })
 
 test('validate rejects unknown fields without leaking absolute source paths', async t => {
@@ -48,7 +108,7 @@ test('validate reports host incompatibility and corrupt archive failures with sa
   await writeFile(archive, 'not a zip')
   const damaged = run(['validate', archive, '--host-version', '0.1.0'], tmpdir())
   assert.equal(damaged.status, 1)
-  assert.match(damaged.stderr, /ERROR.*INVALID_PACKAGE/)
+  assert.match(damaged.stderr, /ERROR.*UNSAFE_ARCHIVE/)
   assert.equal(damaged.stderr.includes(root), false)
   assert.equal(await readFile(archive, 'utf8'), 'not a zip')
 })

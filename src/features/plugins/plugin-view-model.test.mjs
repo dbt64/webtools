@@ -21,8 +21,8 @@ test('only enabled active plugins with the page capability appear in Apps naviga
 
 test('permission display exposes requested, granted and missing capability state without implying trust', () => {
   assert.deepEqual(pluginPermissionRows(plugin({ granted: ['manager.page'] })), [
-    { id: 'manager.page', requested: true, grantable: true, granted: true, label: '添加 Manager 页面' },
-    { id: 'sharedAI.complete', requested: true, grantable: true, granted: false, label: '使用共享 AI' },
+    { id: 'manager.page', requested: true, grantable: true, granted: true, label: '添加 Manager 页面', description: '在 WebTools 中打开已有的兼容插件页面。', implemented: true },
+    { id: 'sharedAI.complete', requested: true, grantable: true, granted: false, label: '使用共享 AI', description: '通过 WebTools 的 AI 配置请求结果；插件不会获取提供方密钥。', implemented: true },
   ])
   assert.equal(pluginStatusView(plugin()).trust, '本地导入；发布者未经验证')
 })

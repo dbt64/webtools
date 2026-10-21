@@ -3,6 +3,14 @@ import assert from 'node:assert/strict'
 import { reactive } from 'vue'
 import { cloneSharedAISettings, createDefaultSharedAISettings, isValidSharedAISettings, normalizeSharedAISettings } from './ai-config.ts'
 
+test('credential-shaped model input is rejected and never projected from saved settings', () => {
+  const misplaced = 'sk-test-credential-not-a-real-secret-12345678'
+  const raw = { defaultProviderId: 'deepseek', providers: { deepseek: { model: misplaced } } }
+  assert.equal(isValidSharedAISettings(raw), false)
+  assert.equal(JSON.stringify(normalizeSharedAISettings(raw)).includes(misplaced), false)
+  assert.equal(JSON.stringify(cloneSharedAISettings(raw)).includes(misplaced), false)
+})
+
 test('copies reactive AI settings without crashing the Settings view', () => {
   const original = reactive({
     defaultProviderId: 'qwen',

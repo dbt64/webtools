@@ -1,24 +1,51 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { parseNativeManagerIntent } from '../src/shared/native-manager-intent'
 import { IPC_CHANNELS, type DesktopApi } from '../src/shared/ipc'
+import { parseSuperPanelSettingsStatus } from '../src/shared/super-panel-settings.ts'
 
 const desktopApi: DesktopApi = {
+  superPanel: {
+    get: () => ipcRenderer.invoke(IPC_CHANNELS.superPanelGet),
+    update: settings => ipcRenderer.invoke(IPC_CHANNELS.superPanelUpdate, settings),
+    onChanged: handler => {
+      const listener = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        const status = parseSuperPanelSettingsStatus(value)
+        if (status) handler(status)
+      }
+      ipcRenderer.on(IPC_CHANNELS.superPanelChanged, listener)
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.superPanelChanged, listener)
+    },
+  },
+  pluginDevelopment: {
+    get: () => ipcRenderer.invoke(IPC_CHANNELS.pluginDevelopmentGet),
+    setEnabled: enabled => ipcRenderer.invoke(IPC_CHANNELS.pluginDevelopmentSetEnabled, enabled),
+    connectFromDialog: () => ipcRenderer.invoke(IPC_CHANNELS.pluginDevelopmentConnect),
+    disconnect: () => ipcRenderer.invoke(IPC_CHANNELS.pluginDevelopmentDisconnect),
+    openFeature: featureId => ipcRenderer.invoke(IPC_CHANNELS.pluginDevelopmentOpen, featureId),
+    copyDiagnostics: (pluginId, featureId) => ipcRenderer.invoke(IPC_CHANNELS.pluginDevelopmentCopy, pluginId, featureId),
+    onChanged: handler => {
+      const listener = (_event: Electron.IpcRendererEvent, value: Parameters<typeof handler>[0]) => handler(value)
+      ipcRenderer.on(IPC_CHANNELS.pluginDevelopmentChanged, listener)
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.pluginDevelopmentChanged, listener)
+    },
+  },
   pluginCatalog: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.pluginCatalogList),
     open: (ref) => ipcRenderer.invoke(IPC_CHANNELS.pluginCatalogOpen, ref),
     setEnabled: (ref, enabled) => ipcRenderer.invoke(IPC_CHANNELS.pluginCatalogSetEnabled, ref, enabled),
     recoverBuiltinTranslation: () => ipcRenderer.invoke(IPC_CHANNELS.pluginCatalogRecoverBuiltin),
   },
-  builtinTranslationHandoff: {
-    get: () => ipcRenderer.invoke(IPC_CHANNELS.builtinTranslationHandoffGet),
-    resolve: (request) => ipcRenderer.invoke(IPC_CHANNELS.builtinTranslationHandoffResolve, request),
-  },
+
   plugins: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.pluginList),
     installFromUserDialog: () => ipcRenderer.invoke(IPC_CHANNELS.pluginInstall),
     setEnabled: (id, enabled) => ipcRenderer.invoke(IPC_CHANNELS.pluginSetEnabled, id, enabled),
+    stopRuntime: id => ipcRenderer.invoke(IPC_CHANNELS.pluginStopRuntime, id),
     setGrants: (id, grants) => ipcRenderer.invoke(IPC_CHANNELS.pluginSetGrants, id, grants),
     getPages: (id) => ipcRenderer.invoke(IPC_CHANNELS.pluginGetPages, id),
+    getConfiguration: identity => ipcRenderer.invoke(IPC_CHANNELS.pluginConfigurationGet, identity),
+    updateConfiguration: request => ipcRenderer.invoke(IPC_CHANNELS.pluginConfigurationUpdate, request),
+    resetConfiguration: request => ipcRenderer.invoke(IPC_CHANNELS.pluginConfigurationReset, request),
     invoke: (request) => ipcRenderer.invoke(IPC_CHANNELS.pluginInvoke, request),
     prepareAIReview: (request) => ipcRenderer.invoke(IPC_CHANNELS.pluginAIReviewPrepare, request),
     confirmAIReview: (reviewId) => ipcRenderer.invoke(IPC_CHANNELS.pluginAIReviewConfirm, reviewId),
@@ -26,6 +53,9 @@ const desktopApi: DesktopApi = {
     uninstall: (id) => ipcRenderer.invoke(IPC_CHANNELS.pluginUninstall, id),
   },
   managerReady: () => ipcRenderer.send(IPC_CHANNELS.managerReady),
+  managerWindow: {
+    perform: action => ipcRenderer.invoke(IPC_CHANNELS.managerWindowAction, action),
+  },
   onNativeManagerIntent: (handler) => {
     const listener = (_event: Electron.IpcRendererEvent, value: unknown): void => {
       const intent = parseNativeManagerIntent(value)
@@ -48,11 +78,7 @@ const desktopApi: DesktopApi = {
   saveAIProviderKey: (providerId, apiKey) => ipcRenderer.invoke(IPC_CHANNELS.saveAIProviderKey, providerId, apiKey) as ReturnType<DesktopApi['saveAIProviderKey']>,
   clearAIProviderKey: (providerId) => ipcRenderer.invoke(IPC_CHANNELS.clearAIProviderKey, providerId) as ReturnType<DesktopApi['clearAIProviderKey']>,
   getQwenRegions: () => ipcRenderer.invoke(IPC_CHANNELS.getQwenRegions) as ReturnType<DesktopApi['getQwenRegions']>,
-  getTranslationProviderInfo: () => ipcRenderer.invoke(IPC_CHANNELS.getTranslationProviderInfo) as ReturnType<DesktopApi['getTranslationProviderInfo']>,
-  translate: (request) => ipcRenderer.invoke(IPC_CHANNELS.translate, request) as ReturnType<DesktopApi['translate']>,
-  cancelTranslation: (requestId) => ipcRenderer.invoke(IPC_CHANNELS.cancelTranslation, requestId) as ReturnType<DesktopApi['cancelTranslation']>,
-  testAIConnection: () => ipcRenderer.invoke(IPC_CHANNELS.testAIConnection) as ReturnType<DesktopApi['testAIConnection']>,
-  openGoogleTranslate: (input) => ipcRenderer.invoke(IPC_CHANNELS.openGoogleTranslate, input) as ReturnType<DesktopApi['openGoogleTranslate']>,
+  testAIConnection: (providerId) => ipcRenderer.invoke(IPC_CHANNELS.testAIConnection, providerId) as ReturnType<DesktopApi['testAIConnection']>,
   listWebsites: (folderId) => ipcRenderer.invoke(IPC_CHANNELS.listWebsites, folderId) as ReturnType<DesktopApi['listWebsites']>,
   saveWebsite: (input) => ipcRenderer.invoke(IPC_CHANNELS.saveWebsite, input) as ReturnType<DesktopApi['saveWebsite']>,
   deleteWebsite: (id) => ipcRenderer.invoke(IPC_CHANNELS.deleteWebsite, id) as ReturnType<DesktopApi['deleteWebsite']>,

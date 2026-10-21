@@ -10,7 +10,7 @@ This standalone example uses only the WebTools declarative page and the plugin-p
 
 ## Build and install
 
-Start from a newly generated basic project using the local `@webtools/plugin-sdk` **1.2.0** tarball. Replace that project's `manifest.json` and `manifest.typecheck.ts` with the files from this example, while keeping the generated `package.json` scripts and adding the same SDK tarball as a local development dependency. This keeps Private Notes independent from the single basic starter and preserves this example's storage capabilities only in its own manifest.
+Start from a newly generated basic project using the current local `@webtools/plugin-sdk` **1.6.0** tarball. Replace that project's `manifest.json` and `manifest.typecheck.ts` with the files from this example, while keeping the generated `package.json` scripts and adding the same SDK tarball as a local development dependency. This keeps Private Notes independent from the single basic starter and preserves this example's storage capabilities only in its own manifest.
 
 From the generated project directory:
 
@@ -22,7 +22,7 @@ pnpm run plugin:pack
 pnpm run inspect
 ```
 
-Use the target host version in the generated scripts' `--host-version` values; `0.1.0` is the current product version used by the Phase 6B external workflow. `plugin:pack` writes the archive under `dist/` and never overwrites an existing package. The 1.2.0 local tarball is not published to npm.
+Use the target host version in the generated scripts' `--host-version` values; `0.1.0` is the current product version used by the SDK workflow. `plugin:pack` writes the archive under `dist/` and never overwrites an existing package. The local tarball is not published to npm.
 
 In WebTools, open **应用 → 插件管理**, choose **从本地文件安装**, select `private-notes.wtplugin`, review the requested `manager.page`, `plugin.storage.read`, and `plugin.storage.write` capabilities, grant only what you want, and enable the plugin. Open **Private Notes**, select **Save note**, enter text in the host-provided prompt, and use **Load saved note** to read it back.
 

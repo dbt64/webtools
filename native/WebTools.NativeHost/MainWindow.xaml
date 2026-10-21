@@ -523,6 +523,14 @@
                 <TextBlock x:Name="StatusText" Grid.Row="1" Visibility="Collapsed"
                            Foreground="{DynamicResource MutedBrush}" FontSize="12" TextWrapping="Wrap"
                            VerticalAlignment="Top" Margin="18,12,18,0" />
+
+                <Border x:Name="HandoffPanel" Grid.Row="1" Visibility="Collapsed"
+                        Background="{DynamicResource SurfaceBrush}">
+                    <TextBlock x:Name="HandoffStatusText" AutomationProperties.Name="正在打开插件"
+                               Foreground="{DynamicResource MutedBrush}" FontSize="13"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                               TextAlignment="Center" TextWrapping="Wrap" Margin="24,12" />
+                </Border>
             </Grid>
         </Border>
 

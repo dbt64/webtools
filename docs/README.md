@@ -2,9 +2,22 @@
 
 本文档索引按主题列出当前架构说明和重要阶段记录。Phase 报告保留了当时的实现范围与测量口径；阅读历史性能数据时，请同时查看报告中的构建版本和验证限制。
 
+## 当前状态与累计提交
+
+- [2026-10-21 累计变更与提交说明](2026-10-21-platform-consolidation.md)：以 2026-10-09 的 `707c567` 为上次源码提交基线，整理 Runtime、SDK、Super Panel、翻译与生命周期变更，列明验证范围和待验收项目。
+- [窗口焦点与生命周期设计](superpowers/specs/2026-10-19-plugin-window-focus-lifecycle-design.md)：失焦隐藏/后台保留、召唤、Esc、显式关闭与 Runtime。
+- [启动器会话内 Electron 预热设计](superpowers/specs/2026-10-20-electron-launcher-session-prewarm-design.md)：WPF 首帧后预热、业务请求 ownership、无窗口预热及正常空闲退出。设计时的旧实现观察保留为历史快照。
+- [Translation 2.0 提供方页签设计](superpowers/specs/2026-10-18-translation-provider-tabs-design.md)、[旧能力清单](translation2-legacy-capability-inventory.md)与[设置纠正记录](translation2-settings-correction.md)：独立翻译窗口、网站页签、机器 API、共享 AI 和配置纠正。
+- [MIT License](../LICENSE)：当前仓库源码协议；第三方声明继续保留。
+
 ## 架构与开发
 
-- [声明式插件开发指南](plugin-development.md)：本地 SDK 1.2.0 tarball、basic starter、CLI、Manifest v1 authoring、Manifest v2 archive preflight 与 Host install-time authority。
+- [插件开发指南](plugin-development.md)：本地 SDK、CLI、Manifest v1/v3、Feature Presentation 和 Host install-time authority。
+- [Plugin Runtime 与 Surface 生命周期](plugin-runtime.md)：Launcher Feature discovery/projection、统一 Activation、独立插件窗口、Node Command、Runtime 2.0 与 Electron Host ownership。
+- [插件配置](phase6f4d-plugin-configuration-development.md)、[窗口主题契约](plugin-window-theme-contract.md)与[SDK 开发工作流](phase6f5-sdk-developer-workflow.md)：配置读写、可选主题和仓库外项目开发。
+- [Runtime 2.0 实施报告](phase6e7-plugin-runtime-2-implementation-report.md)与[开发体验实施报告](phase6e8-plugin-developer-experience-implementation-report.md)：Manifest v3、Web/Node Runtime、独立项目与开发会话。
+- [Electron 首次激活与窗口显示调查](electron-cold-start-lifecycle-investigation.md)：首次隐藏的运行证据、Native 启动参数修正、回归口径及后续冷启动优化安排。
+- [Native Super Panel](super-panel.md)：原生触发器、selection capture、声明式 context matching、固定功能与统一激活。
 - [Phase 6E-3 Manifest v2 Host validator](phase6e3-manifest-v2-validator.md)：严格验证惰性 `.wtplugin` 包结构；不启用或执行 Web Plugin runtime。
 - [Phase 6B 开发体验实施报告](webtools-phase6b-plugin-developer-experience.md) 与 [Phase 6C 能力 backlog](webtools-phase6c-capability-backlog.md)：自动化外部 author workflow 证据、人工验收状态和能力缺口记录。
 - [项目架构与性能审计](performance-architecture-audit.md)：Electron/Vue 当前职责边界、窗口生命周期和重构前风险评估。
@@ -32,6 +45,9 @@
 
 ## 功能设计与实施记录
 
+- [Quick Result Foundation](phase6g1-feature-quick-result-foundation.md)：在同一原生面板内显示命令结果与 AI 确认。
+- [Super Panel 翻译预览](phase6g3-super-panel-translation-preview.md)：预览与完整翻译入口的演进记录；旧 Manager 路径描述应结合本次提交说明阅读。
+- [Phase 6G-2 选中文本基础匹配与可靠性](phase6g2-selected-text-basic-parity.md)：本地链接匹配、真实浏览器动作示例、独立插件窗口和现有翻译路线的隔离验证，以及新增人工验收边界。
 - [网址工作区与安装器回归修复](website-and-installer-regression-fixes.md)：收藏夹工作区交互与覆盖安装关闭/重试行为。
 - [网址与更新安装设计](superpowers/specs/2026-09-30-websites-manager-and-update-install-design.md)、[网址工作区实施计划](superpowers/plans/2026-09-30-websites-workspace-management.md) 与 [安装器更新实施计划](superpowers/plans/2026-09-30-update-installer-auto-shutdown.md)：对应实现约束和阶段决策记录。
 - [Launcher Search Discovery 实施计划](superpowers/plans/2026-09-27-launcher-search-discovery.md)：应用发现、图标、网址命令和翻译入口。

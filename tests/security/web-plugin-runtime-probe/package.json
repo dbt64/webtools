@@ -1,7 +1,0 @@
-{
-  "name": "webtools-plugin-runtime-security-probe",
-  "version": "0.0.1",
-  "private": true,
-  "main": "index.cjs",
-  "description": "Isolated packaged Electron security probe for WebTools Phase 6E-4A"
-}

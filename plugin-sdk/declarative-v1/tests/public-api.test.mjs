@@ -11,18 +11,24 @@ import {
   CAPABILITIES_V1,
   LIMITS_V1,
   LIMITS_V2,
+  LIMITS_V3,
   MANIFEST_VERSION_V1,
   MANIFEST_VERSION_V2,
+  MANIFEST_VERSION_V3,
   ManifestV2ValidationError,
+  ManifestV3ValidationError,
   PluginValidationError,
   packPluginV1,
+  packPluginV3,
   validatePluginArchiveV1,
   validatePluginArchiveV2,
+  validatePluginArchiveV3,
   validatePluginSourceV1,
+  validatePluginSourceV3,
 } from '@webtools/plugin-sdk'
-import { manifest, packageBytes, webManifest, webPackage } from '../../../electron/plugins/fixtures.mjs'
+import { manifest, packageBytes, runtimeV3Manifest, runtimeV3Package, webManifest, webPackage } from '../../../electron/plugins/fixtures.mjs'
 
-test('package root preserves v1 authoring and exposes bounded v2 archive preflight', async t => {
+test('package root exposes v1, v2 preflight, and v3 Runtime authoring/packing APIs', async t => {
   assert.equal(MANIFEST_VERSION_V1, 1)
   assert.equal(API_MAJOR_V1, 1)
   assert.ok(CAPABILITIES_V1.includes('manager.page'))
@@ -37,6 +43,15 @@ test('package root preserves v1 authoring and exposes bounded v2 archive preflig
   assert.equal(LIMITS_V2.archive, LIMITS_V1.archive)
   assert.equal(typeof ManifestV2ValidationError, 'function')
   assert.equal(typeof validatePluginArchiveV2, 'function')
+  assert.equal(MANIFEST_VERSION_V3, 3)
+  assert.ok(LIMITS_V3.archive > LIMITS_V1.archive)
+  assert.equal(typeof ManifestV3ValidationError, 'function')
+  assert.equal(typeof validatePluginSourceV3, 'function')
+  assert.equal(typeof validatePluginArchiveV3, 'function')
+  assert.equal(typeof packPluginV3, 'function')
+  const checkedV3 = await validatePluginArchiveV3(runtimeV3Package(runtimeV3Manifest()), '0.1.0')
+  assert.equal(checkedV3.manifest.manifestVersion, 3)
+  assert.equal(checkedV3.runtimeSupport, 'runtime-v3')
 
   const root = await mkdtemp(path.join(tmpdir(), 'webtools-sdk-public-api-'))
   t.after(() => rm(root, { recursive: true, force: true }))

@@ -1,96 +1,105 @@
 # WebTools
 
-**一个为 Windows 打造的 Native-first 启动器与效率工具。** NativeHost 使用 C#、.NET 10 和 WPF 负责常驻搜索、系统托盘与全局快捷键；网址管理、设置和翻译等界面由 Electron Manager 按需启动。
+**为 Windows 打造的原生启动器、选区面板和插件效率工具。**
 
-WebTools 可以搜索并启动 Windows 应用、打开收藏网址、执行网页搜索和查找本机文件。日常唤起与搜索由 NativeHost 独立完成；只有打开管理页面或翻译时，才需要启动 Electron。
+WebTools 使用 C# / .NET 10 / WPF 提供常驻搜索、全局快捷键、系统托盘和 Super Panel；Electron Host 按需承载 Manager、独立插件窗口与内置 Translation 2.0。插件通过统一的 Feature 声明接入入口，业务界面保持独立。
+
+当前为 `0.1.0` 开发版本，主要面向 Windows x64。[累计变更与提交说明](docs/2026-10-21-platform-consolidation.md)记录了自 2026-10-09 上次源码提交以来的改动、兼容性和验证边界。
 
 ## 功能
 
-### Native Launcher
+### 原生 Launcher
 
-- 搜索并启动开始菜单、桌面快捷方式、Windows 注册应用和打包应用。
-- 支持中文、拼音、拼音首字母、别名及模糊匹配。
-- 使用系统托盘和 Alt+Space、Ctrl+Space、双击 Ctrl/Alt、F1–F10 或高级自定义组合键快速唤起；快捷键是否可用取决于 Windows 与其他应用的占用情况。
-- 搜索和打开已保存的网址；用 `/关键词` 按名称或网址筛选收藏网址。
-- 用 `?关键词` 调用当前网页搜索引擎。
-- 用 `file:关键词` 搜索文件和文件夹；此功能需要单独安装并运行 Everything。
-- 支持浅色、深色和跟随系统主题，以及紧凑和展开布局。
-- 英文搜索可显示翻译入口，并将原文交给 Manager 中的翻译页面。
+- 搜索开始菜单、桌面快捷方式、Windows 注册应用和打包应用，支持中文、拼音、首字母、别名和模糊匹配。
+- 搜索收藏网址、网页搜索、可选 Everything 文件搜索，以及已安装插件的功能。
+- 使用系统托盘和可配置全局快捷键召唤；支持浅色、深色、跟随系统、紧凑与展开布局。
+- 输入英文后可直接打开独立翻译窗口并携带原文。
+- 改进开机启动后的应用目录刷新、搜索发现和窗口首次交接。
 
-### Electron Manager
+| 输入 | 用途 |
+| --- | --- |
+| `关键词` | 搜索本机应用、收藏网址和可用插件功能 |
+| `?关键词` | 使用当前网页搜索引擎 |
+| `/关键词` | 仅搜索收藏网址 |
+| `file:关键词` | 使用 Everything 搜索文件与文件夹 |
 
-- 默认打开收藏网址页面，可使用收藏夹整理网址，支持折叠文件夹、调整顺序和分类；布局会随窗口宽度自适应。
-- 管理网址与应用设置。
-- 提供翻译页面，支持无 API Key 的在线翻译服务和可配置的 AI 翻译 Provider。
-- 在 Native-first 模式下按需启动；关闭 Manager 后 NativeHost 可继续运行。
+文件搜索需要自行安装并运行 [Everything](https://www.voidtools.com/)，然后在 WebTools 设置中启用并检测或选择 `es.exe`。WebTools 不捆绑 Everything。
 
-## Windows 安装
+### Super Panel
 
-运行 Windows 安装包后，桌面和开始菜单快捷方式会启动 `WebTools.NativeHost.exe`。Electron Manager 位于安装目录的 `Manager/` 子目录，由 NativeHost 在需要管理页面或翻译时启动；通常不需要直接运行其中的 `WebTools.exe`。更新会沿用原安装目录；如果 WebTools 正在运行，安装程序会先征求退出确认，正常关闭后在当前安装流程中继续更新。
+- 通过可配置鼠标手势或托盘打开原生选区操作面板。
+- 根据选中文字提供搜索、打开 HTTP(S) 链接、翻译与插件动作；无选区时显示快捷入口。
+- 插件声明可接受的上下文，NativeHost 本地匹配功能，执行时由 Electron 再校验权限和当前插件状态。
+- 在同一 WPF 面板内展示 Quick Result 文本和 AI 确认；翻译预览可配置，取消、换选区和进入完整翻译窗口具有独立生命周期。
+- 选区获取使用应用 Copy 路径，处理剪贴板恢复、迟到结果、失焦及重复触发。
 
-## 架构
+### Translation 2.0
+
+- 内置一等插件，使用独立 Electron 窗口；Launcher、Super Panel 和插件中心都可进入。
+- WebTools 翻译支持 MyMemory、共享 AI、DeepL API，以及高级 JSON 接口定义。
+- Google、有道、Microsoft、DeepL 等网站翻译使用独立页签，支持拖动排序、显示开关和设置持久化。第三方网页的可访问性、布局和响应速度取决于网站与网络环境。
+- WebTools 页签停止输入约 0.5 秒后自动翻译，保留手动操作，并处理取消、旧结果和重复请求。
+- 翻译 AI 配置与平台“设置 → AI”共用提供方、模型和安全凭据，翻译所选服务单独保存。API Key 使用支持粘贴的密码框，保存后清空，不回显已保存值。
+- 修复首次打开等待环、业务请求 ID 与 Pipe 消息 ID 混用，以及加载中关闭后请求未结束的问题。
+
+### 插件平台与开发工具
+
+- 插件中心支持本地 `.wtplugin` 安装、启停、权限、配置、替换和卸载。
+- Manifest v3 支持 Web / Node Runtime、独立 Window Feature 和 Node Command；保留声明式 Manifest v1 兼容路径。
+- Window Feature 可选择失焦后临时隐藏、方便召唤恢复，或留在其他窗口后方；Host 协调快捷键、Esc、显式关闭、停用和开发重载。
+- Host 管理 Feature 身份、包校验、配置、私有数据、主题、Shared AI 和能力调用。Web Runtime 与 Node Runtime 的权限边界不同：Node 插件可使用当前 Windows 用户的 Node 能力，不是操作系统沙箱。
+- SDK 当前为 `@webtools/plugin-sdk` **1.8.0**；独立脚手架 `create-webtools-plugin` **1.1.0** 支持 Vanilla、Vue、React、Svelte 和 Web / Node 组合。
+- 开发工具支持 build / validate / pack / inspect、开发会话连接、重载和诊断。当前以本地 tarball 工作流为准，不假设已经发布到 npm。
+
+### Manager
+
+Manager 管理网址收藏夹、插件、平台配置与共享 AI。它是 Electron Host 自有界面；独立插件和 Translation 不放入 Manager 页面。关闭 Manager 后，仍在使用的插件窗口或任务可以继续运行。
+
+## 架构与生命周期
 
 ```mermaid
 flowchart TD
-    Windows[Windows] --> NativeHost[WebTools.NativeHost<br/>C# / .NET 10 / WPF]
-    NativeHost --> Launcher[Native Launcher]
-    NativeHost --> Search[应用目录与搜索核心]
-    NativeHost --> Tray[系统托盘与全局快捷键]
-    NativeHost --> Everything[可选 Everything 文件搜索]
-    NativeHost -->|Named Pipe / 按需启动| Manager[Electron Manager<br/>Electron / Vue 3 / TypeScript]
-    Manager --> Websites[网址 / 收藏夹管理]
-    Manager --> Settings[设置]
-    Manager --> Translation[翻译与 AI Provider]
+    User[快捷键 / 鼠标手势] --> Native[WPF NativeHost]
+    Native --> Launcher[Launcher]
+    Native --> Panel[Super Panel / Quick Result]
+    Native --> Search[应用目录 / 搜索 / 系统集成]
+    Native <-->|认证 Named Pipe| Host[按需 Electron Host]
+    Host --> Manager[Manager / 收藏夹 / 平台设置]
+    Host --> Windows[独立插件窗口 / Web 或 Node Runtime]
+    Host --> Translation[独立 Translation 2.0 窗口]
+    Host --> Commands[临时 Node Command Utility Process]
 ```
 
-Launcher 与 Manager 分工运行：NativeHost 提供轻量的 Windows 常驻入口；Manager 集中承载需要完整桌面 UI 的管理和工具页面。NativeHost 通过 Named Pipe 与 Manager 通信，并在请求管理页面或翻译时启动它。
+NativeHost 启动时不启动 Electron。用户召唤搜索框或 Super Panel 后，WPF 先显示并可输入，再异步为当前会话预热 Electron Host；预热不创建 Manager、插件窗口或 renderer。
 
-## 搜索语法
+选择功能后，NativeHost 在隐藏入口前取得请求 ownership，Electron 用准确的业务请求 ID 执行并交接目标窗口。取消未选择目标的会话后退出预热 Host；窗口、隐藏中的有效插件或任务仍存在时保留 Host，最后一个所有者释放后正常退出。没有永久 keep-warm，也没有用于销毁隐藏临时插件窗口的自动闲置超时。
 
-| 输入 | 用途 |
-|---|---|
-| `关键词` | 搜索本机应用和已保存网址 |
-| `?关键词` | 使用当前搜索引擎进行网页搜索 |
-| `/关键词` | 仅搜索已保存网址，可匹配名称和网址 |
-| `file:关键词` | 使用 Everything 搜索文件和文件夹 |
+两种失焦行为、Esc 和召唤规则见[窗口焦点与生命周期设计](docs/superpowers/specs/2026-10-19-plugin-window-focus-lifecycle-design.md)；当前运行实现见[Plugin Runtime](docs/plugin-runtime.md)。设计文件中的“当前实现观察”是设计时快照，最新累计状态以[提交说明](docs/2026-10-21-platform-consolidation.md)为准。
 
-在仓库外使用 `file:` 前，请先安装并运行 [Everything](https://www.voidtools.com/)，然后在 WebTools 设置中启用文件搜索并检测或选择 `es.exe`。WebTools 不会下载、捆绑或自动安装 Everything。
+## 安装与使用
 
-## 开发与验证
+Windows 安装包及解压预览包均以根目录 `WebTools.NativeHost.exe` 为入口。Electron 可执行文件位于 `Manager/WebTools.exe`，由 NativeHost 按需调用，通常无需直接启动。
 
-开发 Native-first 应用需要 Windows、Node.js、pnpm 9.15.9 和 .NET 10 SDK。项目通过 `packageManager` 固定 pnpm 版本。Everything 是可选组件；AI 翻译需要用户自行配置受支持 Provider 的凭据。
+使用新预览包前，从托盘正常退出旧版，再完整解压运行。预览 ZIP 与阶段验收结果不代表已签名的正式发布版本。
 
-如果 Node.js 附带 Corepack，可先启用 pnpm 命令：
+## 开发
+
+需要 Windows、Node.js `>=20.19`、pnpm **9.15.9** 和 .NET **10** SDK。依赖与 Electron 版本以 `pnpm-lock.yaml` 为准。
 
 ```powershell
+# 如需使用 Corepack
 corepack enable pnpm
-```
 
-如果没有 Corepack，可安装固定版本的 pnpm：
-
-```powershell
-npm install --global pnpm@9.15.9
-```
-
-在仓库根目录安装 JavaScript 依赖：
-
-```powershell
 pnpm install --frozen-lockfile
-```
 
-启动 Native-first 应用：
-
-```powershell
+# WPF NativeHost + 按需 Electron 开发入口
 pnpm run native:dev
-```
 
-开发时可单独启动 Electron Manager：
-
-```powershell
+# 单独调试 Electron
 pnpm run electron:dev
 ```
 
-常用检查与构建命令：
+常用检查与构建：
 
 ```powershell
 pnpm run typecheck
@@ -100,31 +109,29 @@ dotnet build .\native\WebTools.NativeHost\WebTools.NativeHost.csproj --configura
 dotnet run --project .\native\WebTools.NativeHost.Checks\WebTools.NativeHost.Checks.csproj --configuration Release
 ```
 
-准备版本化 Windows 构建时，先阅读 [Release Build & Version Contract](docs/release-build.md)。该流程要求干净工作区，并在 `release/` 下生成带有版本元数据和 SHA-256 清单的本地候选包：
+`pnpm run acceptance:plugin-runtime` 是通用打包 Runtime 验收入口，需要按[运行时文档](docs/plugin-runtime.md)准备候选程序与 fixture。`pnpm run package:win` 构建 Windows 安装包；版本化发布使用 `release:preflight`、`release:build` 和 `release:verify`，详见[发布构建说明](docs/release-build.md)。构建成功、自动化通过和用户人工验收是不同状态，各阶段报告分别记录。
 
-```powershell
-pnpm run release:preflight
-pnpm run release:build
-pnpm run release:verify -- release\<生成的产物目录>
-```
-
-`pnpm run build` 构建 Electron Manager renderer、Main 和 preload。`pnpm run native:dev` 启动 NativeHost 并按需启动 Manager；`pnpm run electron:dev` 仅用于单独调试 Manager。`pnpm run package:win` 生成 NativeHost 为入口、Electron Manager 单独安装在 `Manager/` 下的 Windows 安装包，并执行独立路径安装/卸载 smoke 验证。
-
-## 当前状态
-
-Native Launcher 迁移已完成。NativeHost 负责常驻搜索、系统托盘、全局快捷键和开机启动；Electron Manager 按需启动。实现与验收细节见 [Phase 4F 报告](docs/native-launcher-phase4f-removal.md)。
-
-插件开发者可参考[声明式插件开发指南](docs/plugin-development.md)，了解本地 SDK tarball、基础脚手架、CLI 验证/打包和 Host 安装权限边界。
+插件开发从[开发指南](docs/plugin-development.md)和[独立脚手架说明](plugin-sdk/create-webtools-plugin/README.md)开始。
 
 ## 项目结构
 
 ```text
-native/       WPF NativeHost、搜索核心、托盘与 Manager 通信
-electron/     Electron Main、preload、IPC 与后台服务
-src/          Vue 页面、共享类型和 Manager UI
-resources/    应用品牌图标
-scripts/      Native 开发入口及生产安装包构建脚本
-docs/         架构、迁移、性能审计和实施记录
+native/       WPF NativeHost、搜索、选区面板、Named Pipe 与原生检查
+electron/     Electron Host、插件运行时、独立窗口、preload、IPC 与服务
+src/          Manager、Translation 2.0、设置与共享契约
+plugin-sdk/   SDK、Manifest 校验、CLI、脚手架与运行时契约
+examples/     使用公开 SDK 的插件示例
+resources/    应用品牌资源
+scripts/      开发、打包、发布与打包运行时验收工具
+docs/         当前开发入口、提交说明、设计和历史阶段记录
 ```
 
-更多架构说明、验收记录和历史设计见[文档索引](docs/README.md)。
+## 当前边界与后续方向
+
+本轮整合覆盖 Runtime 2.0、插件开发体验、Super Panel / Quick Result、Translation 2.0，以及焦点和会话内预热。插件在线分发/更新/信任、AI Tool authority、MCP 集成和最终系统性性能验收仍是后续方向。配置和接口的实际可用性以当前代码及对应验收记录为准，不将历史阶段编号视作整个产品已完成。
+
+更多资料见[文档索引](docs/README.md)。
+
+## 开源协议
+
+WebTools 源码采用 [MIT License](LICENSE)，Copyright (c) 2026 dbt64。第三方依赖与随附资源保留各自的协议和版权声明。

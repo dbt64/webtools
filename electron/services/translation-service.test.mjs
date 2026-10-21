@@ -18,6 +18,7 @@ function setup(engine, overrides = {}) {
     dataStore: { snapshot: () => structuredClone(state) },
     sharedAI: {
       complete: async (messages, signal) => { calls.ai.push({ messages, signal }); return { text: 'AI output', providerId: 'openai', providerName: 'OpenAI', model: 'gpt-4.1-mini' } },
+      completeWithProvider: async (providerId, messages, signal) => { calls.ai.push({ providerId, messages, signal }); return { text: `${providerId} output`, providerId, providerName: providerId, model: `${providerId}-model` } },
       getDefaultProviderInfo: async () => ({ providerId: 'openai', providerName: 'OpenAI', model: 'gpt-4.1-mini', hasApiKey: true, configured: true, documentationUrl: '', requiresQwenWorkspace: false }),
     },
     aiCredentials: { get: async (provider) => { calls.secrets.push(`ai:${provider}`); return provider === 'qwen' ? 'qwen-key' : null } },
@@ -151,4 +152,48 @@ test('a provider response arriving after Translation is disabled cannot be retur
   complete('late translation')
 
   await assert.rejects(pending, error => error.code === 'TRANSLATION_DISABLED')
+})
+
+test('Translation 2.0 explicitly invokes its selected AI provider instead of the platform default', async () => {
+  const { service, calls } = setup('mymemory')
+
+  const result = await service.translateWithTarget(baseRequest, { kind: 'ai', providerId: 'deepseek' })
+
+  assert.equal(result.translation, 'deepseek output')
+  assert.equal(result.provider.providerId, 'deepseek')
+  assert.equal(calls.ai[0].providerId, 'deepseek')
+  assert.equal(calls.free.length, 0)
+})
+
+test('Translation 2.0 machine route invokes only the selected supported adapter and never falls back', async () => {
+  const { service, calls } = setup('ai')
+  const result = await service.translateWithTarget(baseRequest, { kind: 'machine', adapterId: 'mymemory', instanceId: 'builtin.mymemory' })
+  assert.equal(result.translation, 'Free output')
+  assert.equal(calls.free.length, 1)
+  assert.equal(calls.ai.length, 0)
+
+  await assert.rejects(
+    () => service.translateWithTarget({ ...baseRequest, requestId: '123e4567-e89b-12d3-a456-426614174099' }, { kind: 'machine', adapterId: 'deepl', instanceId: 'custom.deepl.1' }),
+    error => error.code === 'TRANSLATION_SERVICE_UNAVAILABLE',
+  )
+  assert.equal(calls.ai.length, 0)
+})
+
+test('Translation 2.0 routes an imported machine instance only through its Main-owned executor', async () => {
+  const imported = []
+  const { service, calls } = setup('ai', {
+    importedServices: {
+      execute: async (instanceId, input) => { imported.push({ instanceId, input }); return 'imported result' },
+    },
+  })
+
+  const result = await service.translateWithTarget(baseRequest, { kind: 'machine', adapterId: 'imported', instanceId: 'imported-demo' })
+
+  assert.equal(result.translation, 'imported result')
+  assert.equal(result.provider.engine, 'imported-api')
+  assert.equal(result.provider.providerName, 'Imported translation API')
+  assert.equal(imported.length, 1)
+  assert.equal(imported[0].instanceId, 'imported-demo')
+  assert.equal(imported[0].input.text, baseRequest.text)
+  assert.equal(calls.ai.length + calls.free.length + calls.qwen.length, 0)
 })

@@ -10,6 +10,17 @@ import { manifest, packageBytes } from './fixtures.mjs'
 
 const translationRef = { pluginId: 'webtools.translation', featureId: 'translate-text' }
 
+test('content rules reach capable peers and constrained rows are omitted for old Native peers', async () => {
+  const registry = new FeatureRegistry({ listDeclarativeFeatures: async () => [], isTranslationEnabled: () => true,
+    listRuntimeFeatures: async () => [{ pluginName: 'Text Actions', feature: { ref: { pluginId: 'org.example.actions', featureId: 'open-link' },
+      sourceKind: 'runtime-v3', title: 'Open link', commands: [], acceptedContexts: [{ type: 'text', sources: ['selected-text'], textMatch: 'http-url' }],
+      iconToken: 'globe', presentation: 'command' } }] })
+  await registry.refresh()
+  assert.equal(registry.snapshot(true, true, true).features.find(row => row.ref.featureId === 'open-link').acceptedContexts[0].textMatch, 'http-url')
+  assert.deepEqual(registry.snapshot(true, true, false).features.map(row => row.ref), [translationRef])
+  registry.close()
+})
+
 function declarative(pluginId, title = 'Private Notes', featureId = 'legacy-manager-page') {
   return {
     pluginName: `${title} Plugin`,
@@ -190,7 +201,7 @@ test('tampered current package is excluded from the derived projection', async t
   assert.deepEqual(await manager.listFeatureCandidates(), [])
 })
 
-test('PluginManager publishes Feature authority changes only after successful mutations', async t => {
+test('PluginManager publishes Feature authority revocation and successful mutation changes', async t => {
   const root = await mkdtemp(join(tmpdir(), 'webtools-feature-events-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const manager = new PluginManager({ userData: root, hostVersion: '0.1.0', confirm: async () => true, externalOpen: async () => {}, clipboardWrite: () => {}, ai: {} })
@@ -213,7 +224,9 @@ test('PluginManager publishes Feature authority changes only after successful mu
   await manager.setEnabled(plugin.id, true, manager.session)
   await manager.setGrants(plugin.id, [], manager.session)
   await manager.uninstall(plugin.id, manager.session)
-  assert.deepEqual(events, ['changed', 'changed', 'changed', 'changed', 'changed'])
+  // Uninstall publishes once when it blocks/revokes the runtime, once after
+  // persisting the disabled state, and once after removing the package.
+  assert.deepEqual(events, ['changed', 'changed', 'changed', 'changed', 'changed', 'changed'])
 })
 
 test('PluginManager enable, update, disable, and uninstall commits update the derived registry without persisted Feature state', async t => {
